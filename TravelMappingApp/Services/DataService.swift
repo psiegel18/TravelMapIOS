@@ -25,7 +25,7 @@ class DataService: ObservableObject {
 
     init() {
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 15
+        config.timeoutIntervalForRequest = 60
         self.session = URLSession(configuration: config)
     }
 
@@ -61,6 +61,7 @@ class DataService: ObservableObject {
 
                 self.users = summaries
                 self.isLoading = false
+                SpotlightService.shared.indexUsers(summaries)
             } catch {
                 self.errorMessage = error.localizedDescription
                 self.isLoading = false
@@ -111,12 +112,26 @@ class DataService: ObservableObject {
     }
 
     private func fetchUsernames(directory: String, ext: String) async throws -> [String] {
+        let cacheKey = "github_\(directory)"
+
+        // Check cache first
+        if let cached = await CacheService.shared.get(key: cacheKey) {
+            if let files = try? JSONDecoder().decode([GitHubFile].self, from: cached) {
+                return files
+                    .filter { $0.name.hasSuffix(".\(ext)") }
+                    .map { String($0.name.dropLast(ext.count + 1)) }
+            }
+        }
+
         let url = URL(string: "\(Self.githubBase)/\(directory)")!
         let (data, response) = try await session.data(from: url)
 
         if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 404 {
             return []
         }
+
+        // Cache for 24 hours
+        await CacheService.shared.set(key: cacheKey, data: data)
 
         let files = try JSONDecoder().decode([GitHubFile].self, from: data)
         return files
@@ -125,12 +140,23 @@ class DataService: ObservableObject {
     }
 
     private func fetchRawFile(directory: String, filename: String) async throws -> String {
+        let cacheKey = "raw_\(directory)_\(filename)"
+
+        // Check cache
+        if let cached = await CacheService.shared.get(key: cacheKey),
+           let content = String(data: cached, encoding: .utf8) {
+            return content
+        }
+
         let url = URL(string: "\(Self.rawBase)/\(directory)/\(filename)")!
         let (data, response) = try await session.data(from: url)
 
         if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 404 {
             throw URLError(.fileDoesNotExist)
         }
+
+        // Cache for 24 hours
+        await CacheService.shared.set(key: cacheKey, data: data)
 
         guard let content = String(data: data, encoding: .utf8) else {
             throw URLError(.cannotDecodeContentData)

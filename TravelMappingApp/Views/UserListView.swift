@@ -2,26 +2,11 @@ import SwiftUI
 
 struct UserListView: View {
     @ObservedObject var dataService: DataService
+    @ObservedObject private var favoritesService = FavoritesService.shared
+    @ObservedObject private var settings = SyncedSettingsService.shared
     @State private var searchText = ""
-    @AppStorage("favoriteUsers") private var favoriteUsersData: Data = Data()
 
-    private var favoriteUsernames: Set<String> {
-        (try? JSONDecoder().decode(Set<String>.self, from: favoriteUsersData)) ?? []
-    }
-
-    private func setFavorites(_ favorites: Set<String>) {
-        favoriteUsersData = (try? JSONEncoder().encode(favorites)) ?? Data()
-    }
-
-    private func toggleFavorite(_ username: String) {
-        var favs = favoriteUsernames
-        if favs.contains(username) {
-            favs.remove(username)
-        } else {
-            favs.insert(username)
-        }
-        setFavorites(favs)
-    }
+    private var primaryUser: String { settings.primaryUser }
 
     var filteredUsers: [DataService.UserSummary] {
         let base: [DataService.UserSummary]
@@ -33,7 +18,7 @@ struct UserListView: View {
             }
         }
 
-        let favs = favoriteUsernames
+        let favs = favoritesService.favorites
         return base.sorted { a, b in
             let aFav = favs.contains(a.username)
             let bFav = favs.contains(b.username)
@@ -47,35 +32,72 @@ struct UserListView: View {
             if dataService.isLoading {
                 ProgressView("Loading users...")
             } else if let error = dataService.errorMessage {
-                VStack(spacing: 12) {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.largeTitle)
-                        .foregroundStyle(.secondary)
-                    Text("Error loading data")
-                        .font(.headline)
-                    Text(error)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                ErrorView(message: error) {
+                    await MainActor.run {
+                        dataService.loadUserList()
+                    }
                 }
             } else {
-                List(filteredUsers) { user in
-                    NavigationLink(value: user) {
-                        UserRowView(
-                            user: user,
-                            isFavorite: favoriteUsernames.contains(user.username)
-                        )
+                List {
+                    if !primaryUser.isEmpty, let user = dataService.users.first(where: { $0.username == primaryUser }) {
+                        Section {
+                            NavigationLink(value: user) {
+                                HStack {
+                                    Image(systemName: "person.fill")
+                                        .foregroundStyle(.blue)
+                                    Text(primaryUser)
+                                        .font(.headline)
+                                    Spacer()
+                                    Text("My Profile")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
                     }
+
+                    // Recent users
+                    if searchText.isEmpty && !settings.recentUsers.isEmpty {
+                        Section("Recent") {
+                            ForEach(settings.recentUsers.prefix(5), id: \.self) { recentName in
+                                if let user = dataService.users.first(where: { $0.username == recentName }) {
+                                    NavigationLink(value: user) {
+                                        HStack {
+                                            Image(systemName: "clock")
+                                                .foregroundStyle(.secondary)
+                                                .font(.caption)
+                                            Text(user.username)
+                                                .font(.subheadline)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Section {
+                        ForEach(filteredUsers) { user in
+                            NavigationLink(value: user) {
+                                UserRowView(
+                                    user: user,
+                                    isFavorite: favoritesService.isFavorite(user.username)
+                                )
+                            }
                     .swipeActions(edge: .leading) {
                         Button {
-                            toggleFavorite(user.username)
+                            Haptics.selection()
+                            favoritesService.toggleFavorite(user.username)
                         } label: {
-                            if favoriteUsernames.contains(user.username) {
+                            if favoritesService.isFavorite(user.username) {
                                 Label("Unfavorite", systemImage: "star.slash")
                             } else {
                                 Label("Favorite", systemImage: "star.fill")
                             }
                         }
                         .tint(.yellow)
+                    }
+                    .accessibilityHint(favoritesService.isFavorite(user.username) ? "Favorited. Swipe right to unfavorite." : "Swipe right to favorite.")
+                        }
                     }
                 }
                 .searchable(text: $searchText, prompt: "Search users")
@@ -99,12 +121,22 @@ struct UserRowView: View {
     let user: DataService.UserSummary
     let isFavorite: Bool
 
+    private var categoryDescription: String {
+        var cats: [String] = []
+        if user.hasRoads { cats.append("Roads") }
+        if user.hasRail { cats.append("Rail") }
+        if user.hasFerry { cats.append("Ferry") }
+        if user.hasScenic { cats.append("Scenic") }
+        return cats.joined(separator: ", ")
+    }
+
     var body: some View {
         HStack {
             if isFavorite {
                 Image(systemName: "star.fill")
                     .foregroundStyle(.yellow)
                     .font(.caption)
+                    .accessibilityHidden(true)
             }
 
             VStack(alignment: .leading, spacing: 4) {
@@ -128,5 +160,7 @@ struct UserRowView: View {
                 .foregroundStyle(.secondary)
             }
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(user.username)\(isFavorite ? ", favorited" : ""). \(categoryDescription)")
     }
 }

@@ -6,6 +6,7 @@ struct UserDetailView: View {
     @State private var profile: UserProfile?
     @State private var isLoading = true
     @State private var selectedTab = 0
+    @State private var shareItem: ShareItem?
 
     var body: some View {
         Group {
@@ -13,6 +14,18 @@ struct UserDetailView: View {
                 ProgressView("Loading \(username)...")
             } else if let profile {
                 VStack(spacing: 0) {
+                    // Compact stats row
+                    HStack(spacing: 0) {
+                        compactStat(value: "\(profile.allRegions.count)", label: "regions")
+                        Divider().frame(height: 24)
+                        compactStat(value: "\(profile.allRoutes.count)", label: "routes")
+                        Divider().frame(height: 24)
+                        compactStat(value: "\(profile.totalSegments)", label: "segments")
+                    }
+                    .padding(.horizontal)
+                    .padding(.vertical, 8)
+                    .background(.ultraThinMaterial)
+
                     Picker("View", selection: $selectedTab) {
                         Label("List", systemImage: "list.bullet").tag(0)
                         Label("Map", systemImage: "map").tag(1)
@@ -49,9 +62,57 @@ struct UserDetailView: View {
             }
         }
         .navigationTitle(username)
+        .toolbar {
+            if profile != nil {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        Haptics.light()
+                        shareStats()
+                    } label: {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    .accessibilityLabel("Share travel stats")
+                }
+            }
+        }
+        .sheet(item: $shareItem) { item in
+            if let image = item.image {
+                ShareSheetView(image: image)
+            }
+        }
         .task {
+            SyncedSettingsService.shared.recordRecentUser(username)
             profile = await dataService.loadUserProfile(username: username)
             isLoading = false
+        }
+    }
+
+    private func compactStat(value: String, label: String) -> some View {
+        VStack(spacing: 2) {
+            Text(value)
+                .font(.subheadline.bold())
+                .monospacedDigit()
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func shareStats() {
+        guard let profile else { return }
+
+        // Render card immediately with segment-based counts (no extra API call)
+        // The mileage is fetched in the Stats tab separately
+        let card = ShareableStatsCard(
+            username: username,
+            regions: profile.allRegions.count,
+            routes: profile.allRoutes.count,
+            clinchedMiles: 0,
+            totalMiles: 0
+        )
+        if let image = renderShareImage(view: card) {
+            shareItem = ShareItem(image: image)
         }
     }
 

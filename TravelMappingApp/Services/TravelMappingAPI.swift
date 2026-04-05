@@ -4,14 +4,18 @@ import CoreLocation
 /// Client for the TravelMapping website's PHP endpoints.
 /// These return pre-processed coordinate data from the site's database.
 actor TravelMappingAPI {
-    static let shared = TravelMappingAPI()
+    static let shared = TravelMappingAPI(baseURL: "https://travelmapping.net", dbName: "TravelMapping")
+    static let rail = TravelMappingAPI(baseURL: "https://tmrail.teresco.org", dbName: "TravelMappingRail")
 
-    private let baseURL = "https://travelmapping.net"
+    private let baseURL: String
+    private let dbName: String
     private let session: URLSession
 
-    init() {
+    init(baseURL: String, dbName: String) {
+        self.baseURL = baseURL
+        self.dbName = dbName
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 30
+        config.timeoutIntervalForRequest = 120
         self.session = URLSession(configuration: config)
     }
 
@@ -218,7 +222,7 @@ actor TravelMappingAPI {
             "traveler": traveler
         ]
 
-        let data = try await post(endpoint: "/lib/getRegionSystemSegments.php", params: params)
+        let data = try await post(endpoint: "/lib/getRegionSystemSegments.php", params: params, cacheTTL: 6 * 3600) // cache 6 hours
         let response = try JSONDecoder().decode(VisibleSegmentsResponse.self, from: data)
 
         // Same parsing as getVisibleSegments
@@ -269,9 +273,15 @@ actor TravelMappingAPI {
 
     // MARK: - Networking
 
-    private func post(endpoint: String, params: [String: Any]) async throws -> Data {
+    private func post(endpoint: String, params: [String: Any], cacheTTL: TimeInterval? = nil) async throws -> Data {
+        // Check cache (include dbName to distinguish road vs rail APIs)
+        let cacheKey = "tm_\(dbName)_\(endpoint)_\(params.description)"
+        if cacheTTL != nil, let cached = await CacheService.shared.get(key: cacheKey) {
+            return cached
+        }
+
         var urlComponents = URLComponents(string: baseURL + endpoint)!
-        urlComponents.queryItems = [URLQueryItem(name: "dbname", value: "TravelMapping")]
+        urlComponents.queryItems = [URLQueryItem(name: "dbname", value: dbName)]
 
         var request = URLRequest(url: urlComponents.url!)
         request.httpMethod = "POST"
@@ -282,12 +292,18 @@ actor TravelMappingAPI {
         request.httpBody = "params=\(jsonString)".data(using: .utf8)
 
         let (data, _) = try await session.data(for: request)
+
+        // Cache if TTL specified
+        if let ttl = cacheTTL {
+            await CacheService.shared.set(key: cacheKey, data: data, ttl: ttl)
+        }
+
         return data
     }
 
     private func get(endpoint: String) async throws -> Data {
         var urlComponents = URLComponents(string: baseURL + endpoint)!
-        urlComponents.queryItems = [URLQueryItem(name: "dbname", value: "TravelMapping")]
+        urlComponents.queryItems = [URLQueryItem(name: "dbname", value: dbName)]
 
         let request = URLRequest(url: urlComponents.url!)
         let (data, _) = try await session.data(for: request)

@@ -7,50 +7,173 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		00E9DEBA5885CD859E2218A8 /* LeaderboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA5096B1694F95145A6DF492 /* LeaderboardView.swift */; };
+		00F16FB2072B0ABFBC0856E3 /* RouteProgressView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92BA403F0A56C24EF44D4226 /* RouteProgressView.swift */; };
+		03761C80AA5A45D6EAF0790C /* TravelMappingWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEC461CA55A8177187854326 /* TravelMappingWidget.swift */; };
+		15D434722FE8C22273D8AFB4 /* TMStatsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A9E8B0AE6A191662B7E9B15 /* TMStatsService.swift */; };
+		195103B2CCCE22A7044E7417 /* TravelMappingWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 29B3997572F4391C91DAF729 /* TravelMappingWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		207F83210C9E65D5ABC30E1C /* TripStorageService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C3094EC78537F818F58784F /* TripStorageService.swift */; };
+		2282087DED43D72723C35F92 /* RoadTrip.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8E936AC5CB50A92551B1850 /* RoadTrip.swift */; };
 		23E4533DEF7889092A2387DD /* StatisticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EBAAA144562AFA39F6CCA67 /* StatisticsView.swift */; };
+		2BF6FF29BD0783DC9EB4DDC0 /* ShareableStatsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9210663201BA7B9D3B1C427B /* ShareableStatsView.swift */; };
+		2DF0A345DC3C331454BC4FD3 /* RoadTripListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCE242CF12DA5FF9F2CF1B9E /* RoadTripListView.swift */; };
+		4B20AEA737640C29047ED502 /* GetStartedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 051BB1706E06D96F99CD3958 /* GetStartedView.swift */; };
+		563AE1A01CB2E9F81214BA98 /* TripRecordingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36F6F875A0D3BEA18A62B0BD /* TripRecordingService.swift */; };
+		5892992A9AE1D929D4831F8A /* RoadTripRecordingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D35A740B2CB4E05C4F81A5A /* RoadTripRecordingView.swift */; };
+		5B6716C984C0162375D056C6 /* TripShareCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5250E39625BEC7536065D23 /* TripShareCard.swift */; };
 		608604A24DE75EAA80939181 /* RouteCategory.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6C9C53415C70244875AD2E4 /* RouteCategory.swift */; };
+		60C1D2B7B1026B0AE169397E /* RoadTripAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4C6EBE62DCAD2B484621406 /* RoadTripAttributes.swift */; };
 		64B2692530742CAD95533E79 /* UserDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1ED5BD0C47F77D26DB0E30FD /* UserDetailView.swift */; };
 		6E81E5803B78C5E1CF16F445 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD5020AC24F7B6CCCFD7687E /* ContentView.swift */; };
+		7E8373658416AA2F216F0D97 /* ErrorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E83CDCA53AFE7F9E9A05D63E /* ErrorView.swift */; };
+		81A7ACA07C9BBFDE5C418C7F /* RoadTripDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 221802C6D659FD4D75C92FA7 /* RoadTripDetailView.swift */; };
+		8874BC6CBACC5139BD2FD176 /* ThemeService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8165352148EE0E5F90A2EDF8 /* ThemeService.swift */; };
 		90EDD718BBD546D8217FCCBC /* TravelMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 757364C45F4914812C75633F /* TravelMapView.swift */; };
 		91F25663D2345312A6E1E18B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = C83CB5691973205ACA0727A3 /* Assets.xcassets */; };
+		93242741DC7410503DE3F141 /* RoutePlannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE5EB7AE4D996A6C4229E14C /* RoutePlannerView.swift */; };
+		9365DF18BD0DFC62C898719A /* SyncedSettingsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE34762286340089EFA81617 /* SyncedSettingsService.swift */; };
+		97E4DF926FCAF1F944908C79 /* RoadTripIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFF7086F350E62D72F2F933E /* RoadTripIntents.swift */; };
 		99116496428E1CA71D65AD04 /* DataService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 029E318546828EB6AFCA381D /* DataService.swift */; };
+		AAE55BAC62BF16E3745637F5 /* ListFileGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFF0FFB8B003446967B66033 /* ListFileGenerator.swift */; };
+		ACF7A184CC3105C351431E9F /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D7AA373F0E75641F7A39E37 /* OnboardingView.swift */; };
+		AD4B1FABF591EB28B082EBC1 /* SpotlightService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 745F3C1DDEEE5CAD64C78F31 /* SpotlightService.swift */; };
+		AF1B398804BC9C433650D4AF /* RoadTripAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4C6EBE62DCAD2B484621406 /* RoadTripAttributes.swift */; };
 		B59684537049E1E44C647280 /* ListFileParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC4EA497A06B93C45AF2A0F3 /* ListFileParser.swift */; };
 		BE771F880694849D1C48EC4A /* TravelMappingAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44E1685494C72342C46BC8A9 /* TravelMappingAPI.swift */; };
 		BF83F74B198E713E11338628 /* TravelSegment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 236C4323C36BD1EC8FE72795 /* TravelSegment.swift */; };
+		C8766D992A63AF71FE7D967D /* FreshnessIndicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48456B71080730137BEF3025 /* FreshnessIndicator.swift */; };
+		C9ABE62841000A135BEA4F94 /* TravelMappingWatchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B89CD9DAFB2BCB1D5997D3B3 /* TravelMappingWatchApp.swift */; };
+		CC2C5BF07DFFB18162D8D58B /* RouteDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D38C145D3688EAA3D522453 /* RouteDetailView.swift */; };
 		D6C7782D1E09754BAF6FFB1D /* UserListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8621E1BCF4FDC3F5013AB9E3 /* UserListView.swift */; };
+		DDD05A560F4B95EC062D1F95 /* CacheService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D3B2307AC859836B4FE7A34 /* CacheService.swift */; };
+		E16CC006D3A49C1FB58C1300 /* WatchComplication.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3491CF7C0124E8B7F5B3AABA /* WatchComplication.swift */; };
+		E234E143BFAFE3E06FD1D29E /* MapStyleService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9EA26D9A988C7A4CE99C4B2E /* MapStyleService.swift */; };
+		E72A21B5D13F2AD9131F9E7F /* FavoritesService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94DF41B00B68103C300E4168 /* FavoritesService.swift */; };
+		E80B8BC8B3E506EFDC915EAD /* SegmentMatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 911DD9B25F38B371816F31ED /* SegmentMatcher.swift */; };
 		F1C4195D43B2A60AC94DF3A1 /* TravelMappingApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD5CDE4D8F43B6690DDB2C7A /* TravelMappingApp.swift */; };
+		F5F194775DA6AA2A7B10EEC5 /* RoadTripLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54CB6BF6CD2CBEAF6133EDF8 /* RoadTripLiveActivity.swift */; };
+		F6AD86AC2918B78524DB7B94 /* RegionDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D02776026919B26F66A4020 /* RegionDetailView.swift */; };
 		FA0396A0D7E7C518DFEFB9B1 /* UserProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = E52990A02947FB38A0B1328A /* UserProfile.swift */; };
+		FB2D3C039218D11DCE6BBBDF /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBBF62B7C75957D35494B69B /* SettingsView.swift */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		D41D03065F826D1A04C51055 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 8738B94C83BB6AE73AFA799A /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 90C5921FB567E6479DF48458;
+			remoteInfo = TravelMappingWidgetExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		90972665F71B296F0A9B8811 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				195103B2CCCE22A7044E7417 /* TravelMappingWidgetExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		029E318546828EB6AFCA381D /* DataService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataService.swift; sourceTree = "<group>"; };
+		051BB1706E06D96F99CD3958 /* GetStartedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GetStartedView.swift; sourceTree = "<group>"; };
+		0D3B2307AC859836B4FE7A34 /* CacheService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CacheService.swift; sourceTree = "<group>"; };
 		1ED5BD0C47F77D26DB0E30FD /* UserDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserDetailView.swift; sourceTree = "<group>"; };
+		221802C6D659FD4D75C92FA7 /* RoadTripDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoadTripDetailView.swift; sourceTree = "<group>"; };
+		2258CBFA8327602A0E446FB9 /* TravelMappingApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TravelMappingApp.entitlements; sourceTree = "<group>"; };
 		236C4323C36BD1EC8FE72795 /* TravelSegment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TravelSegment.swift; sourceTree = "<group>"; };
+		24DE4B11995D2772F4EA628B /* TravelMappingWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TravelMappingWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		2674737BE4A7AB85314507CB /* TravelMappingWidgetExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TravelMappingWidgetExtension.entitlements; sourceTree = "<group>"; };
+		29B3997572F4391C91DAF729 /* TravelMappingWidgetExtension.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = TravelMappingWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		2A9E8B0AE6A191662B7E9B15 /* TMStatsService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TMStatsService.swift; sourceTree = "<group>"; };
+		2D02776026919B26F66A4020 /* RegionDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RegionDetailView.swift; sourceTree = "<group>"; };
 		2EBAAA144562AFA39F6CCA67 /* StatisticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatisticsView.swift; sourceTree = "<group>"; };
+		3491CF7C0124E8B7F5B3AABA /* WatchComplication.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchComplication.swift; sourceTree = "<group>"; };
+		36F6F875A0D3BEA18A62B0BD /* TripRecordingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripRecordingService.swift; sourceTree = "<group>"; };
 		44E1685494C72342C46BC8A9 /* TravelMappingAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TravelMappingAPI.swift; sourceTree = "<group>"; };
+		48456B71080730137BEF3025 /* FreshnessIndicator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FreshnessIndicator.swift; sourceTree = "<group>"; };
+		54CB6BF6CD2CBEAF6133EDF8 /* RoadTripLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoadTripLiveActivity.swift; sourceTree = "<group>"; };
+		5D7AA373F0E75641F7A39E37 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
+		6D35A740B2CB4E05C4F81A5A /* RoadTripRecordingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoadTripRecordingView.swift; sourceTree = "<group>"; };
+		6D38C145D3688EAA3D522453 /* RouteDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteDetailView.swift; sourceTree = "<group>"; };
+		745F3C1DDEEE5CAD64C78F31 /* SpotlightService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpotlightService.swift; sourceTree = "<group>"; };
 		757364C45F4914812C75633F /* TravelMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TravelMapView.swift; sourceTree = "<group>"; };
+		7C3094EC78537F818F58784F /* TripStorageService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripStorageService.swift; sourceTree = "<group>"; };
+		8165352148EE0E5F90A2EDF8 /* ThemeService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeService.swift; sourceTree = "<group>"; };
 		8621E1BCF4FDC3F5013AB9E3 /* UserListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserListView.swift; sourceTree = "<group>"; };
+		8E11F4373C0EF1DB4A6B8D04 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		911DD9B25F38B371816F31ED /* SegmentMatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentMatcher.swift; sourceTree = "<group>"; };
+		9210663201BA7B9D3B1C427B /* ShareableStatsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareableStatsView.swift; sourceTree = "<group>"; };
+		92BA403F0A56C24EF44D4226 /* RouteProgressView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteProgressView.swift; sourceTree = "<group>"; };
+		94DF41B00B68103C300E4168 /* FavoritesService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoritesService.swift; sourceTree = "<group>"; };
+		9EA26D9A988C7A4CE99C4B2E /* MapStyleService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapStyleService.swift; sourceTree = "<group>"; };
+		AFF7086F350E62D72F2F933E /* RoadTripIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoadTripIntents.swift; sourceTree = "<group>"; };
+		B89CD9DAFB2BCB1D5997D3B3 /* TravelMappingWatchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TravelMappingWatchApp.swift; sourceTree = "<group>"; };
+		BA5096B1694F95145A6DF492 /* LeaderboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LeaderboardView.swift; sourceTree = "<group>"; };
 		BC4EA497A06B93C45AF2A0F3 /* ListFileParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListFileParser.swift; sourceTree = "<group>"; };
+		BCE242CF12DA5FF9F2CF1B9E /* RoadTripListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoadTripListView.swift; sourceTree = "<group>"; };
+		BE34762286340089EFA81617 /* SyncedSettingsService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncedSettingsService.swift; sourceTree = "<group>"; };
+		BF873616243F1219F0929618 /* TravelMappingWatch.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TravelMappingWatch.entitlements; sourceTree = "<group>"; };
 		C798E854FE1E31811A827AC8 /* TravelMappingApp.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = TravelMappingApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C83CB5691973205ACA0727A3 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		C8E936AC5CB50A92551B1850 /* RoadTrip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoadTrip.swift; sourceTree = "<group>"; };
+		CBBF62B7C75957D35494B69B /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		CD5CDE4D8F43B6690DDB2C7A /* TravelMappingApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TravelMappingApp.swift; sourceTree = "<group>"; };
+		CFF0FFB8B003446967B66033 /* ListFileGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListFileGenerator.swift; sourceTree = "<group>"; };
+		D4C6EBE62DCAD2B484621406 /* RoadTripAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoadTripAttributes.swift; sourceTree = "<group>"; };
+		D97D60728830469D653341D0 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		DD5020AC24F7B6CCCFD7687E /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		E52990A02947FB38A0B1328A /* UserProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserProfile.swift; sourceTree = "<group>"; };
+		E83CDCA53AFE7F9E9A05D63E /* ErrorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErrorView.swift; sourceTree = "<group>"; };
+		EE525FE93FBD2CA229EDB996 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		F5250E39625BEC7536065D23 /* TripShareCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripShareCard.swift; sourceTree = "<group>"; };
 		F6C9C53415C70244875AD2E4 /* RouteCategory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteCategory.swift; sourceTree = "<group>"; };
+		FE5EB7AE4D996A6C4229E14C /* RoutePlannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoutePlannerView.swift; sourceTree = "<group>"; };
+		FEC461CA55A8177187854326 /* TravelMappingWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TravelMappingWidget.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
 		281215F705BBE27274FF9527 = {
 			isa = PBXGroup;
 			children = (
+				E5AF85CE34CBB53422429CB5 /* Shared */,
 				7D6F54F715DE6792657D6017 /* TravelMappingApp */,
+				4088F8072C99224488358C8C /* TravelMappingWatch */,
+				E96D1E2F04D2BD84035AAFE1 /* TravelMappingWidget */,
 				7AC8F49E1976D34FD5A38C14 /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		4088F8072C99224488358C8C /* TravelMappingWatch */ = {
+			isa = PBXGroup;
+			children = (
+				EE525FE93FBD2CA229EDB996 /* Info.plist */,
+				BF873616243F1219F0929618 /* TravelMappingWatch.entitlements */,
+				B89CD9DAFB2BCB1D5997D3B3 /* TravelMappingWatchApp.swift */,
+				3491CF7C0124E8B7F5B3AABA /* WatchComplication.swift */,
+			);
+			path = TravelMappingWatch;
+			sourceTree = "<group>";
+		};
+		563875118964CF96FF721BDE /* Intents */ = {
+			isa = PBXGroup;
+			children = (
+				AFF7086F350E62D72F2F933E /* RoadTripIntents.swift */,
+			);
+			path = Intents;
 			sourceTree = "<group>";
 		};
 		70B5D56D8A9148CB0B6F961F /* Parsers */ = {
 			isa = PBXGroup;
 			children = (
+				CFF0FFB8B003446967B66033 /* ListFileGenerator.swift */,
 				BC4EA497A06B93C45AF2A0F3 /* ListFileParser.swift */,
 			);
 			path = Parsers;
@@ -59,6 +182,7 @@
 		724DC44814BA6AA3AD756563 /* Models */ = {
 			isa = PBXGroup;
 			children = (
+				C8E936AC5CB50A92551B1850 /* RoadTrip.swift */,
 				F6C9C53415C70244875AD2E4 /* RouteCategory.swift */,
 				236C4323C36BD1EC8FE72795 /* TravelSegment.swift */,
 				E52990A02947FB38A0B1328A /* UserProfile.swift */,
@@ -70,6 +194,8 @@
 			isa = PBXGroup;
 			children = (
 				C798E854FE1E31811A827AC8 /* TravelMappingApp.app */,
+				24DE4B11995D2772F4EA628B /* TravelMappingWatch.app */,
+				29B3997572F4391C91DAF729 /* TravelMappingWidgetExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -79,7 +205,10 @@
 			children = (
 				C83CB5691973205ACA0727A3 /* Assets.xcassets */,
 				DD5020AC24F7B6CCCFD7687E /* ContentView.swift */,
+				D97D60728830469D653341D0 /* Info.plist */,
+				2258CBFA8327602A0E446FB9 /* TravelMappingApp.entitlements */,
 				CD5CDE4D8F43B6690DDB2C7A /* TravelMappingApp.swift */,
+				563875118964CF96FF721BDE /* Intents */,
 				724DC44814BA6AA3AD756563 /* Models */,
 				70B5D56D8A9148CB0B6F961F /* Parsers */,
 				D328285DAE3973F0839E8F36 /* Services */,
@@ -91,8 +220,18 @@
 		D328285DAE3973F0839E8F36 /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				0D3B2307AC859836B4FE7A34 /* CacheService.swift */,
 				029E318546828EB6AFCA381D /* DataService.swift */,
+				94DF41B00B68103C300E4168 /* FavoritesService.swift */,
+				9EA26D9A988C7A4CE99C4B2E /* MapStyleService.swift */,
+				911DD9B25F38B371816F31ED /* SegmentMatcher.swift */,
+				745F3C1DDEEE5CAD64C78F31 /* SpotlightService.swift */,
+				BE34762286340089EFA81617 /* SyncedSettingsService.swift */,
+				8165352148EE0E5F90A2EDF8 /* ThemeService.swift */,
+				2A9E8B0AE6A191662B7E9B15 /* TMStatsService.swift */,
 				44E1685494C72342C46BC8A9 /* TravelMappingAPI.swift */,
+				36F6F875A0D3BEA18A62B0BD /* TripRecordingService.swift */,
+				7C3094EC78537F818F58784F /* TripStorageService.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -100,27 +239,97 @@
 		E242D0A6D52FBF9AFBD10318 /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				E83CDCA53AFE7F9E9A05D63E /* ErrorView.swift */,
+				48456B71080730137BEF3025 /* FreshnessIndicator.swift */,
+				051BB1706E06D96F99CD3958 /* GetStartedView.swift */,
+				BA5096B1694F95145A6DF492 /* LeaderboardView.swift */,
+				5D7AA373F0E75641F7A39E37 /* OnboardingView.swift */,
+				2D02776026919B26F66A4020 /* RegionDetailView.swift */,
+				221802C6D659FD4D75C92FA7 /* RoadTripDetailView.swift */,
+				BCE242CF12DA5FF9F2CF1B9E /* RoadTripListView.swift */,
+				6D35A740B2CB4E05C4F81A5A /* RoadTripRecordingView.swift */,
+				6D38C145D3688EAA3D522453 /* RouteDetailView.swift */,
+				FE5EB7AE4D996A6C4229E14C /* RoutePlannerView.swift */,
+				92BA403F0A56C24EF44D4226 /* RouteProgressView.swift */,
+				CBBF62B7C75957D35494B69B /* SettingsView.swift */,
+				9210663201BA7B9D3B1C427B /* ShareableStatsView.swift */,
 				2EBAAA144562AFA39F6CCA67 /* StatisticsView.swift */,
 				757364C45F4914812C75633F /* TravelMapView.swift */,
+				F5250E39625BEC7536065D23 /* TripShareCard.swift */,
 				1ED5BD0C47F77D26DB0E30FD /* UserDetailView.swift */,
 				8621E1BCF4FDC3F5013AB9E3 /* UserListView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
 		};
+		E5AF85CE34CBB53422429CB5 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				D4C6EBE62DCAD2B484621406 /* RoadTripAttributes.swift */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		E96D1E2F04D2BD84035AAFE1 /* TravelMappingWidget */ = {
+			isa = PBXGroup;
+			children = (
+				8E11F4373C0EF1DB4A6B8D04 /* Info.plist */,
+				54CB6BF6CD2CBEAF6133EDF8 /* RoadTripLiveActivity.swift */,
+				FEC461CA55A8177187854326 /* TravelMappingWidget.swift */,
+				2674737BE4A7AB85314507CB /* TravelMappingWidgetExtension.entitlements */,
+			);
+			path = TravelMappingWidget;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		90C5921FB567E6479DF48458 /* TravelMappingWidgetExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A1EF4ED03682D88059BC0224 /* Build configuration list for PBXNativeTarget "TravelMappingWidgetExtension" */;
+			buildPhases = (
+				203145C6D70D9491C88154EC /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = TravelMappingWidgetExtension;
+			packageProductDependencies = (
+			);
+			productName = TravelMappingWidgetExtension;
+			productReference = 29B3997572F4391C91DAF729 /* TravelMappingWidgetExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		C642257A8E051890E88EEDD3 /* TravelMappingWatch */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C05272944E90E298C18D4553 /* Build configuration list for PBXNativeTarget "TravelMappingWatch" */;
+			buildPhases = (
+				E81CBCCB1E3A0555BA0AF2FE /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = TravelMappingWatch;
+			packageProductDependencies = (
+			);
+			productName = TravelMappingWatch;
+			productReference = 24DE4B11995D2772F4EA628B /* TravelMappingWatch.app */;
+			productType = "com.apple.product-type.application";
+		};
 		D707C82EAEC3A4E4B422E543 /* TravelMappingApp */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 5C5520654A7728D57D3565AF /* Build configuration list for PBXNativeTarget "TravelMappingApp" */;
 			buildPhases = (
 				C13811FBE29DE04F7D4E05DD /* Sources */,
 				35D168975FC2CB5EE422D53B /* Resources */,
+				90972665F71B296F0A9B8811 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				FA6674B3C8ACD8B6040E530B /* PBXTargetDependency */,
 			);
 			name = TravelMappingApp;
 			packageProductDependencies = (
@@ -138,6 +347,18 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1600;
 				TargetAttributes = {
+					90C5921FB567E6479DF48458 = {
+						DevelopmentTeam = ZL7GK63U5K;
+						ProvisioningStyle = Automatic;
+					};
+					C642257A8E051890E88EEDD3 = {
+						DevelopmentTeam = ZL7GK63U5K;
+						ProvisioningStyle = Automatic;
+					};
+					D707C82EAEC3A4E4B422E543 = {
+						DevelopmentTeam = ZL7GK63U5K;
+						ProvisioningStyle = Automatic;
+					};
 				};
 			};
 			buildConfigurationList = 0F53829FA62538701C724A4E /* Build configuration list for PBXProject "TravelMappingApp" */;
@@ -155,6 +376,8 @@
 			projectRoot = "";
 			targets = (
 				D707C82EAEC3A4E4B422E543 /* TravelMappingApp */,
+				C642257A8E051890E88EEDD3 /* TravelMappingWatch */,
+				90C5921FB567E6479DF48458 /* TravelMappingWidgetExtension */,
 			);
 		};
 /* End PBXProject section */
@@ -171,32 +394,89 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		203145C6D70D9491C88154EC /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				60C1D2B7B1026B0AE169397E /* RoadTripAttributes.swift in Sources */,
+				F5F194775DA6AA2A7B10EEC5 /* RoadTripLiveActivity.swift in Sources */,
+				03761C80AA5A45D6EAF0790C /* TravelMappingWidget.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		C13811FBE29DE04F7D4E05DD /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DDD05A560F4B95EC062D1F95 /* CacheService.swift in Sources */,
 				6E81E5803B78C5E1CF16F445 /* ContentView.swift in Sources */,
 				99116496428E1CA71D65AD04 /* DataService.swift in Sources */,
+				7E8373658416AA2F216F0D97 /* ErrorView.swift in Sources */,
+				E72A21B5D13F2AD9131F9E7F /* FavoritesService.swift in Sources */,
+				C8766D992A63AF71FE7D967D /* FreshnessIndicator.swift in Sources */,
+				4B20AEA737640C29047ED502 /* GetStartedView.swift in Sources */,
+				00E9DEBA5885CD859E2218A8 /* LeaderboardView.swift in Sources */,
+				AAE55BAC62BF16E3745637F5 /* ListFileGenerator.swift in Sources */,
 				B59684537049E1E44C647280 /* ListFileParser.swift in Sources */,
+				E234E143BFAFE3E06FD1D29E /* MapStyleService.swift in Sources */,
+				ACF7A184CC3105C351431E9F /* OnboardingView.swift in Sources */,
+				F6AD86AC2918B78524DB7B94 /* RegionDetailView.swift in Sources */,
+				2282087DED43D72723C35F92 /* RoadTrip.swift in Sources */,
+				AF1B398804BC9C433650D4AF /* RoadTripAttributes.swift in Sources */,
+				81A7ACA07C9BBFDE5C418C7F /* RoadTripDetailView.swift in Sources */,
+				97E4DF926FCAF1F944908C79 /* RoadTripIntents.swift in Sources */,
+				2DF0A345DC3C331454BC4FD3 /* RoadTripListView.swift in Sources */,
+				5892992A9AE1D929D4831F8A /* RoadTripRecordingView.swift in Sources */,
 				608604A24DE75EAA80939181 /* RouteCategory.swift in Sources */,
+				CC2C5BF07DFFB18162D8D58B /* RouteDetailView.swift in Sources */,
+				93242741DC7410503DE3F141 /* RoutePlannerView.swift in Sources */,
+				00F16FB2072B0ABFBC0856E3 /* RouteProgressView.swift in Sources */,
+				E80B8BC8B3E506EFDC915EAD /* SegmentMatcher.swift in Sources */,
+				FB2D3C039218D11DCE6BBBDF /* SettingsView.swift in Sources */,
+				2BF6FF29BD0783DC9EB4DDC0 /* ShareableStatsView.swift in Sources */,
+				AD4B1FABF591EB28B082EBC1 /* SpotlightService.swift in Sources */,
 				23E4533DEF7889092A2387DD /* StatisticsView.swift in Sources */,
+				9365DF18BD0DFC62C898719A /* SyncedSettingsService.swift in Sources */,
+				15D434722FE8C22273D8AFB4 /* TMStatsService.swift in Sources */,
+				8874BC6CBACC5139BD2FD176 /* ThemeService.swift in Sources */,
 				90EDD718BBD546D8217FCCBC /* TravelMapView.swift in Sources */,
 				BE771F880694849D1C48EC4A /* TravelMappingAPI.swift in Sources */,
 				F1C4195D43B2A60AC94DF3A1 /* TravelMappingApp.swift in Sources */,
 				BF83F74B198E713E11338628 /* TravelSegment.swift in Sources */,
+				563AE1A01CB2E9F81214BA98 /* TripRecordingService.swift in Sources */,
+				5B6716C984C0162375D056C6 /* TripShareCard.swift in Sources */,
+				207F83210C9E65D5ABC30E1C /* TripStorageService.swift in Sources */,
 				64B2692530742CAD95533E79 /* UserDetailView.swift in Sources */,
 				D6C7782D1E09754BAF6FFB1D /* UserListView.swift in Sources */,
 				FA0396A0D7E7C518DFEFB9B1 /* UserProfile.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		E81CBCCB1E3A0555BA0AF2FE /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C9ABE62841000A135BEA4F94 /* TravelMappingWatchApp.swift in Sources */,
+				E16CC006D3A49C1FB58C1300 /* WatchComplication.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		FA6674B3C8ACD8B6040E530B /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 90C5921FB567E6479DF48458 /* TravelMappingWidgetExtension */;
+			targetProxy = D41D03065F826D1A04C51055 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		0039ADEB777C462195751EF5 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS = YES;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
@@ -227,9 +507,12 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = ZL7GK63U5K;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -245,12 +528,14 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				LOCALIZED_STRING_SWIFTUI_SUPPORT = YES;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.10;
 			};
@@ -260,6 +545,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS = YES;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
@@ -290,9 +576,12 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = ZL7GK63U5K;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
@@ -302,25 +591,43 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				LOCALIZED_STRING_SWIFTUI_SUPPORT = YES;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 5.10;
 			};
 			name = Release;
 		};
+		347747EBBD44E6B82AC217F6 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = TravelMappingWatch/TravelMappingWatch.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				INFOPLIST_FILE = TravelMappingWatch/Info.plist;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.psiegel18.TravelMapping.watch;
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = 4;
+			};
+			name = Debug;
+		};
 		3954CBF6E6C4F22A26348BC4 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = TravelMappingApp/TravelMappingApp.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "Travel Mapping";
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_FILE = TravelMappingApp/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -332,21 +639,75 @@
 			};
 			name = Release;
 		};
+		81F54076C775A2956FAD7E17 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = TravelMappingWidget/TravelMappingWidgetExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				INFOPLIST_FILE = TravelMappingWidget/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.psiegel18.TravelMapping.widget;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 		9008345EC066F47409532F2C /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = TravelMappingApp/TravelMappingApp.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "Travel Mapping";
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_FILE = TravelMappingApp/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.psiegel18.TravelMapping;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		F3D4F7CE18D99148BF371B29 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = TravelMappingWatch/TravelMappingWatch.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				INFOPLIST_FILE = TravelMappingWatch/Info.plist;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.psiegel18.TravelMapping.watch;
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = 4;
+			};
+			name = Release;
+		};
+		F7E2D68DD1CD77F95B6B939A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = TravelMappingWidget/TravelMappingWidgetExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				INFOPLIST_FILE = TravelMappingWidget/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.psiegel18.TravelMapping.widget;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -369,6 +730,24 @@
 			buildConfigurations = (
 				9008345EC066F47409532F2C /* Debug */,
 				3954CBF6E6C4F22A26348BC4 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		A1EF4ED03682D88059BC0224 /* Build configuration list for PBXNativeTarget "TravelMappingWidgetExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F7E2D68DD1CD77F95B6B939A /* Debug */,
+				81F54076C775A2956FAD7E17 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		C05272944E90E298C18D4553 /* Build configuration list for PBXNativeTarget "TravelMappingWatch" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				347747EBBD44E6B82AC217F6 /* Debug */,
+				F3D4F7CE18D99148BF371B29 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
