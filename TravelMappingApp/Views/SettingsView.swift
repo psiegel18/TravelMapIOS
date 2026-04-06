@@ -41,14 +41,6 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Tools") {
-                NavigationLink {
-                    RoutePlannerView()
-                } label: {
-                    Label("Route Planner", systemImage: "arrow.triangle.turn.up.right.diamond")
-                }
-            }
-
             Section {
                 Toggle("iCloud Sync", isOn: $favorites.iCloudSyncEnabled)
             } header: {
@@ -76,15 +68,6 @@ struct SettingsView: View {
                         .frame(width: 30)
                 }
 
-                Picker("Rail Style", selection: $settings.railLineStyle) {
-                    ForEach(MapStyleService.LineStyle.allCases) { style in
-                        HStack {
-                            LineStylePreview(style: style).frame(width: 40)
-                            Text(style.rawValue)
-                        }
-                        .tag(style.rawValue)
-                    }
-                }
                 HStack {
                     Text("Rail Width")
                     Slider(value: $settings.railLineWidth, in: 1...6, step: 0.5)

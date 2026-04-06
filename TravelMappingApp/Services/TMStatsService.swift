@@ -121,6 +121,8 @@ actor TMStatsService {
             guard fields.count == headers.count else { continue }
 
             let username = fields[0]
+            // Skip summary rows (e.g. "TOTAL") that aren't real users
+            if username.uppercased() == "TOTAL" { continue }
             let total = Double(fields[1]) ?? 0
 
             var byRegion: [String: Double] = [:]
@@ -154,6 +156,7 @@ actor TMStatsService {
             guard fields.count == headers.count else { continue }
 
             let username = fields[0]
+            if username.uppercased() == "TOTAL" { continue }
             let total = Double(fields[1]) ?? 0
 
             var byRegion: [String: Double] = [:]

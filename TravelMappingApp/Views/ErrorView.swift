@@ -45,6 +45,7 @@ struct ErrorView: View {
                         .background(.blue, in: Capsule())
                         .foregroundStyle(.white)
                 }
+                .buttonStyle(.plain)
                 .disabled(isRetrying)
                 .opacity(isRetrying ? 0.5 : 1)
             }

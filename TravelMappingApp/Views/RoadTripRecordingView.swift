@@ -44,8 +44,18 @@ struct RoadTripRecordingView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Live map
+            // Live map with GPS trail and matched segments
             Map(position: $mapPosition) {
+                // Draw matched TM segments in green underneath
+                ForEach(Array(recorder.matchedCoordinates.enumerated()), id: \.offset) { _, seg in
+                    MapPolyline(coordinates: [seg.start, seg.end])
+                        .stroke(.green, lineWidth: 5)
+                }
+                // Draw the GPS trail as the user drives
+                if let points = recorder.currentTrip?.rawPoints, points.count > 1 {
+                    MapPolyline(coordinates: points.map(\.coordinate))
+                        .stroke(.blue.opacity(0.7), lineWidth: 3)
+                }
                 UserAnnotation()
             }
             .mapStyle(.standard)

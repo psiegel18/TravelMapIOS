@@ -20,6 +20,7 @@ class TripRecordingService: NSObject, ObservableObject {
     @Published var currentAccuracy: Double = -1  // meters, -1 = unknown
     @Published var currentSpeed: Double = 0       // m/s
     @Published var totalDistance: Double = 0      // meters
+    @Published var matchedCoordinates: [(start: CLLocationCoordinate2D, end: CLLocationCoordinate2D)] = []
 
     // MARK: - Private
 
@@ -69,18 +70,21 @@ class TripRecordingService: NSObject, ObservableObject {
 
     // MARK: - Public API
 
-    func startTrip(name: String? = nil) {
+    private(set) var currentTripType: TripType = .road
+
+    func startTrip(name: String? = nil, tripType: TripType = .road) {
         guard !isRecording else { return }
 
+        currentTripType = tripType
         locationManager.requestAlwaysAuthorization()
         locationManager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
         locationManager.distanceFilter = 50
-        locationManager.activityType = .automotiveNavigation
+        locationManager.activityType = tripType == .rail ? .otherNavigation : .automotiveNavigation
         locationManager.allowsBackgroundLocationUpdates = true
         locationManager.pausesLocationUpdatesAutomatically = true
         locationManager.showsBackgroundLocationIndicator = true
 
-        var trip = RoadTrip(name: name)
+        var trip = RoadTrip(name: name, tripType: tripType)
         trip.status = .recording
         currentTrip = trip
         isRecording = true
@@ -245,7 +249,8 @@ class TripRecordingService: NSObject, ObservableObject {
 
         Task {
             do {
-                let result = try await TravelMappingAPI.shared.getVisibleSegments(
+                let api = currentTripType == .rail ? TravelMappingAPI.rail : TravelMappingAPI.shared
+                let result = try await api.getVisibleSegments(
                     traveler: "",
                     minLat: bbox.minLat,
                     maxLat: bbox.maxLat,
@@ -290,6 +295,7 @@ extension TripRecordingService: CLLocationManagerDelegate {
                 if let matched = segmentMatcher.processPoint(gpsPoint) {
                     currentSegmentName = "\(matched.root) (\(matched.startName) → \(matched.endName))"
                     matchedCount = segmentMatcher.matchedSegments.count
+                    matchedCoordinates = segmentMatcher.matchedSegmentCoordinates
                 }
 
                 // Update Live Activity every 10 points

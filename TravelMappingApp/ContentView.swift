@@ -93,12 +93,20 @@ struct ContentView: View {
             .tag(1)
 
             NavigationStack {
+                RoutePlannerView()
+            }
+            .tabItem {
+                Label("Route Planner", systemImage: "arrow.triangle.turn.up.right.diamond")
+            }
+            .tag(2)
+
+            NavigationStack {
                 LeaderboardView()
             }
             .tabItem {
                 Label("Leaderboard", systemImage: "trophy")
             }
-            .tag(2)
+            .tag(3)
 
             NavigationStack {
                 SettingsView()
@@ -106,7 +114,7 @@ struct ContentView: View {
             .tabItem {
                 Label("Settings", systemImage: "gear")
             }
-            .tag(3)
+            .tag(4)
         }
         .tint(ThemeService.color(named: settings.accentColorName))
     }

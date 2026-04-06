@@ -76,14 +76,14 @@ struct RoadTripDetailView: View {
                         .foregroundStyle(.secondary)
                 }
                 VStack {
-                    Text("\(trip.rawPoints.count)")
+                    Text(trip.rawPoints.count.formatted())
                         .font(.title2.bold())
                     Text("GPS Points")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 VStack {
-                    Text("\(trip.matchedSegments.count)")
+                    Text(trip.matchedSegments.count.formatted())
                         .font(.title2.bold())
                     Text("Segments")
                         .font(.caption)

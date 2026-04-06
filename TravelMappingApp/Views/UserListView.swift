@@ -114,6 +114,9 @@ struct UserListView: View {
                 dataService.loadUserList()
             }
         }
+        .refreshable {
+            dataService.loadUserList()
+        }
     }
 }
 

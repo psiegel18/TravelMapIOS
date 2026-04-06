@@ -83,14 +83,40 @@ struct RoutePlannerView: View {
                             Spacer()
                             Label(formatTime(route.expectedTravelTime), systemImage: "clock")
                             Spacer()
-                            Label("\(tmSegments.count) TM segments", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+                            Label("\(tmSegments.count.formatted()) TM segments", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
                         }
                         .font(.caption)
                         if !primaryUser.isEmpty {
                             let clinched = tmSegments.filter(\.isClinched).count
-                            Text("\(clinched)/\(tmSegments.count) already traveled")
+                            Text("\(clinched.formatted())/\(tmSegments.count.formatted()) already traveled")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
+                        }
+
+                        // Open in navigation apps
+                        if let start = startCoordinate, let end = endCoordinate {
+                            HStack(spacing: 12) {
+                                Button {
+                                    openInAppleMaps(start: start, end: end)
+                                } label: {
+                                    Label("Apple Maps", systemImage: "map.fill")
+                                        .font(.caption.bold())
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 6)
+                                }
+                                .buttonStyle(.bordered)
+
+                                Button {
+                                    openInGoogleMaps(start: start, end: end)
+                                } label: {
+                                    Label("Google Maps", systemImage: "arrow.up.forward.app")
+                                        .font(.caption.bold())
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 6)
+                                }
+                                .buttonStyle(.bordered)
+                            }
+                            .padding(.top, 4)
                         }
                     }
                 }
@@ -198,5 +224,28 @@ struct RoutePlannerView: View {
             }
         }
         return false
+    }
+
+    private func openInAppleMaps(start: CLLocationCoordinate2D, end: CLLocationCoordinate2D) {
+        let source = MKMapItem(placemark: MKPlacemark(coordinate: start))
+        source.name = startQuery
+        let destination = MKMapItem(placemark: MKPlacemark(coordinate: end))
+        destination.name = endQuery
+        MKMapItem.openMaps(with: [source, destination], launchOptions: [
+            MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDriving
+        ])
+    }
+
+    private func openInGoogleMaps(start: CLLocationCoordinate2D, end: CLLocationCoordinate2D) {
+        let urlString = "comgooglemaps://?saddr=\(start.latitude),\(start.longitude)&daddr=\(end.latitude),\(end.longitude)&directionsmode=driving"
+        if let url = URL(string: urlString), UIApplication.shared.canOpenURL(url) {
+            UIApplication.shared.open(url)
+        } else {
+            // Fall back to Google Maps web
+            let webURL = "https://www.google.com/maps/dir/?api=1&origin=\(start.latitude),\(start.longitude)&destination=\(end.latitude),\(end.longitude)&travelmode=driving"
+            if let url = URL(string: webURL) {
+                UIApplication.shared.open(url)
+            }
+        }
     }
 }

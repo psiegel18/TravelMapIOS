@@ -81,7 +81,10 @@ struct StatisticsView: View {
             await loadMileageData()
         }
         .task {
-            await loadMileageData()
+            // Only load if we haven't already — prevents re-fetching on navigation back
+            if allRoutes.isEmpty && regionStats.isEmpty {
+                await loadMileageData()
+            }
         }
     }
 
@@ -178,7 +181,16 @@ struct StatisticsView: View {
                     .font(.title3.bold())
             }
 
-            if inProgress.isEmpty {
+            if isLoadingMileage {
+                HStack {
+                    ProgressView()
+                    Text(loadingProgress ?? "Loading route details...")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+            } else if inProgress.isEmpty {
                 Text("No routes in progress yet")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -231,7 +243,16 @@ struct StatisticsView: View {
                     .font(.title3.bold())
             }
 
-            if clinched.isEmpty {
+            if isLoadingMileage {
+                HStack {
+                    ProgressView()
+                    Text(loadingProgress ?? "Loading route details...")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+            } else if clinched.isEmpty {
                 Text("No fully clinched routes yet")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -407,10 +428,10 @@ struct StatisticsView: View {
                     }
                     .frame(height: 24)
 
-                    Text("\(count)")
+                    Text(count.formatted())
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .frame(width: 40, alignment: .trailing)
+                        .frame(width: 50, alignment: .trailing)
                 }
             }
         }
@@ -434,6 +455,7 @@ struct StatisticsView: View {
         // PHASE 2: Load detailed route data from API (for Closest to Clinched etc)
         let total = allRegions.count
         var stats: [RegionStat] = []
+        var loadedRoutes: [RouteInfo] = []
         var completed = 0
         allRoutes = []
 
@@ -478,7 +500,7 @@ struct StatisticsView: View {
                 for await result in group {
                     if let r = result {
                         stats.append(r.stat)
-                        allRoutes.append(contentsOf: r.routes)
+                        loadedRoutes.append(contentsOf: r.routes)
                     }
                     completed += 1
                     loadingProgress = "Loading route details \(completed)/\(total)..."
@@ -490,6 +512,7 @@ struct StatisticsView: View {
         }
 
         regionStats = stats
+        allRoutes = loadedRoutes
 
         // Load rail totals from TM Rail API
         var railClinched: Double = 0

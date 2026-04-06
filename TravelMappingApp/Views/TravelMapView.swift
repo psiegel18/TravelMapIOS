@@ -5,6 +5,7 @@ import CoreLocation
 struct TravelMapView: View {
     let username: String
     let dataService: DataService
+    @Binding var loadedRegionsBinding: Set<String>
     @State private var segments: [TravelMappingAPI.MapSegment] = []
     @State private var routeMetadata: [TravelMappingAPI.RouteMetadata] = []
     @State private var isLoading = true
@@ -23,6 +24,7 @@ struct TravelMapView: View {
     @State private var mapStyle: MapStyleOption = .standard
     @State private var currentSpanLat: Double = 5.0
     @State private var currentSpanLng: Double = 5.0
+    @State private var visibleRegion: MKCoordinateRegion?
     @StateObject private var locationManager = LocationManager()
     @State private var showLegend = false
     @State private var zoomToUserOnNextFix = false
@@ -39,6 +41,7 @@ struct TravelMapView: View {
         let startName: String
         let endName: String
         let isClinched: Bool
+        let isRail: Bool
     }
 
     enum MapStyleOption: String, CaseIterable {
@@ -113,6 +116,12 @@ struct TravelMapView: View {
             if sameLine, let last = currentCoords.last,
                distance(last, seg.start) < 500 { // within 500m = same line
                 currentCoords.append(seg.end)
+                // Split long polylines so MapKit renders dash patterns consistently
+                if currentCoords.count >= maxPolylineCoords {
+                    result.append(MergedPolyline(id: polyID, coordinates: currentCoords, isClinched: currentClinched, root: currentRoot))
+                    polyID += 1
+                    currentCoords = [seg.end]
+                }
             } else {
                 // Flush previous
                 if currentCoords.count >= 2 {
@@ -135,6 +144,11 @@ struct TravelMapView: View {
         mergedRailPolylines = mergeSegments(railSegments, startID: 500_000)
     }
 
+    /// Max coordinates per polyline — keeps MapKit dash rendering consistent on long routes.
+    /// MapKit stops rendering dash patterns on geographically long polylines,
+    /// so we keep this low to ensure dashes stay visible.
+    private let maxPolylineCoords = 15
+
     private func mergeSegments(_ segs: [TravelMappingAPI.MapSegment], startID: Int = 0) -> [MergedPolyline] {
         let filtered = segs.sorted { $0.root < $1.root || ($0.root == $1.root && $0.id < $1.id) }
         var result: [MergedPolyline] = []
@@ -147,6 +161,12 @@ struct TravelMapView: View {
             if seg.root == root && seg.isClinched == clinched,
                let last = coords.last, distance(last, seg.start) < 500 {
                 coords.append(seg.end)
+                // Split long polylines so MapKit renders dash patterns consistently
+                if coords.count >= maxPolylineCoords {
+                    result.append(MergedPolyline(id: polyID, coordinates: coords, isClinched: clinched, root: root))
+                    polyID += 1
+                    coords = [seg.end]  // continue from last point
+                }
             } else {
                 if coords.count >= 2 {
                     result.append(MergedPolyline(id: polyID, coordinates: coords, isClinched: clinched, root: root))
@@ -300,7 +320,7 @@ struct TravelMapView: View {
                 ForEach(displayedPolylines) { poly in
                     MapPolyline(coordinates: poly.coordinates)
                         .stroke(
-                            poly.isClinched ? colorForRoot(poly.root) : .gray.opacity(0.4),
+                            poly.isClinched ? colorForRoot(poly.root) : .gray.opacity(0.7),
                             style: MapStyleService.strokeStyle(
                                 for: MapStyleService.parse(settings.roadLineStyle),
                                 baseWidth: poly.isClinched ? settings.roadLineWidth : 1.5
@@ -308,16 +328,24 @@ struct TravelMapView: View {
                         )
                 }
 
-                // Rail segments
+                // Rail segments — use double-line "railroad" style since
+                // MapKit doesn't reliably render StrokeStyle dash patterns on MapPolyline.
+                // Outer stroke (wider, colored)
                 ForEach(displayedRailPolylines) { poly in
+                    let width = poly.isClinched ? settings.railLineWidth : 2.0
                     MapPolyline(coordinates: poly.coordinates)
                         .stroke(
-                            poly.isClinched ? .red : .gray.opacity(0.3),
-                            style: MapStyleService.strokeStyle(
-                                for: MapStyleService.parse(settings.railLineStyle),
-                                baseWidth: poly.isClinched ? settings.railLineWidth : 2
-                            )
+                            poly.isClinched ? .red : .gray.opacity(0.6),
+                            lineWidth: width
                         )
+                }
+                // Inner stroke (thinner, white) creates the "track" look
+                ForEach(displayedRailPolylines) { poly in
+                    let width = poly.isClinched ? settings.railLineWidth : 2.0
+                    if width > 2 {
+                        MapPolyline(coordinates: poly.coordinates)
+                            .stroke(.white.opacity(0.5), lineWidth: width * 0.4)
+                    }
                 }
 
                 // Selected segments rendered on top in yellow
@@ -327,6 +355,9 @@ struct TravelMapView: View {
                 }
             }
             .mapStyle(mapStyle.style)
+            .onMapCameraChange { context in
+                visibleRegion = context.region
+            }
             .mapControls {
                 MapCompass()
                 MapScaleView()
@@ -342,39 +373,55 @@ struct TravelMapView: View {
     }
 
     private func handleSegmentTap(at coordinate: CLLocationCoordinate2D) {
-        // Find nearest segment within 200m
-        var bestID: Int?
-        var bestDist: Double = .greatestFiniteMagnitude
-
+        // Only search segments that are currently visible on the map
+        var visibleSegs: [TravelMappingAPI.MapSegment] = []
         for seg in segments {
-            let dist = distanceToSegment(point: coordinate, start: seg.start, end: seg.end)
-            if dist < bestDist {
-                bestDist = dist
-                bestID = seg.id
+            if showClinched && seg.isClinched { visibleSegs.append(seg) }
+            else if showUnclinched && !seg.isClinched { visibleSegs.append(seg) }
+        }
+        if showRail {
+            for seg in railSegments {
+                if showClinched && seg.isClinched { visibleSegs.append(seg) }
+                else if showUnclinched && !seg.isClinched { visibleSegs.append(seg) }
             }
         }
 
-        guard let id = bestID, bestDist < 200 else { return }
+        // Find nearest visible segment within 200m
+        var bestSeg: TravelMappingAPI.MapSegment?
+        var bestDist: Double = .greatestFiniteMagnitude
+
+        for seg in visibleSegs {
+            let dist = distanceToSegment(point: coordinate, start: seg.start, end: seg.end)
+            if dist < bestDist {
+                bestDist = dist
+                bestSeg = seg
+            }
+        }
+
+        guard let seg = bestSeg, bestDist < 200 else { return }
 
         if isSelectMode {
-            if selectedSegmentIDs.contains(id) {
-                selectedSegmentIDs.remove(id)
+            if selectedSegmentIDs.contains(seg.id) {
+                selectedSegmentIDs.remove(seg.id)
                 Haptics.light()
             } else {
-                selectedSegmentIDs.insert(id)
+                selectedSegmentIDs.insert(seg.id)
                 Haptics.selection()
             }
         } else {
-            // Show segment detail
-            guard let seg = segments.first(where: { $0.id == id }) else { return }
-            let listName = routeMetadata.first(where: { $0.root == seg.root })?.listName ?? seg.root
+            // Show segment detail — check both road and rail metadata
+            let isRail = railMetadata.contains(where: { $0.root == seg.root })
+            let listName = routeMetadata.first(where: { $0.root == seg.root })?.listName
+                ?? railMetadata.first(where: { $0.root == seg.root })?.listName
+                ?? seg.root
             Haptics.light()
             tappedSegmentDetail = SegmentDetail(
                 root: seg.root,
                 listName: listName,
                 startName: seg.startName,
                 endName: seg.endName,
-                isClinched: seg.isClinched
+                isClinched: seg.isClinched,
+                isRail: isRail
             )
         }
     }
@@ -425,6 +472,7 @@ struct TravelMapView: View {
             .accessibilityLabel("Zoom out")
         }
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .buttonStyle(.plain)
     }
 
     private var mapStyleButton: some View {
@@ -443,6 +491,7 @@ struct TravelMapView: View {
                 .frame(width: 44, height: 44)
                 .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
         }
+        .buttonStyle(.plain)
         .accessibilityLabel("Map style: \(mapStyle.rawValue)")
         .accessibilityHint("Double tap to change map style")
     }
@@ -464,6 +513,7 @@ struct TravelMapView: View {
                 .frame(width: 44, height: 44)
                 .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
         }
+        .buttonStyle(.plain)
         .accessibilityLabel("Show my location")
     }
 
@@ -486,6 +536,7 @@ struct TravelMapView: View {
                 .frame(width: 44, height: 44)
                 .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
         }
+        .buttonStyle(.plain)
         .accessibilityLabel(showLegend ? "Hide legend" : "Show legend")
     }
 
@@ -495,12 +546,27 @@ struct TravelMapView: View {
             Divider()
             legendRow(color: .blue, style: MapStyleService.parse(settings.roadLineStyle), label: "Traveled road")
             legendRow(color: .gray.opacity(0.5), style: .solid, label: "Remaining road")
-            legendRow(color: .red, style: MapStyleService.parse(settings.railLineStyle), label: "Traveled rail")
+            railLegendRow(label: "Traveled rail")
             legendRow(color: .yellow, style: .thick, label: "Selected")
         }
         .font(.caption2)
         .padding(10)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func railLegendRow(label: String) -> some View {
+        HStack(spacing: 6) {
+            Canvas { ctx, size in
+                let y = size.height / 2
+                var path = Path()
+                path.move(to: CGPoint(x: 0, y: y))
+                path.addLine(to: CGPoint(x: size.width, y: y))
+                ctx.stroke(path, with: .color(.red), lineWidth: 3)
+                ctx.stroke(path, with: .color(.white.opacity(0.5)), lineWidth: 1.2)
+            }
+            .frame(width: 28, height: 8)
+            Text(label)
+        }
     }
 
     private func legendRow(color: Color, style: MapStyleService.LineStyle, label: String) -> some View {
@@ -530,6 +596,7 @@ struct TravelMapView: View {
                 .frame(width: 44, height: 44)
                 .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
         }
+        .buttonStyle(.plain)
         .accessibilityLabel(isSelectMode ? "Exit select mode" : "Enter select mode")
         .accessibilityHint("Tap segments on the map to select them for export")
     }
@@ -588,16 +655,49 @@ struct TravelMapView: View {
         return ListFileGenerator.generateFromMapSegments(selected, routeMetadata: routeMetadata)
     }
 
+    /// Normalize a string for flexible route matching by removing hyphens,
+    /// dots, spaces, and leading zeros in numeric portions (e.g. "I-094" → "i94").
+    private func normalizeRouteString(_ s: String) -> String {
+        let stripped = s.lowercased()
+            .replacingOccurrences(of: "-", with: "")
+            .replacingOccurrences(of: ".", with: "")
+            .replacingOccurrences(of: " ", with: "")
+        // Remove leading zeros from numeric segments: "i094" → "i94"
+        var result = ""
+        var inDigits = false
+        var leadingZero = true
+        for ch in stripped {
+            if ch.isNumber {
+                if !inDigits { inDigits = true; leadingZero = true }
+                if leadingZero && ch == "0" { continue }
+                leadingZero = false
+                result.append(ch)
+            } else {
+                if inDigits && result.last?.isNumber != true {
+                    // All digits were zeros — keep a single "0"
+                    result.append("0")
+                }
+                inDigits = false
+                result.append(ch)
+            }
+        }
+        if inDigits && (result.isEmpty || !result.last!.isNumber) {
+            result.append("0")
+        }
+        return result
+    }
+
     private func zoomToRoute(_ search: String) {
-        let searchLower = search.lowercased()
-        // Find matching route in metadata
-        guard let meta = routeMetadata.first(where: {
-            $0.listName.localizedCaseInsensitiveContains(searchLower) ||
-            $0.root.localizedCaseInsensitiveContains(searchLower)
+        let normalizedSearch = normalizeRouteString(search)
+        // Find matching route in road or rail metadata
+        let allMetadata = routeMetadata + railMetadata
+        guard let meta = allMetadata.first(where: {
+            normalizeRouteString($0.listName).contains(normalizedSearch) ||
+            normalizeRouteString($0.root).contains(normalizedSearch)
         }) else { return }
 
-        // Find all segments for that route
-        let routeSegs = segments.filter { $0.root == meta.root }
+        // Find all segments for that route in both road and rail
+        let routeSegs = (segments + railSegments).filter { $0.root == meta.root }
         guard !routeSegs.isEmpty else { return }
 
         let lats = routeSegs.flatMap { [$0.start.latitude, $0.end.latitude] }
@@ -620,18 +720,16 @@ struct TravelMapView: View {
     private func zoomOut() { adjustZoom(factor: 2.0) }
 
     private func adjustZoom(factor: Double) {
-        guard !displayedPolylines.isEmpty else { return }
-        let allLats = displayedPolylines.flatMap { $0.coordinates.map(\.latitude) }
-        let allLngs = displayedPolylines.flatMap { $0.coordinates.map(\.longitude) }
-        let centerLat = (allLats.min()! + allLats.max()!) / 2
-        let centerLng = (allLngs.min()! + allLngs.max()!) / 2
+        // Use the tracked visible region so zoom stays in place
+        guard let currentRegion = visibleRegion else { return }
+        let center = currentRegion.center
 
-        currentSpanLat = min(max(currentSpanLat * factor, 0.001), 180)
-        currentSpanLng = min(max(currentSpanLng * factor, 0.001), 360)
+        currentSpanLat = min(max(currentRegion.span.latitudeDelta * factor, 0.001), 180)
+        currentSpanLng = min(max(currentRegion.span.longitudeDelta * factor, 0.001), 360)
 
         withAnimation {
             mapPosition = .region(MKCoordinateRegion(
-                center: CLLocationCoordinate2D(latitude: centerLat, longitude: centerLng),
+                center: center,
                 span: MKCoordinateSpan(latitudeDelta: currentSpanLat, longitudeDelta: currentSpanLng)
             ))
         }
@@ -659,7 +757,7 @@ struct TravelMapView: View {
                 HStack(spacing: 4) {
                     Image(systemName: showClinched ? "checkmark.circle.fill" : "circle")
                         .foregroundStyle(.blue)
-                    Text("Traveled (\(clinchedCount))")
+                    Text("Traveled (\(clinchedCount.formatted()))")
                         .font(.caption2)
                 }
             }
@@ -674,7 +772,7 @@ struct TravelMapView: View {
                 HStack(spacing: 4) {
                     Image(systemName: showUnclinched ? "checkmark.circle.fill" : "circle")
                         .foregroundStyle(.gray)
-                    Text("Remaining (\(totalCount - clinchedCount))")
+                    Text("Remaining (\((totalCount - clinchedCount).formatted()))")
                         .font(.caption2)
                 }
             }
@@ -955,6 +1053,9 @@ struct TravelMapView: View {
         zoomToLoadedSegments()
         Haptics.success()
 
+        // Report loaded regions to parent for share
+        loadedRegionsBinding = Set(regionsToLoad)
+
         loadingProgress = nil
         isLoading = false
     }
@@ -1112,15 +1213,16 @@ struct SegmentDetailSheet: View {
                 .frame(maxWidth: .infinity)
                 .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
 
-                // Route progress link
+                // Route detail link
                 NavigationLink {
-                    RouteProgressView(
-                        username: username,
+                    RouteDetailView(
                         root: detail.root,
-                        listName: detail.listName
+                        listName: detail.listName,
+                        username: username,
+                        isRail: detail.isRail
                     )
                 } label: {
-                    Label("View Route Progress", systemImage: "chart.bar.xaxis")
+                    Label("View Full Route", systemImage: "map")
                         .frame(maxWidth: .infinity)
                         .padding()
                         .background(.blue.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))

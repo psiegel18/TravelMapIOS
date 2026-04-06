@@ -119,7 +119,7 @@ struct YourRankRow: View {
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 4) {
-                Text(String(format: "%.0f %@", displayMiles, unit))
+                Text("\(Int(displayMiles).formatted()) \(unit)")
                     .font(.title3.bold())
                     .monospacedDigit()
                 Text("traveled")

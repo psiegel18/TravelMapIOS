@@ -47,6 +47,9 @@ struct RegionDetailView: View {
         .task {
             await load()
         }
+        .refreshable {
+            await load()
+        }
     }
 
     private var overviewCard: some View {
@@ -67,14 +70,14 @@ struct RegionDetailView: View {
                         .foregroundStyle(.secondary)
                 }
                 VStack {
-                    Text("\(routes.count)")
+                    Text(routes.count.formatted())
                         .font(.title2.bold())
                     Text("routes")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 VStack {
-                    Text("\(clinchedCount)")
+                    Text(clinchedCount.formatted())
                         .font(.title2.bold())
                     Text("clinched")
                         .font(.caption)

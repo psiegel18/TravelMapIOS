@@ -126,6 +126,28 @@ class SegmentMatcher {
         }
     }
 
+    /// Returns coordinates for all segments that have been matched during this trip.
+    var matchedSegmentCoordinates: [(start: CLLocationCoordinate2D, end: CLLocationCoordinate2D)] {
+        var coords: [(CLLocationCoordinate2D, CLLocationCoordinate2D)] = []
+        var seen = Set<String>()
+        for seg in matchedSegments {
+            let key = "\(seg.root)|\(seg.startWaypoint)|\(seg.endWaypoint)"
+            guard !seen.contains(key) else { continue }
+            seen.insert(key)
+            // Find the cached segment with matching root and waypoints
+            if let cached = segmentCache.values.first(where: {
+                $0.root == seg.root && $0.startName == seg.startWaypoint && $0.endName == seg.endWaypoint
+            }) {
+                coords.append((cached.start, cached.end))
+            }
+        }
+        // Also include the currently active segment
+        if let currentID = currentSegmentID, let seg = segmentCache[currentID] {
+            coords.append((seg.start, seg.end))
+        }
+        return coords
+    }
+
     /// Finalize tracking — flush any in-progress segment.
     func finalizeTrip() -> [MatchedSegment] {
         if currentSegmentID != nil {

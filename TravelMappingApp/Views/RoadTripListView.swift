@@ -33,15 +33,28 @@ struct RoadTripListView: View {
                 } else {
                     Button {
                         Haptics.success()
-                        recorder.startTrip()
+                        recorder.startTrip(tripType: .road)
                     } label: {
-                        Label("Start Road Trip", systemImage: "location.fill")
+                        Label("Start Road Trip", systemImage: "car.fill")
                             .font(.headline)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 8)
                     }
                     .buttonStyle(.borderedProminent)
                     .accessibilityHint("Begins GPS tracking to record which roads you drive on")
+
+                    Button {
+                        Haptics.success()
+                        recorder.startTrip(tripType: .rail)
+                    } label: {
+                        Label("Start Train Trip", systemImage: "tram.fill")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+                    .accessibilityHint("Begins GPS tracking to record which rail segments you ride on")
                 }
             }
 
@@ -138,14 +151,19 @@ struct TripRowView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(trip.name)
-                .font(.headline)
+            HStack(spacing: 6) {
+                Image(systemName: trip.tripType == .rail ? "tram.fill" : "car.fill")
+                    .foregroundStyle(trip.tripType == .rail ? .red : .blue)
+                    .font(.caption)
+                Text(trip.name)
+                    .font(.headline)
+            }
             HStack(spacing: 12) {
                 Label(trip.startDate.formatted(date: .abbreviated, time: .shortened), systemImage: "calendar")
                 if let dur = trip.duration {
                     Label(formatDuration(dur), systemImage: "clock")
                 }
-                Label("\(trip.matchedSegments.count) segments", systemImage: "road.lanes")
+                Label("\(trip.matchedSegments.count) segments", systemImage: trip.tripType == .rail ? "tram" : "road.lanes")
             }
             .font(.caption)
             .foregroundStyle(.secondary)

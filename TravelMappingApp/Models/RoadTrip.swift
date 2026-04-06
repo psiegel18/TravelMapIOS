@@ -8,6 +8,11 @@ enum TripStatus: String, Codable {
     case failed
 }
 
+enum TripType: String, Codable {
+    case road
+    case rail
+}
+
 enum TravelDirection: String, Codable {
     case forward   // traveled w1 -> w2
     case reverse   // traveled w2 -> w1
@@ -68,6 +73,7 @@ struct RoadTrip: Identifiable, Codable {
     let startDate: Date
     var endDate: Date?
     var status: TripStatus
+    var tripType: TripType
     var rawPoints: [GPSPoint]
     var matchedSegments: [MatchedSegment]
 
@@ -86,13 +92,28 @@ struct RoadTrip: Identifiable, Codable {
         return "\(minutes)m"
     }
 
-    init(name: String? = nil) {
+    // Backward-compatible decoding — existing trips without tripType default to .road
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        notes = try container.decodeIfPresent(String.self, forKey: .notes) ?? ""
+        startDate = try container.decode(Date.self, forKey: .startDate)
+        endDate = try container.decodeIfPresent(Date.self, forKey: .endDate)
+        status = try container.decode(TripStatus.self, forKey: .status)
+        tripType = try container.decodeIfPresent(TripType.self, forKey: .tripType) ?? .road
+        rawPoints = try container.decode([GPSPoint].self, forKey: .rawPoints)
+        matchedSegments = try container.decode([MatchedSegment].self, forKey: .matchedSegments)
+    }
+
+    init(name: String? = nil, tripType: TripType = .road) {
         self.id = UUID()
-        self.name = name ?? "Trip on \(Date().formatted(date: .abbreviated, time: .omitted))"
+        self.name = name ?? "\(tripType == .rail ? "Train Trip" : "Trip") on \(Date().formatted(date: .abbreviated, time: .omitted))"
         self.notes = ""
         self.startDate = Date()
         self.endDate = nil
         self.status = .recording
+        self.tripType = tripType
         self.rawPoints = []
         self.matchedSegments = []
     }

@@ -35,7 +35,7 @@ struct RouteProgressView: View {
                                 .foregroundStyle(percentage >= 100 ? .green : .blue)
                             ProgressView(value: Double(clinchedCount), total: Double(max(totalCount, 1)))
                                 .tint(percentage >= 100 ? .green : .blue)
-                            Text("\(clinchedCount) / \(totalCount) segments")
+                            Text("\(clinchedCount.formatted()) / \(totalCount.formatted()) segments")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -89,6 +89,9 @@ struct RouteProgressView: View {
         .task {
             await loadRouteData()
         }
+        .refreshable {
+            await loadRouteData()
+        }
     }
 
     private func loadRouteData() async {
@@ -104,7 +107,7 @@ struct RouteProgressView: View {
             }
 
             var wps: [WaypointStatus] = []
-            for (i, coord) in route.coordinates.enumerated() {
+            for (i, _) in route.coordinates.enumerated() {
                 let clinched = i < route.clinched.count ? route.clinched[i] : false
                 wps.append(WaypointStatus(
                     id: i,

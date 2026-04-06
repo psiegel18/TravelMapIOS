@@ -86,9 +86,10 @@ struct GetStartedView: View {
                     Text("You can use this app to generate .list entries:")
                     bullet("Open any user's map")
                     bullet("Tap the pencil icon to enter Select Mode")
-                    bullet("Tap segments on the map that you've driven")
+                    bullet("Tap segments on the map that you've driven or ridden")
                     bullet("Copy or share the generated .list text")
-                    bullet("Or record a Road Trip and auto-generate entries from GPS!")
+                    bullet("Record a Road Trip or Train Trip to auto-generate entries from GPS!")
+                    bullet("Use the Route Planner tab to preview TM segments along a planned route")
                 }
 
                 stepCard(
@@ -156,6 +157,8 @@ struct GetStartedView: View {
                 .padding(.top, 8)
             }
             .padding()
+            .frame(maxWidth: 700)
+            .frame(maxWidth: .infinity)
         }
         .navigationTitle("Get Started")
         .navigationBarTitleDisplayMode(.inline)
@@ -204,6 +207,7 @@ struct GetStartedView: View {
             .padding(.leading, 52)
         }
         .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
     }
 

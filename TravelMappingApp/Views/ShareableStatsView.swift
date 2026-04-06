@@ -14,11 +14,12 @@ struct ShareableStatsCard: View {
     let regions: Int
     let routes: Int
     let clinchedMiles: Double
-    let totalMiles: Double
+    let useMiles: Bool
 
-    var percentage: Double {
-        totalMiles > 0 ? clinchedMiles / totalMiles * 100 : 0
+    private var displayValue: Int {
+        Int(useMiles ? clinchedMiles : clinchedMiles * 1.60934)
     }
+    private var unit: String { useMiles ? "mi" : "km" }
 
     var body: some View {
         VStack(spacing: 16) {
@@ -34,38 +35,31 @@ struct ShareableStatsCard: View {
                 .font(.title3)
                 .foregroundStyle(.secondary)
 
-            HStack(spacing: 24) {
+            HStack(spacing: 0) {
                 VStack {
-                    Text("\(regions)")
-                        .font(.title.bold())
+                    Text(regions.formatted())
+                        .font(.title2.bold())
                     Text("Regions")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                .frame(maxWidth: .infinity)
                 VStack {
-                    Text("\(routes)")
-                        .font(.title.bold())
+                    Text(routes.formatted())
+                        .font(.title2.bold())
                     Text("Routes")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                .frame(maxWidth: .infinity)
                 VStack {
-                    Text(String(format: "%.0f mi", clinchedMiles))
-                        .font(.title.bold())
-                    Text("Traveled")
+                    Text(displayValue.formatted())
+                        .font(.title2.bold())
+                    Text("\(unit) Traveled")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-            }
-
-            if totalMiles > 0 {
-                VStack(spacing: 4) {
-                    ProgressView(value: clinchedMiles, total: totalMiles)
-                        .tint(.blue)
-                    Text(String(format: "%.1f%% of %.0f miles", percentage, totalMiles))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                .frame(maxWidth: .infinity)
             }
 
             Text("travelmapping.net")
@@ -82,9 +76,73 @@ struct ShareableStatsCard: View {
 
 @MainActor
 func renderShareImage(view: some View) -> UIImage? {
-    let renderer = ImageRenderer(content: view)
+    // Force light mode so card is always visible
+    let wrapped = view.environment(\.colorScheme, .light)
+    let renderer = ImageRenderer(content: wrapped)
     renderer.scale = UIScreen.main.scale
     return renderer.uiImage
+}
+
+// MARK: - Share Preview (shows card before sharing)
+
+struct SharePreviewView: View {
+    let image: UIImage?
+    @Environment(\.dismiss) private var dismiss
+    @State private var showShareSheet = false
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 20) {
+                Text("Share Preview")
+                    .font(.headline)
+
+                if let image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxHeight: 400)
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                        .shadow(radius: 8)
+                } else {
+                    VStack(spacing: 8) {
+                        Image(systemName: "photo.badge.exclamationmark")
+                            .font(.largeTitle)
+                            .foregroundStyle(.secondary)
+                        Text("Could not generate preview")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Button {
+                    showShareSheet = true
+                } label: {
+                    Label("Share", systemImage: "square.and.arrow.up")
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(.blue, in: RoundedRectangle(cornerRadius: 16))
+                }
+                .buttonStyle(.plain)
+                .disabled(image == nil)
+
+                Spacer()
+            }
+            .padding()
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+            .sheet(isPresented: $showShareSheet) {
+                if let image {
+                    ShareSheet(items: [image])
+                }
+            }
+        }
+    }
 }
 
 // MARK: - Share Sheet (presented via UIKit for reliability)

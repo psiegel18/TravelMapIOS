@@ -5,6 +5,7 @@ struct RouteDetailView: View {
     let root: String
     let listName: String
     let username: String
+    var isRail: Bool = false
 
     @State private var routeDetail: TravelMappingAPI.RouteDetail?
     @State private var isLoading = true
@@ -28,6 +29,7 @@ struct RouteDetailView: View {
         .navigationTitle(listName)
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
+        .refreshable { await load() }
     }
 
     @ViewBuilder
@@ -46,7 +48,7 @@ struct RouteDetailView: View {
             ForEach(Array(detail.segments.enumerated()), id: \.offset) { index, segment in
                 MapPolyline(coordinates: [segment.start, segment.end])
                     .stroke(
-                        segment.clinched ? Color.blue : Color.gray.opacity(0.4),
+                        segment.clinched ? Color.blue : Color.gray.opacity(0.7),
                         style: StrokeStyle(
                             lineWidth: segment.clinched ? 4 : 2,
                             lineCap: .round
@@ -99,7 +101,7 @@ struct RouteDetailView: View {
             // Legend
             HStack(spacing: 16) {
                 legendItem(color: .blue, label: "Traveled")
-                legendItem(color: .gray.opacity(0.4), label: "Remaining")
+                legendItem(color: .gray.opacity(0.7), label: "Remaining")
                 Spacer()
             }
             .font(.caption2)
@@ -137,7 +139,8 @@ struct RouteDetailView: View {
         isLoading = true
         errorMessage = nil
         do {
-            let details = try await TravelMappingAPI.shared.getRouteData(
+            let api = isRail ? TravelMappingAPI.rail : TravelMappingAPI.shared
+            let details = try await api.getRouteData(
                 roots: [root],
                 traveler: username
             )

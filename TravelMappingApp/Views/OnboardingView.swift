@@ -27,6 +27,7 @@ struct OnboardingView: View {
                     .padding()
                     .background(.blue, in: RoundedRectangle(cornerRadius: 16))
             }
+            .buttonStyle(.plain)
             .padding(.horizontal)
             .padding(.bottom, 60)
         }
