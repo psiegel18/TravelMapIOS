@@ -31,6 +31,8 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>Travel Mapping needs continuous location access to record your road trip routes in the background.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
