@@ -75,6 +75,9 @@ struct ErrorView: View {
         if lower.contains("ssl") || lower.contains("tls") || lower.contains("certificate") {
             return "A secure connection could not be established."
         }
+        if lower.contains("couldn't be read") || lower.contains("is missing") || lower.contains("not valid json") {
+            return "The server returned an unexpected response. Please try again."
+        }
         return raw
     }
 }

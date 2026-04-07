@@ -5,7 +5,10 @@ struct StatisticsView: View {
     @State private var regionStats: [RegionStat] = []
     @State private var railTotals: CategoryTotals = .init()
     @State private var isLoadingMileage = true
-    @State private var loadingProgress: String?
+    @State private var isLoadingRoutes = true
+    @State private var isLoadingRail = true
+    @State private var loadedRegionCount = 0
+    @State private var totalRegionCount = 0
     @AppStorage("useMiles") private var useMiles = true
 
     struct RegionStat: Identifiable {
@@ -40,6 +43,7 @@ struct StatisticsView: View {
 
     @State private var allRoutes: [RouteInfo] = []
     @State private var rankInfo: (rank: Int, total: Int, percentile: Double)?
+    @State private var regionCountryMap: [String: String] = [:] // region code → country name
 
     private var unit: String { useMiles ? "mi" : "km" }
     private func convert(_ miles: Double) -> Double { useMiles ? miles : miles * 1.60934 }
@@ -61,28 +65,47 @@ struct StatisticsView: View {
         return f.string(from: NSNumber(value: n)) ?? "\(n)"
     }
 
+    @State private var regionViewMode: RegionViewMode = .distance
+    @Environment(\.horizontalSizeClass) private var sizeClass
+
+    enum RegionViewMode: String, CaseIterable {
+        case distance = "Distance"
+        case segments = "Segments"
+    }
+
     var body: some View {
         ScrollView {
             VStack(spacing: 20) {
                 unitToggle
                 overviewCard
                 categoryBreakdownCard
-                closestToClinchedCard
-                longestClinchedCard
-                regionMileageCard
-                topRegionsCard
+                if sizeClass == .regular {
+                    HStack(alignment: .top, spacing: 16) {
+                        closestToClinchedCard
+                        longestClinchedCard
+                    }
+                } else {
+                    closestToClinchedCard
+                    longestClinchedCard
+                }
+                regionCard
             }
             .padding()
         }
         .refreshable {
             await CacheService.shared.clearAll()
+            // Reset state so loading indicators show
             regionStats = []
+            allRoutes = []
+            railTotals = .init()
+            rankInfo = nil
             isLoadingMileage = true
+            isLoadingRoutes = true
+            isLoadingRail = true
             await loadMileageData()
         }
         .task {
-            // Only load if we haven't already — prevents re-fetching on navigation back
-            if allRoutes.isEmpty && regionStats.isEmpty {
+            if regionStats.isEmpty {
                 await loadMileageData()
             }
         }
@@ -117,9 +140,25 @@ struct StatisticsView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Roads")
                         .font(.headline)
-                    Text("\(formatInt(roadRoutes)) routes")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    if isLoadingRoutes {
+                        HStack(spacing: 4) {
+                            ProgressView()
+                                .controlSize(.mini)
+                            if totalRegionCount > 0 {
+                                Text("Loading \(loadedRegionCount)/\(totalRegionCount) regions...")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                Text("Loading...")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    } else {
+                        Text("\(formatInt(roadRoutes)) routes")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 2) {
@@ -143,18 +182,30 @@ struct StatisticsView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Rail & Transit")
                         .font(.headline)
-                    Text("\(formatInt(railTotals.routeCount)) routes")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(isLoadingMileage ? "..." : "\(formatNumber(convert(railTotals.clinchedMileage))) \(unit)")
-                        .font(.subheadline.bold())
-                    if railTotals.totalMileage > 0 {
-                        Text(String(format: "%.1f%%", railTotals.clinchedMileage / railTotals.totalMileage * 100))
+                    if isLoadingRail {
+                        HStack(spacing: 4) {
+                            ProgressView()
+                                .controlSize(.mini)
+                            Text("Loading...")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Text("\(formatInt(railTotals.routeCount)) routes")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                if !isLoadingRail {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text("\(formatNumber(convert(railTotals.clinchedMileage))) \(unit)")
+                            .font(.subheadline.bold())
+                        if railTotals.totalMileage > 0 {
+                            Text(String(format: "%.1f%%", railTotals.clinchedMileage / railTotals.totalMileage * 100))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
             }
@@ -181,10 +232,10 @@ struct StatisticsView: View {
                     .font(.title3.bold())
             }
 
-            if isLoadingMileage {
+            if isLoadingRoutes {
                 HStack {
                     ProgressView()
-                    Text(loadingProgress ?? "Loading route details...")
+                    Text(totalRegionCount > 0 ? "Loading \(loadedRegionCount)/\(totalRegionCount) regions..." : "Loading route details...")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -243,10 +294,10 @@ struct StatisticsView: View {
                     .font(.title3.bold())
             }
 
-            if isLoadingMileage {
+            if isLoadingRoutes {
                 HStack {
                     ProgressView()
-                    Text(loadingProgress ?? "Loading route details...")
+                    Text(totalRegionCount > 0 ? "Loading \(loadedRegionCount)/\(totalRegionCount) regions..." : "Loading route details...")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -347,96 +398,146 @@ struct StatisticsView: View {
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
     }
 
-    // MARK: - Per-Region Mileage
+    // MARK: - Combined Region Card (Distance / Segments toggle)
 
-    private var regionMileageCard: some View {
+    private var regionCardTitle: String {
+        regionViewMode == .distance
+            ? "\(useMiles ? "Miles" : "Kilometers") by Region"
+            : "Segments by Region"
+    }
+
+    private var regionCard: some View {
         VStack(spacing: 12) {
-            Text("By Region")
-                .font(.title2.bold())
-                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack {
+                Text(regionCardTitle)
+                    .font(.title2.bold())
+                Spacer()
+            }
 
-            if isLoadingMileage {
-                HStack(spacing: 8) {
-                    ProgressView()
-                    Text(loadingProgress ?? "Loading mileage data...")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+            Picker("View", selection: $regionViewMode) {
+                ForEach(RegionViewMode.allCases, id: \.self) { mode in
+                    Text(mode.rawValue).tag(mode)
                 }
-                .padding()
+            }
+            .pickerStyle(.segmented)
+
+            if regionViewMode == .distance {
+                regionDistanceView
             } else {
-                let sorted = regionStats.sorted { $0.clinchedMileage > $1.clinchedMileage }
-
-                ForEach(sorted) { stat in
-                    NavigationLink {
-                        RegionDetailView(region: stat.region, username: profile.username)
-                    } label: {
-                        HStack {
-                            Text(stat.region)
-                                .font(.headline)
-                                .frame(width: 45, alignment: .leading)
-
-                            VStack(spacing: 2) {
-                                ProgressView(value: stat.clinchedMileage, total: max(stat.totalMileage, 0.01))
-                                    .tint(.blue)
-                                HStack {
-                                    Text("\(formatNumber(convert(stat.clinchedMileage))) / \(formatNumber(convert(stat.totalMileage))) \(unit)")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                    Spacer()
-                                    Text(String(format: "%.1f%%", stat.percentage))
-                                        .font(.caption2.bold())
-                                        .foregroundStyle(stat.percentage >= 100 ? .green : .primary)
-                                }
-                            }
-
-                            Image(systemName: "chevron.right")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                }
+                regionSegmentsView
             }
         }
         .padding()
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
     }
 
-    // MARK: - Top Regions by Segment Count (from local data)
+    private func groupedByCountry<T>(_ items: [(region: String, value: T)]) -> [(country: String, items: [(region: String, value: T)])] {
+        var groups: [String: [(region: String, value: T)]] = [:]
+        for item in items {
+            let country = regionCountryMap[item.region] ?? "Other"
+            groups[country, default: []].append(item)
+        }
+        return groups.sorted { $0.key < $1.key }.map { (country: $0.key, items: $0.value) }
+    }
 
-    private var topRegionsCard: some View {
-        VStack(spacing: 12) {
-            Text("Segments by Region")
-                .font(.title2.bold())
-                .frame(maxWidth: .infinity, alignment: .leading)
+    private var regionDistanceColumns: [GridItem] {
+        let count = sizeClass == .regular ? 3 : 2
+        return Array(repeating: GridItem(.flexible(), spacing: 12), count: count)
+    }
 
-            let regionCounts = computeRegionCounts()
-            let topRegions = regionCounts.sorted { $0.value > $1.value }.prefix(15)
-
-            ForEach(Array(topRegions), id: \.key) { region, count in
-                HStack {
-                    Text(region)
-                        .font(.headline)
-                        .frame(width: 50, alignment: .leading)
-
-                    GeometryReader { geo in
-                        let maxCount = topRegions.first?.value ?? 1
-                        let width = geo.size.width * CGFloat(count) / CGFloat(maxCount)
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(.blue.opacity(0.6))
-                            .frame(width: max(width, 2), height: 24)
-                    }
-                    .frame(height: 24)
-
-                    Text(count.formatted())
+    private var regionDistanceView: some View {
+        Group {
+            if isLoadingMileage {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("Loading mileage data...")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .frame(width: 50, alignment: .trailing)
+                }
+                .padding()
+            } else {
+                let sorted = regionStats.sorted { $0.clinchedMileage > $1.clinchedMileage }
+                let grouped = groupedByCountry(sorted.map { (region: $0.region, value: $0) })
+
+                ForEach(grouped, id: \.country) { country, stats in
+                    if grouped.count > 1 {
+                        Text(country)
+                            .font(.caption.bold())
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 8)
+                    }
+
+                    LazyVGrid(columns: regionDistanceColumns, spacing: 8) {
+                        ForEach(stats, id: \.region) { item in
+                            let stat = item.value
+                            NavigationLink {
+                                RegionDetailView(region: stat.region, username: profile.username)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack {
+                                        Text(stat.region)
+                                            .font(.headline)
+                                        Spacer()
+                                        Text(String(format: "%.1f%%", stat.percentage))
+                                            .font(.caption2.bold())
+                                            .foregroundStyle(stat.percentage >= 100 ? .green : .primary)
+                                    }
+                                    ProgressView(value: stat.clinchedMileage, total: max(stat.totalMileage, 0.01))
+                                        .tint(.blue)
+                                    Text("\(formatNumber(convert(stat.clinchedMileage))) / \(formatNumber(convert(stat.totalMileage))) \(unit)")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .padding(10)
+                                .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 8))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
                 }
             }
         }
-        .padding()
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private var regionSegmentsView: some View {
+        Group {
+            let regionCounts = computeRegionCounts()
+            let topRegions = regionCounts.sorted { $0.value > $1.value }
+            let grouped = groupedByCountry(topRegions.map { (region: $0.key, value: $0.value) })
+
+            ForEach(grouped, id: \.country) { country, items in
+                if grouped.count > 1 {
+                    Text(country)
+                        .font(.caption.bold())
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, 8)
+                }
+
+                let maxCount = topRegions.first?.value ?? 1
+                ForEach(items, id: \.region) { item in
+                    HStack {
+                        Text(item.region)
+                            .font(.headline)
+                            .frame(width: 50, alignment: .leading)
+
+                        GeometryReader { geo in
+                            let width = geo.size.width * CGFloat(item.value) / CGFloat(maxCount)
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(.blue.opacity(0.6))
+                                .frame(width: max(width, 2), height: 24)
+                        }
+                        .frame(height: 24)
+
+                        Text(item.value.formatted())
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 50, alignment: .trailing)
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - Data Loading
@@ -445,100 +546,160 @@ struct StatisticsView: View {
         let username = profile.username
         let allRegions = Array(profile.allRegions).sorted()
 
-        // PHASE 1: Fast load from CSV (all regions at once, ~1 second)
-        loadingProgress = "Loading stats..."
-        if let userStats = try? await loadFromCSV(username: username, userRegions: Set(allRegions)) {
-            regionStats = userStats
-            // Stats shown immediately while Phase 2 loads route-level data
+        // Load region → country mapping (cached after first fetch)
+        if regionCountryMap.isEmpty {
+            do {
+                let catalog = try await TravelMappingAPI.shared.getAllRoutes()
+                var mapping: [String: String] = [:]
+                let regions = catalog.regions ?? []
+                let countries = catalog.countries ?? []
+                for (i, region) in regions.enumerated() where i < countries.count {
+                    if mapping[region] == nil {
+                        mapping[region] = countries[i]
+                    }
+                }
+                regionCountryMap = mapping
+            } catch {
+                print("[Stats] Failed to load country map: \(error)")
+            }
         }
 
-        // PHASE 2: Load detailed route data from API (for Closest to Clinched etc)
-        let total = allRegions.count
-        var stats: [RegionStat] = []
-        var loadedRoutes: [RouteInfo] = []
-        var completed = 0
-        allRoutes = []
+        // PHASE 1: Load from CSV — instant, gives clinched + total available per region
+        do {
+            if let csvStats = try await loadFromCSV(username: username, userRegions: Set(allRegions)) {
+                regionStats = csvStats
+                isLoadingMileage = false // Show CSV data immediately
+            }
+        } catch {
+            print("[Stats] CSV load failed: \(error)")
+        }
 
-        // Load 6 regions in parallel per batch
-        let batchSize = 6
-        for batchStart in stride(from: 0, to: allRegions.count, by: batchSize) {
-            let batchEnd = min(batchStart + batchSize, allRegions.count)
-            let batch = Array(allRegions[batchStart..<batchEnd])
+        // PHASE 2: Load route-level data AND rail totals in parallel
+        // Small batches (3 regions) = ~2.5MB/6s each vs 25 regions = 21MB/65s
+        isLoadingRoutes = true
+        isLoadingRail = true
+        totalRegionCount = allRegions.count
+        loadedRegionCount = 0
+        let batchSize = 3
 
-            await withTaskGroup(of: (stat: RegionStat, routes: [RouteInfo])?.self) { group in
-                for region in batch {
-                    group.addTask {
-                        do {
-                            let result = try await TravelMappingAPI.shared.getRegionSegments(
-                                region: region,
-                                traveler: username
-                            )
-                            let totalMi = result.routes.reduce(0.0) { $0 + $1.mileage }
-                            let clinchedMi = result.routes.reduce(0.0) { $0 + $1.clinchedMileage }
-                            let routes = result.routes.map { r in
-                                RouteInfo(
-                                    id: r.root,
-                                    root: r.root,
-                                    listName: r.listName,
-                                    mileage: r.mileage,
-                                    clinchedMileage: r.clinchedMileage
+        // Kick off rail loading concurrently — different server, no contention
+        async let railResult = loadRailTotals(regions: allRegions, username: username, batchSize: batchSize)
+
+        // Load road routes with incremental UI updates
+        await loadRouteDetailsIncrementally(regions: allRegions, username: username, batchSize: batchSize)
+        isLoadingRoutes = false
+
+        // Merge route counts into regionStats (CSV data preserved as mileage source)
+        if !allRoutes.isEmpty {
+            var routeCountByRegion: [String: Int] = [:]
+            for route in allRoutes {
+                let region = String(route.root.split(separator: ".").first ?? "").uppercased()
+                routeCountByRegion[region, default: 0] += 1
+            }
+
+            if regionStats.isEmpty {
+                // No CSV data — build regionStats from route-level data
+                var routesByRegion: [String: (mileage: Double, clinched: Double, count: Int)] = [:]
+                for route in allRoutes {
+                    let region = String(route.root.split(separator: ".").first ?? "").uppercased()
+                    var entry = routesByRegion[region] ?? (0, 0, 0)
+                    entry.mileage += route.mileage
+                    entry.clinched += route.clinchedMileage
+                    entry.count += 1
+                    routesByRegion[region] = entry
+                }
+                regionStats = routesByRegion.map { region, data in
+                    RegionStat(id: region, region: region,
+                               totalMileage: data.mileage, clinchedMileage: data.clinched,
+                               routeCount: data.count)
+                }
+            } else {
+                // Merge route counts into existing CSV-derived stats
+                regionStats = regionStats.map { stat in
+                    RegionStat(id: stat.id, region: stat.region,
+                               totalMileage: stat.totalMileage, clinchedMileage: stat.clinchedMileage,
+                               routeCount: routeCountByRegion[stat.region] ?? stat.routeCount)
+                }
+            }
+        }
+
+        railTotals = await railResult
+        isLoadingRail = false
+        isLoadingMileage = false
+    }
+
+    /// Loads route details in small batches and updates allRoutes incrementally
+    /// so the user sees Closest/Longest Clinched populate as data arrives.
+    /// Does NOT overwrite regionStats — CSV data from Phase 1 is preserved.
+    private func loadRouteDetailsIncrementally(regions: [String], username: String, batchSize: Int) async {
+        await withTaskGroup(of: (Int, [RouteInfo]).self) { group in
+            for batchStart in stride(from: 0, to: regions.count, by: batchSize) {
+                let batchEnd = min(batchStart + batchSize, regions.count)
+                let batch = Array(regions[batchStart..<batchEnd])
+                group.addTask {
+                    // Wrap in unstructured Task so URLSession requests
+                    // survive parent cancellation (e.g. refreshable ending)
+                    await withCheckedContinuation { continuation in
+                        Task {
+                            do {
+                                let result = try await TravelMappingAPI.shared.getRegionSegments(
+                                    regions: batch, traveler: username
                                 )
+                                let routes = result.routes.map { r in
+                                    RouteInfo(id: r.root, root: r.root, listName: r.listName,
+                                              mileage: r.mileage, clinchedMileage: r.clinchedMileage)
+                                }
+                                continuation.resume(returning: (batch.count, routes))
+                            } catch {
+                                print("[Stats] Route batch failed (\(batch.prefix(3))...): \(error)")
+                                continuation.resume(returning: (batch.count, []))
                             }
-                            return (stat: RegionStat(
-                                id: region,
-                                region: region,
-                                totalMileage: totalMi,
-                                clinchedMileage: clinchedMi,
-                                routeCount: result.routes.count
-                            ), routes: routes)
-                        } catch {
-                            return nil
                         }
                     }
                 }
-
-                for await result in group {
-                    if let r = result {
-                        stats.append(r.stat)
-                        loadedRoutes.append(contentsOf: r.routes)
-                    }
-                    completed += 1
-                    loadingProgress = "Loading route details \(completed)/\(total)..."
-                }
             }
-
-            // Update progressively
-            regionStats = stats
+            for await (count, routes) in group {
+                loadedRegionCount += count
+                allRoutes.append(contentsOf: routes)
+            }
         }
+    }
 
-        regionStats = stats
-        allRoutes = loadedRoutes
-
-        // Load rail totals from TM Rail API
+    private func loadRailTotals(regions: [String], username: String, batchSize: Int) async -> CategoryTotals {
         var railClinched: Double = 0
         var railTotal: Double = 0
         var railRoutes: Int = 0
-        for region in allRegions {
-            do {
-                let r = try await TravelMappingAPI.rail.getRegionSegments(
-                    region: region,
-                    traveler: username
-                )
-                railTotal += r.routes.reduce(0.0) { $0 + $1.mileage }
-                railClinched += r.routes.reduce(0.0) { $0 + $1.clinchedMileage }
-                railRoutes += r.routes.count
-            } catch {
-                // no rail data for this region
+        await withTaskGroup(of: (Double, Double, Int).self) { group in
+            for batchStart in stride(from: 0, to: regions.count, by: batchSize) {
+                let batchEnd = min(batchStart + batchSize, regions.count)
+                let batch = Array(regions[batchStart..<batchEnd])
+                group.addTask {
+                    await withCheckedContinuation { continuation in
+                        Task {
+                            do {
+                                let r = try await TravelMappingAPI.rail.getRegionSegments(
+                                    regions: batch, traveler: username
+                                )
+                                continuation.resume(returning: (
+                                    r.routes.reduce(0.0) { $0 + $1.clinchedMileage },
+                                    r.routes.reduce(0.0) { $0 + $1.mileage },
+                                    r.routes.count
+                                ))
+                            } catch {
+                                print("[Stats] Rail batch failed: \(error)")
+                                continuation.resume(returning: (0.0, 0.0, 0))
+                            }
+                        }
+                    }
+                }
+            }
+            for await (c, t, n) in group {
+                railClinched += c
+                railTotal += t
+                railRoutes += n
             }
         }
-        railTotals = CategoryTotals(
-            clinchedMileage: railClinched,
-            totalMileage: railTotal,
-            routeCount: railRoutes
-        )
-
-        loadingProgress = nil
-        isLoadingMileage = false
+        return CategoryTotals(clinchedMileage: railClinched, totalMileage: railTotal, routeCount: railRoutes)
     }
 
     private func loadFromCSV(username: String, userRegions: Set<String>) async throws -> [RegionStat]? {
@@ -552,16 +713,29 @@ struct StatisticsView: View {
             rankInfo = (rank: pos.rank, total: snapshot.userCount, percentile: pos.percentile)
         }
 
-        // Convert to RegionStat (total mileage unknown from CSV, set equal to clinched for now)
+        // Build RegionStats using clinched from user data + total available from TOTAL row
         var stats: [RegionStat] = []
-        for (region, miles) in user.byRegion where userRegions.contains(region) {
+        for (region, clinchedMiles) in user.byRegion where userRegions.contains(region) {
+            let totalAvailable = snapshot.regionTotals[region] ?? clinchedMiles
             stats.append(RegionStat(
                 id: region,
                 region: region,
-                totalMileage: miles, // will be updated by API phase
-                clinchedMileage: miles,
+                totalMileage: totalAvailable,
+                clinchedMileage: clinchedMiles,
                 routeCount: 0
             ))
+        }
+        // Also add regions the user hasn't traveled but has in their profile
+        for region in userRegions where user.byRegion[region] == nil {
+            if let totalAvailable = snapshot.regionTotals[region] {
+                stats.append(RegionStat(
+                    id: region,
+                    region: region,
+                    totalMileage: totalAvailable,
+                    clinchedMileage: 0,
+                    routeCount: 0
+                ))
+            }
         }
         return stats
     }

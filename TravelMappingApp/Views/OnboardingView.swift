@@ -6,6 +6,8 @@ struct OnboardingView: View {
     @AppStorage("watchUsername") private var watchUsername = ""
     @State private var page = 0
     @State private var usernameInput = ""
+    @State private var isValidating = false
+    @State private var validationError: String?
 
     var body: some View {
         TabView(selection: $page) {
@@ -20,14 +22,23 @@ struct OnboardingView: View {
                 Haptics.light()
                 advance()
             } label: {
-                Text(page < 2 ? "Next" : "Get Started")
-                    .font(.headline)
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(.blue, in: RoundedRectangle(cornerRadius: 16))
+                if isValidating {
+                    ProgressView()
+                        .tint(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(.blue, in: RoundedRectangle(cornerRadius: 16))
+                } else {
+                    Text(page < 2 ? "Next" : "Get Started")
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(.blue, in: RoundedRectangle(cornerRadius: 16))
+                }
             }
             .buttonStyle(.plain)
+            .disabled(isValidating)
             .padding(.horizontal)
             .padding(.bottom, 60)
         }
@@ -37,8 +48,42 @@ struct OnboardingView: View {
         if page < 2 {
             withAnimation { page += 1 }
         } else {
-            finish()
+            let trimmed = usernameInput.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty {
+                finish()
+            } else {
+                Task { await validateAndFinish(trimmed) }
+            }
         }
+    }
+
+    private func validateAndFinish(_ username: String) async {
+        isValidating = true
+        validationError = nil
+
+        let exists = await validateUsername(username)
+        isValidating = false
+
+        if exists {
+            finish()
+        } else {
+            validationError = "Username \"\(username)\" not found on Travel Mapping. Check your spelling or leave blank to skip."
+        }
+    }
+
+    private func validateUsername(_ username: String) async -> Bool {
+        let url = URL(string: "https://travelmapping.net/lib/getTravelerRoutes.php?dbname=TravelMapping")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.httpBody = "params={\"traveler\":\"\(username)\"}".data(using: .utf8)
+
+        guard let (data, _) = try? await URLSession.shared.data(for: request),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let routes = json["routes"] as? [Any] else {
+            return false
+        }
+        return !routes.isEmpty
     }
 
     private func finish() {
@@ -46,7 +91,6 @@ struct OnboardingView: View {
         if !trimmed.isEmpty {
             settings.primaryUser = trimmed
             watchUsername = trimmed
-            // Auto-favorite your own profile
             FavoritesService.shared.addFavorite(trimmed)
         }
         isPresented = false
@@ -109,6 +153,15 @@ struct OnboardingView: View {
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
                 .padding(.horizontal, 40)
+                .onChange(of: usernameInput) { validationError = nil }
+
+            if let error = validationError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 40)
+            }
 
             VStack(spacing: 8) {
                 Text("New to Travel Mapping?")

@@ -3,13 +3,16 @@ import MapKit
 
 struct RoadTripDetailView: View {
     @State var trip: RoadTrip
-    @State private var showShareSheet = false
-    @State private var shareURL: URL?
+    @State private var shareContent: ShareContent?
+    @State private var showExportSheet = false
+    @State private var exportURL: URL?
     @State private var replayProgress: Double = 1.0  // 0.0 to 1.0
     @State private var isPlaying = false
     @State private var playTimer: Timer?
     @State private var notesText: String = ""
     @FocusState private var notesFocused: Bool
+    @State private var mapPosition: MapCameraPosition = .automatic
+    @State private var visibleRegion: MKCoordinateRegion?
 
     var body: some View {
         ScrollView {
@@ -43,24 +46,20 @@ struct RoadTripDetailView: View {
                 .accessibilityLabel("Share options")
             }
         }
-        .sheet(isPresented: $showShareSheet) {
-            if let image = shareItemImage {
-                ShareSheet(items: [image])
-            } else if let url = shareURL {
+        .sheet(item: $shareContent) { content in
+            SharePreviewSheet(content: content)
+        }
+        .sheet(isPresented: $showExportSheet) {
+            if let url = exportURL {
                 ShareSheet(items: [url])
             }
         }
     }
 
-    @State private var shareItemImage: UIImage?
-
     private func shareImage() {
         Task {
-            let image = await renderTripShareImage(trip: trip)
-            await MainActor.run {
-                shareItemImage = image
-                shareURL = nil
-                showShareSheet = image != nil
+            if let image = await renderTripShareImage(trip: trip) {
+                shareContent = .trip(image: image)
             }
         }
     }
@@ -108,22 +107,65 @@ struct RoadTripDetailView: View {
 
     private var tripMap: some View {
         VStack(spacing: 8) {
-            Map {
-                if replayCoordinates.count > 1 {
-                    MapPolyline(coordinates: replayCoordinates)
-                        .stroke(.blue, lineWidth: 3)
-                }
-                // Current position marker
-                if let last = replayCoordinates.last {
-                    Annotation("", coordinate: last) {
-                        Image(systemName: "car.fill")
-                            .foregroundStyle(.white)
-                            .padding(6)
-                            .background(.blue, in: Circle())
+            ZStack(alignment: .topTrailing) {
+                Map(position: $mapPosition) {
+                    if replayCoordinates.count > 1 {
+                        MapPolyline(coordinates: replayCoordinates)
+                            .stroke(.blue, lineWidth: 3)
+                    }
+                    // Current position marker
+                    if let last = replayCoordinates.last {
+                        Annotation("", coordinate: last) {
+                            Image(systemName: "car.fill")
+                                .foregroundStyle(.white)
+                                .padding(6)
+                                .background(.blue, in: Circle())
+                        }
                     }
                 }
+                .mapStyle(.standard)
+                .onMapCameraChange { context in
+                    visibleRegion = context.region
+                }
+
+                // Map controls
+                VStack(spacing: 6) {
+                    Button {
+                        adjustZoom(factor: 0.5)
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.caption.bold())
+                            .frame(width: 32, height: 32)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        adjustZoom(factor: 2.0)
+                    } label: {
+                        Image(systemName: "minus")
+                            .font(.caption.bold())
+                            .frame(width: 32, height: 32)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+
+                    // Legend
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 4) {
+                            RoundedRectangle(cornerRadius: 1).fill(.blue).frame(width: 14, height: 3)
+                            Text("GPS").font(.system(size: 9))
+                        }
+                        HStack(spacing: 4) {
+                            RoundedRectangle(cornerRadius: 1).fill(.green).frame(width: 14, height: 3)
+                            Text("Matched").font(.system(size: 9))
+                        }
+                    }
+                    .padding(6)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                }
+                .padding(8)
             }
-            .mapStyle(.standard)
             .frame(height: 260)
             .clipShape(RoundedRectangle(cornerRadius: 16))
 
@@ -201,6 +243,19 @@ struct RoadTripDetailView: View {
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
     }
 
+    private func adjustZoom(factor: Double) {
+        guard let currentRegion = visibleRegion else { return }
+        let center = currentRegion.center
+        let newLatDelta = min(max(currentRegion.span.latitudeDelta * factor, 0.001), 180)
+        let newLngDelta = min(max(currentRegion.span.longitudeDelta * factor, 0.001), 360)
+        withAnimation {
+            mapPosition = .region(MKCoordinateRegion(
+                center: center,
+                span: MKCoordinateSpan(latitudeDelta: newLatDelta, longitudeDelta: newLngDelta)
+            ))
+        }
+    }
+
     private func saveNotes() {
         trip.notes = notesText
         let updatedTrip = trip
@@ -248,9 +303,8 @@ struct RoadTripDetailView: View {
         Task {
             do {
                 let url = try await TripStorageService.shared.exportListFile(for: trip)
-                shareItemImage = nil
-                shareURL = url
-                showShareSheet = true
+                exportURL = url
+                showExportSheet = true
             } catch {
                 print("Export failed: \(error)")
             }

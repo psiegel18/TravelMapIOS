@@ -9,6 +9,7 @@ struct RoadTripRecordingView: View {
     @State private var showNameEditor = false
     @State private var editedName = ""
     @State private var showMidTripSegments = false
+    @State private var visibleRegion: MKCoordinateRegion?
 
     private var distanceInPreferredUnit: String {
         let miles = recorder.totalDistance / 1609.34
@@ -45,21 +46,64 @@ struct RoadTripRecordingView: View {
     var body: some View {
         VStack(spacing: 0) {
             // Live map with GPS trail and matched segments
-            Map(position: $mapPosition) {
-                // Draw matched TM segments in green underneath
-                ForEach(Array(recorder.matchedCoordinates.enumerated()), id: \.offset) { _, seg in
-                    MapPolyline(coordinates: [seg.start, seg.end])
-                        .stroke(.green, lineWidth: 5)
+            ZStack(alignment: .topTrailing) {
+                Map(position: $mapPosition) {
+                    // Draw matched TM segments in green underneath
+                    ForEach(Array(recorder.matchedCoordinates.enumerated()), id: \.offset) { _, seg in
+                        MapPolyline(coordinates: [seg.start, seg.end])
+                            .stroke(.green, lineWidth: 5)
+                    }
+                    // Draw the GPS trail as the user drives
+                    if let points = recorder.currentTrip?.rawPoints, points.count > 1 {
+                        MapPolyline(coordinates: points.map(\.coordinate))
+                            .stroke(.blue.opacity(0.7), lineWidth: 3)
+                    }
+                    UserAnnotation()
                 }
-                // Draw the GPS trail as the user drives
-                if let points = recorder.currentTrip?.rawPoints, points.count > 1 {
-                    MapPolyline(coordinates: points.map(\.coordinate))
-                        .stroke(.blue.opacity(0.7), lineWidth: 3)
+                .mapStyle(.standard)
+                .mapControls { MapCompass() }
+                .onMapCameraChange { context in
+                    visibleRegion = context.region
                 }
-                UserAnnotation()
+
+                // Map controls
+                VStack(spacing: 6) {
+                    Button {
+                        adjustZoom(factor: 0.5)
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.caption.bold())
+                            .frame(width: 32, height: 32)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        adjustZoom(factor: 2.0)
+                    } label: {
+                        Image(systemName: "minus")
+                            .font(.caption.bold())
+                            .frame(width: 32, height: 32)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+
+                    // Legend
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 4) {
+                            RoundedRectangle(cornerRadius: 1).fill(.blue.opacity(0.7)).frame(width: 14, height: 3)
+                            Text("GPS").font(.system(size: 9))
+                        }
+                        HStack(spacing: 4) {
+                            RoundedRectangle(cornerRadius: 1).fill(.green).frame(width: 14, height: 3)
+                            Text("Matched").font(.system(size: 9))
+                        }
+                    }
+                    .padding(6)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                }
+                .padding(8)
             }
-            .mapStyle(.standard)
-            .mapControls { MapCompass() }
             .frame(maxHeight: .infinity)
 
             // Recording dashboard
@@ -178,6 +222,7 @@ struct RoadTripRecordingView: View {
                 .padding()
                 .background(.orange, in: RoundedRectangle(cornerRadius: 16))
             }
+            .buttonStyle(.plain)
 
             // Stop
             Button {
@@ -195,6 +240,7 @@ struct RoadTripRecordingView: View {
                     .padding()
                     .background(.red, in: RoundedRectangle(cornerRadius: 16))
             }
+            .buttonStyle(.plain)
         }
         .padding(.horizontal)
     }
@@ -218,7 +264,21 @@ struct RoadTripRecordingView: View {
                     .padding()
                     .background(.blue, in: RoundedRectangle(cornerRadius: 16))
             }
+            .buttonStyle(.plain)
             .padding(.horizontal)
+        }
+    }
+
+    private func adjustZoom(factor: Double) {
+        guard let currentRegion = visibleRegion else { return }
+        let center = currentRegion.center
+        let newLatDelta = min(max(currentRegion.span.latitudeDelta * factor, 0.001), 180)
+        let newLngDelta = min(max(currentRegion.span.longitudeDelta * factor, 0.001), 360)
+        withAnimation {
+            mapPosition = .region(MKCoordinateRegion(
+                center: center,
+                span: MKCoordinateSpan(latitudeDelta: newLatDelta, longitudeDelta: newLngDelta)
+            ))
         }
     }
 

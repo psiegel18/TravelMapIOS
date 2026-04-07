@@ -205,36 +205,56 @@ struct TravelMappingWidgetEntryView: View {
     // MARK: - Small
 
     private var smallWidget: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Image(systemName: "road.lanes")
-                    .foregroundStyle(.blue)
-                    .font(.caption)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 5) {
+                Image("WidgetIcon")
+                    .resizable()
+                    .frame(width: 18, height: 18)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
                 Text(entry.username)
                     .font(.caption.bold())
+                    .foregroundStyle(.white.opacity(0.8))
                     .lineLimit(1)
             }
 
             Spacer()
 
             Text(formatMiles(entry.totalMiles))
-                .font(.system(.title, design: .rounded).bold())
-                .minimumScaleFactor(0.7)
+                .font(.system(size: 36, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+                .minimumScaleFactor(0.6)
                 .lineLimit(1)
-            Text("miles")
+            Text("miles traveled")
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.white.opacity(0.5))
 
             Spacer()
 
             if entry.rank > 0 {
-                HStack(spacing: 4) {
-                    Image(systemName: "trophy.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.yellow)
-                    Text("#\(entry.rank) · \(String(format: "%.0f%%", entry.percentile))")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "trophy.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.yellow)
+                        Text("#\(entry.rank.formatted())")
+                            .font(.caption.bold())
+                            .foregroundStyle(.white)
+                        Text("· \(entry.routes.formatted()) routes")
+                            .font(.caption2)
+                            .foregroundStyle(.white.opacity(0.5))
+                    }
+
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Capsule()
+                                .fill(.white.opacity(0.15))
+                                .frame(height: 4)
+                            Capsule()
+                                .fill(LinearGradient(colors: [.cyan, .blue], startPoint: .leading, endPoint: .trailing))
+                                .frame(width: max(geo.size.width * entry.percentile / 100, 4), height: 4)
+                        }
+                    }
+                    .frame(height: 4)
                 }
             }
         }
@@ -243,127 +263,179 @@ struct TravelMappingWidgetEntryView: View {
     // MARK: - Medium
 
     private var mediumWidget: some View {
-        HStack(spacing: 16) {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Image(systemName: "road.lanes")
-                        .foregroundStyle(.blue)
+        HStack(spacing: 12) {
+            // Left: Identity & Miles
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 5) {
+                    Image("WidgetIcon")
+                        .resizable()
+                        .frame(width: 20, height: 20)
+                        .clipShape(RoundedRectangle(cornerRadius: 5))
                     Text("Travel Mapping")
                         .font(.caption.bold())
+                        .foregroundStyle(.white.opacity(0.7))
                 }
 
                 Text(entry.username)
-                    .font(.headline)
+                    .font(.headline.bold())
+                    .foregroundStyle(.white)
                     .lineLimit(1)
-
-                if entry.rank > 0 {
-                    HStack(spacing: 4) {
-                        Image(systemName: "trophy.fill")
-                            .font(.caption2)
-                            .foregroundStyle(.yellow)
-                        Text("#\(entry.rank) of \(entry.userCount)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
 
                 Spacer()
 
-                Text(String(format: "Top %.1f%%", entry.percentile))
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-
-            Spacer()
-
-            VStack(spacing: 2) {
                 Text(formatMiles(entry.totalMiles))
-                    .font(.system(.title, design: .rounded).bold())
+                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
                     .minimumScaleFactor(0.6)
                     .lineLimit(1)
                 Text("miles traveled")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white.opacity(0.5))
 
-                Divider()
-                    .frame(width: 60)
-                    .padding(.vertical, 2)
+                Spacer()
 
-                HStack(spacing: 10) {
-                    VStack(spacing: 0) {
-                        Text("\(entry.routes)")
-                            .font(.subheadline.bold())
-                        Text("routes")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    VStack(spacing: 0) {
-                        Text("\(entry.regionCount)")
-                            .font(.subheadline.bold())
-                        Text("regions")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                if entry.rank > 0 {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Top \(String(format: "%.1f%%", entry.percentile))")
+                            .font(.caption2.bold())
+                            .foregroundStyle(.cyan)
+                        GeometryReader { geo in
+                            ZStack(alignment: .leading) {
+                                Capsule()
+                                    .fill(.white.opacity(0.15))
+                                Capsule()
+                                    .fill(LinearGradient(colors: [.cyan, .blue], startPoint: .leading, endPoint: .trailing))
+                                    .frame(width: max(geo.size.width * entry.percentile / 100, 4))
+                            }
+                        }
+                        .frame(height: 5)
                     }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            // Divider
+            Rectangle()
+                .fill(.white.opacity(0.12))
+                .frame(width: 1)
+                .padding(.vertical, 4)
+
+            // Right: Rank & Stats
+            VStack(spacing: 8) {
+                if entry.rank > 0 {
+                    HStack(spacing: 4) {
+                        Image(systemName: "trophy.fill")
+                            .font(.caption)
+                            .foregroundStyle(.yellow)
+                        Text("#\(entry.rank.formatted())")
+                            .font(.title3.bold())
+                            .foregroundStyle(.white)
+                    }
+                }
+
+                HStack(spacing: 12) {
+                    VStack(spacing: 2) {
+                        Text("\(entry.routes.formatted())")
+                            .font(.headline.bold())
+                            .foregroundStyle(.cyan)
+                        Text("routes")
+                            .font(.caption2)
+                            .foregroundStyle(.white.opacity(0.5))
+                    }
+                    VStack(spacing: 2) {
+                        Text("\(entry.regionCount.formatted())")
+                            .font(.headline.bold())
+                            .foregroundStyle(.green)
+                        Text("regions")
+                            .font(.caption2)
+                            .foregroundStyle(.white.opacity(0.5))
+                    }
+                }
+
+                if !entry.topRegion.isEmpty {
+                    VStack(spacing: 2) {
+                        Text(entry.topRegion)
+                            .font(.headline.bold())
+                            .foregroundStyle(.orange)
+                        Text("\(formatMiles(entry.topRegionMiles)) mi")
+                            .font(.caption2)
+                            .foregroundStyle(.white.opacity(0.5))
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity)
         }
     }
 
     // MARK: - Large
 
     private var largeWidget: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             // Header
             HStack {
-                Image(systemName: "road.lanes")
-                    .foregroundStyle(.blue)
+                Image("WidgetIcon")
+                    .resizable()
+                    .frame(width: 24, height: 24)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
                 Text("Travel Mapping")
                     .font(.headline.bold())
+                    .foregroundStyle(.white)
                 Spacer()
                 Text(entry.username)
+                    .font(.caption.bold())
+                    .foregroundStyle(.white.opacity(0.8))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(.white.opacity(0.1), in: Capsule())
+            }
+
+            // Hero: Miles
+            VStack(alignment: .leading, spacing: 2) {
+                Text(formatMiles(entry.totalMiles))
+                    .font(.system(size: 48, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .minimumScaleFactor(0.5)
+                    .lineLimit(1)
+                Text("miles traveled")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white.opacity(0.5))
             }
 
-            // Main stat
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(formatMiles(entry.totalMiles))
-                        .font(.system(.largeTitle, design: .rounded).bold())
-                    Text("miles traveled")
+            // Rank + Percentile
+            if entry.rank > 0 {
+                HStack(spacing: 8) {
+                    Image(systemName: "trophy.fill")
+                        .foregroundStyle(.yellow)
+                    Text("#\(entry.rank.formatted())")
+                        .font(.title3.bold())
+                        .foregroundStyle(.white)
+                    Text("of \(entry.userCount.formatted())")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.white.opacity(0.5))
+                    Spacer()
+                    Text("Top \(String(format: "%.1f%%", entry.percentile))")
+                        .font(.caption.bold())
+                        .foregroundStyle(.cyan)
                 }
-                Spacer()
-                VStack(alignment: .trailing, spacing: 2) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "trophy.fill")
-                            .foregroundStyle(.yellow)
-                        Text("#\(entry.rank)")
-                            .font(.title3.bold())
+
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(.white.opacity(0.12))
+                        Capsule()
+                            .fill(LinearGradient(colors: [.cyan, .blue, .purple], startPoint: .leading, endPoint: .trailing))
+                            .frame(width: max(geo.size.width * entry.percentile / 100, 6))
                     }
-                    Text("of \(entry.userCount)")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Text(String(format: "Top %.1f%%", entry.percentile))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
                 }
+                .frame(height: 6)
             }
 
-            Divider()
-
-            // Stats grid
-            HStack {
-                statTile(value: "\(entry.routes)", label: "Routes", color: .blue)
-                statTile(value: "\(entry.regionCount)", label: "Regions", color: .green)
+            // Stats cards
+            HStack(spacing: 8) {
+                statCard(value: "\(entry.routes.formatted())", label: "Routes", icon: "road.lanes", color: .cyan)
+                statCard(value: "\(entry.regionCount.formatted())", label: "Regions", icon: "map", color: .green)
                 if !entry.topRegion.isEmpty {
-                    statTile(
-                        value: entry.topRegion,
-                        label: "Top Region",
-                        color: .orange,
-                        subtext: String(format: "%.0f mi", entry.topRegionMiles)
-                    )
+                    statCard(value: entry.topRegion, label: "Top Region", icon: "star.fill", color: .orange, subtext: "\(formatMiles(entry.topRegionMiles)) mi")
                 }
             }
 
@@ -372,27 +444,32 @@ struct TravelMappingWidgetEntryView: View {
             // Footer
             Text("Updated \(entry.date.formatted(date: .omitted, time: .shortened))")
                 .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.white.opacity(0.3))
         }
     }
 
-    private func statTile(value: String, label: String, color: Color, subtext: String? = nil) -> some View {
-        VStack(spacing: 2) {
+    private func statCard(value: String, label: String, icon: String, color: Color, subtext: String? = nil) -> some View {
+        VStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.caption)
+                .foregroundStyle(color)
             Text(value)
                 .font(.title3.bold())
-                .foregroundStyle(color)
+                .foregroundStyle(.white)
                 .minimumScaleFactor(0.7)
                 .lineLimit(1)
             Text(label)
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.white.opacity(0.5))
             if let sub = subtext {
                 Text(sub)
                     .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(color.opacity(0.7))
             }
         }
         .frame(maxWidth: .infinity)
+        .padding(.vertical, 10)
+        .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
     }
 
     // MARK: - Accessory (Lock Screen)
@@ -462,7 +539,16 @@ struct TravelMappingWidget: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: kind, provider: TravelStatsProvider()) { entry in
             TravelMappingWidgetEntryView(entry: entry)
-                .containerBackground(.fill.tertiary, for: .widget)
+                .containerBackground(for: .widget) {
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.06, green: 0.10, blue: 0.24),
+                            Color(red: 0.13, green: 0.08, blue: 0.30)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                }
         }
         .configurationDisplayName("Travel Stats")
         .description("Shows your Travel Mapping rank, miles, and regions.")
