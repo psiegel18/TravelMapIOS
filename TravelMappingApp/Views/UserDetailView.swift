@@ -7,9 +7,10 @@ struct UserDetailView: View {
     @State private var profile: UserProfile?
     @State private var isLoading = true
     @State private var selectedTab = 0
-    @State private var shareItem: ShareItem?
+    @State private var shareContent: ShareContent?
     @State private var mapLoadedRegions: Set<String> = []
     @State private var userMiles: Double = 0
+    @State private var regionCountryMap: [String: String] = [:]
     @ObservedObject private var settings = SyncedSettingsService.shared
 
     var body: some View {
@@ -45,19 +46,19 @@ struct UserDetailView: View {
                     .padding(.horizontal)
                     .padding(.vertical, 8)
 
-                    // Use ZStack to keep views alive and avoid zero-size layout
+                    // Use ZStack with opacity to keep all views alive across tab switches
                     ZStack {
                         listTab(profile: profile)
                             .opacity(selectedTab == 0 ? 1 : 0)
                             .allowsHitTesting(selectedTab == 0)
 
-                        if selectedTab == 1 {
-                            TravelMapView(
-                                username: username,
-                                dataService: dataService,
-                                loadedRegionsBinding: $mapLoadedRegions
-                            )
-                        }
+                        TravelMapView(
+                            username: username,
+                            dataService: dataService,
+                            loadedRegionsBinding: $mapLoadedRegions
+                        )
+                        .opacity(selectedTab == 1 ? 1 : 0)
+                        .allowsHitTesting(selectedTab == 1)
 
                         StatisticsView(profile: profile)
                             .opacity(selectedTab == 2 ? 1 : 0)
@@ -85,15 +86,22 @@ struct UserDetailView: View {
                         }
                         Button {
                             Haptics.light()
-                            shareMapScreenshot()
+                            shareMap()
                         } label: {
-                            Label("Share Map Screenshot", systemImage: "map")
+                            Label("Share Map", systemImage: "map")
                         }
                         Button {
                             Haptics.light()
                             shareLink()
                         } label: {
                             Label("Share Profile Link", systemImage: "link")
+                        }
+                        Divider()
+                        Button {
+                            Haptics.light()
+                            copyLink()
+                        } label: {
+                            Label("Copy Profile Link", systemImage: "doc.on.doc")
                         }
                     } label: {
                         Image(systemName: "square.and.arrow.up")
@@ -102,18 +110,32 @@ struct UserDetailView: View {
                 }
             }
         }
-        .sheet(item: $shareItem) { item in
-            SharePreviewView(image: item.image)
+        .sheet(item: $shareContent) { content in
+            SharePreviewSheet(content: content)
         }
         .task {
             SyncedSettingsService.shared.recordRecentUser(username)
             profile = await dataService.loadUserProfile(username: username)
-            // Load mileage from cached leaderboard data
+            // Show profile immediately so StatisticsView can start loading
+            isLoading = false
+            // Load supporting data in background (doesn't block the UI)
             if let snapshot = try? await TMStatsService.shared.loadRegionStats(forceRefresh: false),
                let user = snapshot.users.first(where: { $0.username.lowercased() == username.lowercased() }) {
                 userMiles = user.totalMiles
             }
-            isLoading = false
+            if regionCountryMap.isEmpty {
+                if let catalog = try? await TravelMappingAPI.shared.getAllRoutes() {
+                    var mapping: [String: String] = [:]
+                    let regions = catalog.regions ?? []
+                    let countries = catalog.countries ?? []
+                    for (i, region) in regions.enumerated() where i < countries.count {
+                        if mapping[region] == nil {
+                            mapping[region] = countries[i]
+                        }
+                    }
+                    regionCountryMap = mapping
+                }
+            }
         }
         .refreshable {
             profile = await dataService.loadUserProfile(username: username)
@@ -135,44 +157,51 @@ struct UserDetailView: View {
     private func shareStats() {
         guard let profile else { return }
         Task {
-            // Look up mileage from cached leaderboard data
             var clinched = 0.0
+            var rank: (rank: Int, total: Int)? = nil
             if let snapshot = try? await TMStatsService.shared.loadRegionStats(forceRefresh: false),
                let user = snapshot.users.first(where: { $0.username.lowercased() == username.lowercased() }) {
                 clinched = user.totalMiles
+                if let pos = snapshot.position(of: username) {
+                    rank = (rank: pos.rank, total: snapshot.userCount)
+                }
             }
-            let card = ShareableStatsCard(
+            let card = ProfileShareCard(
                 username: username,
                 regions: profile.allRegions.count,
                 routes: profile.allRoutes.count,
                 clinchedMiles: clinched,
-                useMiles: SyncedSettingsService.shared.useMiles
+                useMiles: SyncedSettingsService.shared.useMiles,
+                rank: rank
             )
             if let image = renderShareImage(view: card) {
-                shareItem = ShareItem(image: image)
+                let subtitle = "\(profile.allRegions.count.formatted()) regions, \(profile.allRoutes.count.formatted()) routes"
+                shareContent = .stats(image: image, username: username, subtitle: subtitle)
             }
         }
     }
 
-    private func shareMapScreenshot() {
-        // Use only the currently loaded regions, not all
+    private func shareMap() {
         let regions = mapLoadedRegions.isEmpty ? [] : Array(mapLoadedRegions)
-        guard !regions.isEmpty else { return }
+        guard !regions.isEmpty, let profile else { return }
 
         Task {
-            let image = await renderMapSnapshot(
+            guard let mapImage = await renderMapSnapshot(username: username, regions: regions) else { return }
+
+            let mapCard = MapShareCard(
                 username: username,
-                regions: regions
+                mapImage: mapImage,
+                regionCount: profile.allRegions.count,
+                routeCount: profile.allRoutes.count
             )
-            if let image {
-                shareItem = ShareItem(image: image)
+            if let cardImage = renderShareImage(view: mapCard) {
+                shareContent = .map(image: mapImage, cardImage: cardImage, username: username)
             }
         }
     }
 
     @MainActor
     private func renderMapSnapshot(username: String, regions: [String]) async -> UIImage? {
-        // Get segments for all loaded regions
         var allSegments: [TravelMappingAPI.MapSegment] = []
         for region in regions {
             if let result = try? await TravelMappingAPI.shared.getRegionSegments(
@@ -185,7 +214,6 @@ struct UserDetailView: View {
 
         guard !allSegments.isEmpty else { return nil }
 
-        // Compute bounding box
         let lats = allSegments.flatMap { [$0.start.latitude, $0.end.latitude] }
         let lngs = allSegments.flatMap { [$0.start.longitude, $0.end.longitude] }
         let centerLat = (lats.min()! + lats.max()!) / 2
@@ -198,12 +226,11 @@ struct UserDetailView: View {
             center: CLLocationCoordinate2D(latitude: centerLat, longitude: centerLng),
             span: MKCoordinateSpan(latitudeDelta: spanLat, longitudeDelta: spanLng)
         )
-        options.size = CGSize(width: 1080, height: 1080)
+        options.size = CGSize(width: 1200, height: 800)
         options.mapType = .standard
 
         guard let snapshot = try? await MKMapSnapshotter(options: options).start() else { return nil }
 
-        // Draw routes on snapshot
         let image = snapshot.image
         UIGraphicsBeginImageContextWithOptions(image.size, true, image.scale)
         defer { UIGraphicsEndImageContext() }
@@ -211,7 +238,7 @@ struct UserDetailView: View {
         image.draw(at: .zero)
         guard let context = UIGraphicsGetCurrentContext() else { return image }
 
-        context.setLineWidth(3)
+        context.setLineWidth(4)
         context.setLineCap(.round)
         context.setLineJoin(.round)
 
@@ -224,31 +251,30 @@ struct UserDetailView: View {
             context.strokePath()
         }
 
-        // Add watermark
-        let watermark = "\(username) · travelmapping.net"
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: UIFont.systemFont(ofSize: 24, weight: .medium),
-            .foregroundColor: UIColor.label.withAlphaComponent(0.6)
-        ]
-        let textSize = watermark.size(withAttributes: attrs)
-        watermark.draw(at: CGPoint(x: 20, y: image.size.height - textSize.height - 20), withAttributes: attrs)
-
         return UIGraphicsGetImageFromCurrentImageContext() ?? image
     }
 
     private func shareLink() {
-        // Share the TM website link for this user
-        let urlString = "https://travelmapping.net/user/mapview.php?u=\(username)"
-        if let url = URL(string: urlString) {
-            DispatchQueue.main.async {
-                let activityVC = UIActivityViewController(activityItems: [url], applicationActivities: nil)
-                if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-                   let root = scene.windows.first?.rootViewController {
-                    activityVC.popoverPresentationController?.sourceView = root.view
-                    root.present(activityVC, animated: true)
-                }
+        guard let profile else { return }
+        Task {
+            let card = ProfileShareCard(
+                username: username,
+                regions: profile.allRegions.count,
+                routes: profile.allRoutes.count,
+                clinchedMiles: userMiles,
+                useMiles: SyncedSettingsService.shared.useMiles,
+                rank: nil
+            )
+            if let image = renderShareImage(view: card) {
+                let subtitle = "\(profile.allRegions.count.formatted()) regions, \(profile.allRoutes.count.formatted()) routes"
+                shareContent = .stats(image: image, username: username, subtitle: subtitle)
             }
         }
+    }
+
+    private func copyLink() {
+        UIPasteboard.general.url = URL(string: "https://travelmapping.net/user/?u=\(username)")
+        Haptics.success()
     }
 
     @ViewBuilder
@@ -285,7 +311,9 @@ struct UserDetailView: View {
             if !regionGroups.isEmpty {
                 CategorySectionView(
                     category: category,
-                    regionGroups: regionGroups
+                    regionGroups: regionGroups,
+                    username: username,
+                    regionCountryMap: regionCountryMap
                 )
             }
         }
@@ -315,35 +343,76 @@ struct StatBox: View {
 struct CategorySectionView: View {
     let category: RouteCategory
     let regionGroups: [(region: String, segments: [TravelSegment])]
-    @State private var isExpanded = true
+    let username: String
+    let regionCountryMap: [String: String]
+    @Environment(\.horizontalSizeClass) private var sizeClass
 
     var totalSegments: Int {
         regionGroups.reduce(0) { $0 + $1.segments.count }
     }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Button {
-                withAnimation { isExpanded.toggle() }
-            } label: {
-                HStack {
-                    Image(systemName: category.systemImage)
-                        .foregroundStyle(.blue)
-                    Text(category.rawValue)
-                        .font(.title3.bold())
-                    Text("(\(totalSegments.formatted()) segments)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .buttonStyle(.plain)
+    private var columns: [GridItem] {
+        let count = sizeClass == .regular ? 4 : 2
+        return Array(repeating: GridItem(.flexible(), spacing: 8), count: count)
+    }
 
-            if isExpanded {
-                ForEach(regionGroups, id: \.region) { group in
-                    RegionGroupView(region: group.region, segments: group.segments)
+    private var groupedByCountry: [(country: String, groups: [(region: String, segments: [TravelSegment])])] {
+        var dict: [String: [(region: String, segments: [TravelSegment])]] = [:]
+        for group in regionGroups {
+            let country = regionCountryMap[group.region] ?? "Other"
+            dict[country, default: []].append(group)
+        }
+        return dict.sorted { $0.key < $1.key }.map { (country: $0.key, groups: $0.value) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Header
+            HStack {
+                Image(systemName: category.systemImage)
+                    .foregroundStyle(.blue)
+                Text("\(category.rawValue) by Region")
+                    .font(.title3.bold())
+                Spacer()
+                Text("\(totalSegments.formatted()) segments")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            let grouped = groupedByCountry
+            ForEach(grouped, id: \.country) { country, groups in
+                if grouped.count > 1 {
+                    Text(country)
+                        .font(.caption.bold())
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 4)
+                }
+
+                LazyVGrid(columns: columns, spacing: 8) {
+                    ForEach(groups, id: \.region) { group in
+                        NavigationLink {
+                            RegionDetailView(region: group.region, username: username)
+                        } label: {
+                            HStack(spacing: 6) {
+                                Text(group.region)
+                                    .font(.subheadline.bold())
+                                Spacer()
+                                Text(group.segments.count.formatted())
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(
+                                Color(.tertiarySystemFill),
+                                in: RoundedRectangle(cornerRadius: 8)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
             }
         }
@@ -352,65 +421,3 @@ struct CategorySectionView: View {
     }
 }
 
-struct RegionGroupView: View {
-    let region: String
-    let segments: [TravelSegment]
-    @State private var isExpanded = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Button {
-                withAnimation { isExpanded.toggle() }
-            } label: {
-                HStack {
-                    Text(region)
-                        .font(.headline)
-                    Text("\(segments.count.formatted()) segments")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .buttonStyle(.plain)
-
-            if isExpanded {
-                ForEach(segments) { segment in
-                    SegmentRowView(segment: segment)
-                }
-            }
-        }
-        .padding(.leading, 8)
-    }
-}
-
-struct SegmentRowView: View {
-    let segment: TravelSegment
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "arrow.right")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(segment.route)
-                    .font(.subheadline.bold())
-                Text("\(segment.waypoint1) → \(segment.waypoint2)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            if let r2 = segment.region2, r2 != segment.region1 {
-                Spacer()
-                Text("→ \(r2)")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-        }
-        .padding(.vertical, 2)
-        .padding(.leading, 12)
-    }
-}

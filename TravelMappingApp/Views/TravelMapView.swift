@@ -18,7 +18,10 @@ struct TravelMapView: View {
     @State private var railMetadata: [TravelMappingAPI.RouteMetadata] = []
     @State private var mapPosition: MapCameraPosition = .automatic
     @State private var selectedRegions: Set<String> = []
+    @State private var pendingRegions: Set<String> = [] // Editable copy for picker
     @State private var availableRegions: [String] = []
+    @State private var allRegionsByCountry: [(country: String, regions: [String])] = []
+    @State private var regionCountryMap: [String: String] = [:]
     @State private var showRegionPicker = false
     @ObservedObject private var settings = SyncedSettingsService.shared
     @State private var mapStyle: MapStyleOption = .standard
@@ -31,6 +34,7 @@ struct TravelMapView: View {
     @State private var isSelectMode = false
     @State private var selectedSegmentIDs: Set<Int> = []
     @State private var showSelectionSheet = false
+    @State private var showSelectionDetail = false
     @State private var routeSearchText = ""
     @State private var tappedSegmentDetail: SegmentDetail?
 
@@ -258,8 +262,18 @@ struct TravelMapView: View {
             SegmentDetailSheet(detail: detail, username: username)
                 .presentationDetents([.medium])
         }
-        .sheet(isPresented: $showRegionPicker) {
+        .sheet(isPresented: $showRegionPicker, onDismiss: {
+            // Commit pending selection when sheet closes
+            if pendingRegions != selectedRegions {
+                selectedRegions = pendingRegions
+            }
+        }) {
             regionPickerSheet
+        }
+        .onChange(of: showRegionPicker) {
+            if showRegionPicker {
+                pendingRegions = selectedRegions
+            }
         }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -348,10 +362,15 @@ struct TravelMapView: View {
                     }
                 }
 
-                // Selected segments rendered on top in yellow
+                // Selected segments: white outline for contrast on any background
                 ForEach(selectedPolylines) { poly in
                     MapPolyline(coordinates: poly.coordinates)
-                        .stroke(.yellow, lineWidth: 5)
+                        .stroke(.white, lineWidth: 9)
+                }
+                // Selected segments: yellow highlight on top
+                ForEach(selectedPolylines) { poly in
+                    MapPolyline(coordinates: poly.coordinates)
+                        .stroke(.yellow, lineWidth: 7)
                 }
             }
             .mapStyle(mapStyle.style)
@@ -601,46 +620,139 @@ struct TravelMapView: View {
         .accessibilityHint("Tap segments on the map to select them for export")
     }
 
-    private var selectionBar: some View {
-        HStack(spacing: 12) {
-            Text("\(selectedSegmentIDs.count) selected")
-                .font(.caption.bold())
+    /// Merged lines for the selection detail panel — consecutive segments on the same route
+    /// become a single line (e.g., "IRL E20 11(M7) 6(N7)" instead of 6 separate lines).
+    private var selectionLines: [(ids: Set<Int>, text: String)] {
+        let selected = segments.filter { selectedSegmentIDs.contains($0.id) }
+        let rootToName = Dictionary(routeMetadata.map { ($0.root, $0.listName) }, uniquingKeysWith: { a, _ in a })
 
-            Spacer()
-
-            // Copy to clipboard
-            Button {
-                Haptics.success()
-                let text = generateSelectionText()
-                UIPasteboard.general.string = text
-            } label: {
-                Image(systemName: "doc.on.doc")
-                    .font(.caption)
-            }
-            .accessibilityLabel("Copy .list text to clipboard")
-
-            // Share
-            Button {
-                Haptics.light()
-                showSelectionSheet = true
-            } label: {
-                Image(systemName: "square.and.arrow.up")
-                    .font(.caption)
-            }
-            .accessibilityLabel("Share .list file")
-
-            // Clear
-            Button {
-                Haptics.light()
-                selectedSegmentIDs.removeAll()
-            } label: {
-                Image(systemName: "xmark.circle")
-                    .font(.caption)
-            }
-            .accessibilityLabel("Clear selection")
+        let sorted = selected.sorted { a, b in
+            if a.root != b.root { return a.root < b.root }
+            return a.id < b.id
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+
+        struct MergedLine {
+            var ids: Set<Int>
+            let root: String
+            let listName: String
+            var startWP: String
+            var endWP: String
+
+            var text: String {
+                let parts = listName.split(separator: " ", maxSplits: 1)
+                let region = parts.count > 0 ? String(parts[0]) : ""
+                let route = parts.count > 1 ? String(parts[1]) : ""
+                return "\(region) \(route) \(startWP) \(endWP)"
+            }
+        }
+
+        var result: [MergedLine] = []
+        var current: MergedLine?
+
+        for seg in sorted {
+            let listName = rootToName[seg.root] ?? seg.root
+            if var cur = current, cur.root == seg.root, cur.endWP == seg.startName {
+                cur.endWP = seg.endName
+                cur.ids.insert(seg.id)
+                current = cur
+            } else {
+                if let cur = current { result.append(cur) }
+                current = MergedLine(ids: [seg.id], root: seg.root, listName: listName, startWP: seg.startName, endWP: seg.endName)
+            }
+        }
+        if let cur = current { result.append(cur) }
+
+        return result.map { (ids: $0.ids, text: $0.text) }
+    }
+
+    private var selectionBar: some View {
+        VStack(spacing: 0) {
+            // Header row
+            HStack(spacing: 12) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showSelectionDetail.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: showSelectionDetail ? "chevron.down" : "chevron.right")
+                            .font(.caption2.bold())
+                        Text("\(selectedSegmentIDs.count) selected")
+                            .font(.caption.bold())
+                    }
+                    .foregroundStyle(.primary)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                Button {
+                    Haptics.success()
+                    UIPasteboard.general.string = generateSelectionText()
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Copy .list text to clipboard")
+
+                Button {
+                    Haptics.light()
+                    showSelectionSheet = true
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Share .list file")
+
+                Button {
+                    Haptics.light()
+                    selectedSegmentIDs.removeAll()
+                    showSelectionDetail = false
+                } label: {
+                    Image(systemName: "xmark.circle")
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear selection")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+
+            // Expandable detail panel
+            if showSelectionDetail {
+                Divider()
+                    .background(.yellow.opacity(0.3))
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(selectionLines, id: \.text) { line in
+                            HStack {
+                                Text(line.text)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .foregroundStyle(.primary)
+                                Spacer()
+                                Button {
+                                    Haptics.light()
+                                    selectedSegmentIDs.subtract(line.ids)
+                                } label: {
+                                    Image(systemName: "xmark")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            Divider()
+                        }
+                    }
+                }
+                .frame(maxHeight: 160)
+            }
+        }
         .background(.yellow.opacity(0.2), in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(.yellow, lineWidth: 1))
         .padding(.horizontal)
@@ -824,75 +936,131 @@ struct TravelMapView: View {
         .accessibilityLabel("Region filter: \(regionLabel)")
     }
 
-    private var sortedRegionsForPicker: [String] {
+    /// Traveled regions grouped by country, favorites first within each country
+    private var traveledRegionsByCountry: [(country: String, regions: [String])] {
         let favs = Set(settings.favoriteRegions)
-        return availableRegions.sorted { a, b in
-            let aFav = favs.contains(a)
-            let bFav = favs.contains(b)
-            if aFav != bFav { return aFav }
-            return a < b
+        var byCountry: [String: [String]] = [:]
+        for region in availableRegions {
+            let country = regionCountryMap[region] ?? "Other"
+            byCountry[country, default: []].append(region)
+        }
+        return byCountry
+            .sorted { $0.key < $1.key }
+            .map { country, regions in
+                let sorted = regions.sorted { a, b in
+                    let aFav = favs.contains(a)
+                    let bFav = favs.contains(b)
+                    if aFav != bFav { return aFav }
+                    return a < b
+                }
+                return (country: country, regions: sorted)
+            }
+    }
+
+    /// All regions NOT in the user's traveled set, grouped by country
+    private var otherRegionsByCountry: [(country: String, regions: [String])] {
+        let traveled = Set(availableRegions)
+        return allRegionsByCountry.compactMap { country, regions in
+            let other = regions.filter { !traveled.contains($0) }
+            return other.isEmpty ? nil : (country: country, regions: other)
+        }
+    }
+
+    @ViewBuilder
+    private func regionRow(_ region: String) -> some View {
+        HStack {
+            Button {
+                Haptics.selection()
+                settings.toggleFavoriteRegion(region)
+            } label: {
+                Image(systemName: settings.isFavoriteRegion(region) ? "star.fill" : "star")
+                    .foregroundStyle(settings.isFavoriteRegion(region) ? .yellow : .secondary)
+                    .font(.subheadline)
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                Haptics.selection()
+                if pendingRegions.contains(region) {
+                    pendingRegions.remove(region)
+                } else {
+                    pendingRegions.insert(region)
+                }
+            } label: {
+                HStack {
+                    Text(region)
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    if pendingRegions.contains(region) {
+                        Image(systemName: "checkmark")
+                            .foregroundStyle(.blue)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
         }
     }
 
     private var regionPickerSheet: some View {
         NavigationStack {
             List {
+                // All Regions toggle
                 Section {
                     Button {
                         Haptics.selection()
-                        selectedRegions = []
+                        pendingRegions = []
                     } label: {
                         HStack {
-                            Text("All Regions")
+                            Text("All Traveled Regions")
                                 .foregroundStyle(.primary)
                             Spacer()
-                            if selectedRegions.isEmpty {
+                            if pendingRegions.isEmpty {
                                 Image(systemName: "checkmark")
                                     .foregroundStyle(.blue)
                             }
                         }
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
                 }
-                Section {
-                    ForEach(sortedRegionsForPicker, id: \.self) { region in
-                        HStack {
-                            // Star toggle
-                            Button {
-                                Haptics.selection()
-                                settings.toggleFavoriteRegion(region)
-                            } label: {
-                                Image(systemName: settings.isFavoriteRegion(region) ? "star.fill" : "star")
-                                    .foregroundStyle(settings.isFavoriteRegion(region) ? .yellow : .secondary)
-                                    .font(.subheadline)
-                            }
-                            .buttonStyle(.plain)
 
-                            // Selection toggle
-                            Button {
-                                Haptics.selection()
-                                if selectedRegions.contains(region) {
-                                    selectedRegions.remove(region)
-                                } else {
-                                    selectedRegions.insert(region)
-                                }
-                            } label: {
-                                HStack {
-                                    Text(region)
-                                        .foregroundStyle(.primary)
-                                    Spacer()
-                                    if selectedRegions.contains(region) {
-                                        Image(systemName: "checkmark")
-                                            .foregroundStyle(.blue)
-                                    }
-                                }
-                            }
-                            .buttonStyle(.plain)
+                // Traveled regions grouped by country
+                let traveled = traveledRegionsByCountry
+                Section {
+                    ForEach(traveled, id: \.country) { country, regions in
+                        if traveled.count > 1 {
+                            Text(country)
+                                .font(.caption.bold())
+                                .foregroundStyle(.secondary)
+                                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 2, trailing: 16))
+                        }
+                        ForEach(regions, id: \.self) { region in
+                            regionRow(region)
                         }
                     }
                 } header: {
-                    Text("Regions")
+                    Text("Your Regions")
                 } footer: {
-                    Text("Tap the star to mark regions as favorites. Favorite regions auto-load when you open a user's map.")
+                    Text("Tap the star to mark favorites. Favorites auto-load when you open a user's map.")
+                }
+
+                // Other regions (not traveled) grouped by country
+                let other = otherRegionsByCountry
+                if !other.isEmpty {
+                    Section {
+                        ForEach(other, id: \.country) { country, regions in
+                            DisclosureGroup(country) {
+                                ForEach(regions, id: \.self) { region in
+                                    regionRow(region)
+                                }
+                            }
+                        }
+                    } header: {
+                        Text("Other Regions")
+                    } footer: {
+                        Text("Load regions you haven't traveled yet to see all routes in that area.")
+                    }
                 }
             }
             .navigationTitle("Regions")
@@ -921,6 +1089,26 @@ struct TravelMapView: View {
         let regions = Array(profile.allRegions).sorted()
         availableRegions = regions
 
+        // Load full region catalog for "Other Regions" picker + country grouping
+        if allRegionsByCountry.isEmpty {
+            if let catalog = try? await TravelMappingAPI.shared.getAllRoutes() {
+                var countryMap: [String: String] = [:]
+                var byCountry: [String: Set<String>] = [:]
+                let catalogRegions = catalog.regions ?? []
+                let countries = catalog.countries ?? []
+                for (i, region) in catalogRegions.enumerated() where i < countries.count {
+                    if countryMap[region] == nil {
+                        countryMap[region] = countries[i]
+                        byCountry[countries[i], default: []].insert(region)
+                    }
+                }
+                regionCountryMap = countryMap
+                allRegionsByCountry = byCountry
+                    .sorted { $0.key < $1.key }
+                    .map { (country: $0.key, regions: $0.value.sorted()) }
+            }
+        }
+
         // Favorite regions take priority if any exist
         let favoritesInThisProfile = Set(settings.favoriteRegions).intersection(regions)
         if !favoritesInThisProfile.isEmpty {
@@ -930,11 +1118,9 @@ struct TravelMapView: View {
         }
 
         if regions.count <= 3 {
-            // Few regions — load all
             selectedRegions = []
             await loadSegments()
         } else {
-            // Default to the most-used region
             let regionCounts = profile.categories.values.flatMap { $0 }
                 .reduce(into: [String: Int]()) { counts, seg in
                     counts[seg.primaryRegion, default: 0] += 1
@@ -1227,6 +1413,7 @@ struct SegmentDetailSheet: View {
                         .padding()
                         .background(.blue.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
                 }
+                .buttonStyle(.plain)
 
                 Spacer()
             }

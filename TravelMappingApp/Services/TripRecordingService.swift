@@ -101,10 +101,22 @@ class TripRecordingService: NSObject, ObservableObject {
         startLiveActivity(tripName: trip.name, startDate: trip.startDate)
         Haptics.success()
 
-        // Elapsed time timer
+        // Elapsed time timer + Watch sync
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                self?.elapsedTime = Date().timeIntervalSince(trip.startDate)
+                guard let self else { return }
+                self.elapsedTime = Date().timeIntervalSince(trip.startDate)
+                WatchSyncService.shared.sendTripUpdate(
+                    tripName: trip.name,
+                    elapsedTime: self.elapsedTime,
+                    speed: self.currentSpeed,
+                    distance: self.totalDistance,
+                    matchedCount: self.matchedCount,
+                    pointCount: self.pointCount,
+                    currentSegment: self.currentSegmentName,
+                    isPaused: self.isPaused,
+                    tripType: self.currentTripType == .rail ? "rail" : "road"
+                )
             }
         }
 
@@ -139,6 +151,7 @@ class TripRecordingService: NSObject, ObservableObject {
         saveTimer?.invalidate()
         timer = nil
         saveTimer = nil
+        WatchSyncService.shared.clearTripStatus()
 
         // Finalize matching
         trip.matchedSegments = segmentMatcher.finalizeTrip()

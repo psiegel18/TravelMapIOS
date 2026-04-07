@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Scheme
    LastUpgradeVersion = "2640"
-   version = "1.3">
+   version = "1.7">
    <BuildAction
       parallelizeBuildables = "YES"
-      buildImplicitDependencies = "YES">
+      buildImplicitDependencies = "YES"
+      buildArchitectures = "Automatic">
       <BuildActionEntries>
          <BuildActionEntry
             buildForTesting = "YES"
@@ -14,23 +15,9 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "D707C82EAEC3A4E4B422E543"
-               BuildableName = "TravelMappingApp.app"
-               BlueprintName = "TravelMappingApp"
-               ReferencedContainer = "container:TravelMappingApp.xcodeproj">
-            </BuildableReference>
-         </BuildActionEntry>
-         <BuildActionEntry
-            buildForTesting = "YES"
-            buildForRunning = "YES"
-            buildForProfiling = "YES"
-            buildForArchiving = "YES"
-            buildForAnalyzing = "YES">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "90C5921FB567E6479DF48458"
-               BuildableName = "TravelMappingWidgetExtension.appex"
-               BlueprintName = "TravelMappingWidgetExtension"
+               BlueprintIdentifier = "C642257A8E051890E88EEDD3"
+               BuildableName = "TravelMappingWatch.app"
+               BlueprintName = "TravelMappingWatch"
                ReferencedContainer = "container:TravelMappingApp.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -40,18 +27,8 @@
       buildConfiguration = "Debug"
       selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
-      shouldUseLaunchSchemeArgsEnv = "YES">
-      <MacroExpansion>
-         <BuildableReference
-            BuildableIdentifier = "primary"
-            BlueprintIdentifier = "D707C82EAEC3A4E4B422E543"
-            BuildableName = "TravelMappingApp.app"
-            BlueprintName = "TravelMappingApp"
-            ReferencedContainer = "container:TravelMappingApp.xcodeproj">
-         </BuildableReference>
-      </MacroExpansion>
-      <Testables>
-      </Testables>
+      shouldUseLaunchSchemeArgsEnv = "YES"
+      shouldAutocreateTestPlan = "YES">
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"
@@ -62,14 +39,15 @@
       ignoresPersistentStateOnLaunch = "NO"
       debugDocumentVersioning = "YES"
       debugServiceExtension = "internal"
-      allowLocationSimulation = "YES">
+      allowLocationSimulation = "YES"
+      queueDebuggingEnableBacktraceRecording = "Yes">
       <BuildableProductRunnable
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "D707C82EAEC3A4E4B422E543"
-            BuildableName = "TravelMappingApp.app"
-            BlueprintName = "TravelMappingApp"
+            BlueprintIdentifier = "C642257A8E051890E88EEDD3"
+            BuildableName = "TravelMappingWatch.app"
+            BlueprintName = "TravelMappingWatch"
             ReferencedContainer = "container:TravelMappingApp.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
@@ -87,9 +65,9 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "D707C82EAEC3A4E4B422E543"
-            BuildableName = "TravelMappingApp.app"
-            BlueprintName = "TravelMappingApp"
+            BlueprintIdentifier = "C642257A8E051890E88EEDD3"
+            BuildableName = "TravelMappingWatch.app"
+            BlueprintName = "TravelMappingWatch"
             ReferencedContainer = "container:TravelMappingApp.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>

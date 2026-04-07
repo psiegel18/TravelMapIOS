@@ -37,6 +37,7 @@ struct RoadTripListView: View {
                     } label: {
                         Label("Start Road Trip", systemImage: "car.fill")
                             .font(.headline)
+                            .foregroundStyle(.white)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 8)
                     }
@@ -49,6 +50,7 @@ struct RoadTripListView: View {
                     } label: {
                         Label("Start Train Trip", systemImage: "tram.fill")
                             .font(.headline)
+                            .foregroundStyle(.white)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 8)
                     }

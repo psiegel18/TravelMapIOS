@@ -24,6 +24,8 @@ struct RouteDetailView: View {
                 ErrorView(message: error) { await load() }
             } else if let detail = routeDetail {
                 loadedContent(detail: detail)
+            } else {
+                ErrorView(message: "No route data returned for \(listName). The server may be temporarily unavailable.") { await load() }
             }
         }
         .navigationTitle(listName)

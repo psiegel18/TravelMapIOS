@@ -35,6 +35,7 @@ actor TMStatsService {
         let users: [UserRegionStats] // sorted by totalMiles desc
         let userCount: Int
         let globalTotalMiles: Double
+        let regionTotals: [String: Double] // region code → total available miles (from TOTAL row)
 
         /// Returns (rank, percentile) for a given username. Rank is 1-indexed.
         func position(of username: String) -> (rank: Int, percentile: Double)? {
@@ -53,9 +54,10 @@ actor TMStatsService {
     func loadRegionStats(includePreview: Bool = false, forceRefresh: Bool = false) async throws -> LeaderboardSnapshot {
         let filename = includePreview ? "allbyregionactivepreview.csv" : "allbyregionactiveonly.csv"
         let csv = try await fetchCSV(filename: filename, forceRefresh: forceRefresh)
-        let users = parseRegionCSV(csv).sorted { $0.totalMiles > $1.totalMiles }
-        let globalTotal = users.reduce(0.0) { $0 + $1.totalMiles }
-        return LeaderboardSnapshot(users: users, userCount: users.count, globalTotalMiles: globalTotal)
+        let (users, regionTotals) = parseRegionCSV(csv)
+        let sorted = users.sorted { $0.totalMiles > $1.totalMiles }
+        let globalTotal = sorted.reduce(0.0) { $0 + $1.totalMiles }
+        return LeaderboardSnapshot(users: sorted, userCount: sorted.count, globalTotalMiles: globalTotal, regionTotals: regionTotals)
     }
 
     /// Load stats for a specific system (e.g., "usai" for US Interstates).
@@ -107,22 +109,34 @@ actor TMStatsService {
         return content
     }
 
-    private func parseRegionCSV(_ content: String) -> [UserRegionStats] {
+    private func parseRegionCSV(_ content: String) -> (users: [UserRegionStats], regionTotals: [String: Double]) {
         let lines = content.components(separatedBy: .newlines).filter { !$0.isEmpty }
-        guard lines.count >= 2 else { return [] }
+        guard lines.count >= 2 else { return ([], [:]) }
 
         let headers = lines[0].components(separatedBy: ",")
-        guard headers.count >= 3 else { return [] }
+        guard headers.count >= 3 else { return ([], [:]) }
         let regionCodes = Array(headers.dropFirst(2)) // skip Traveler, Total
 
         var result: [UserRegionStats] = []
+        var regionTotals: [String: Double] = [:]
+
         for line in lines.dropFirst() {
             let fields = line.components(separatedBy: ",")
             guard fields.count == headers.count else { continue }
 
             let username = fields[0]
-            // Skip summary rows (e.g. "TOTAL") that aren't real users
-            if username.uppercased() == "TOTAL" { continue }
+
+            // Capture TOTAL row for per-region available mileage
+            if username.uppercased() == "TOTAL" {
+                for (i, region) in regionCodes.enumerated() {
+                    let miles = Double(fields[i + 2]) ?? 0
+                    if miles > 0 {
+                        regionTotals[region] = miles
+                    }
+                }
+                continue
+            }
+
             let total = Double(fields[1]) ?? 0
 
             var byRegion: [String: Double] = [:]
@@ -139,7 +153,7 @@ actor TMStatsService {
                 byRegion: byRegion
             ))
         }
-        return result
+        return (result, regionTotals)
     }
 
     private func parseSystemCSV(_ content: String, systemCode: String) -> [UserSystemStats] {

@@ -44,12 +44,12 @@ actor TravelMappingAPI {
     }
 
     struct RouteDataResponse: Decodable {
-        let pointNames: [[String]]?
-        let latitudes: [[String]]?
-        let longitudes: [[String]]?
-        let clinched: [[String]]?     // "0" or "1" per segment (N-1 for N waypoints)
-        let segmentIds: [[String]]?
-        let driverCounts: [[String]]?
+        let pointNames: [[String?]]?
+        let latitudes: [[String?]]?
+        let longitudes: [[String?]]?
+        let clinched: [[String?]]?     // "0" or "1" per segment (N-1 for N waypoints)
+        let segmentIds: [[String?]]?
+        let driverCounts: [[String?]]?
         let listNames: [String]?
     }
 
@@ -114,7 +114,7 @@ actor TravelMappingAPI {
             "traveler": traveler
         ]
 
-        let data = try await post(endpoint: "/lib/getVisibleSegments.php", params: params)
+        let data = try await post(endpoint: "/lib/getVisibleSegments.php", params: params, cacheTTL: 6 * 3600)
         let response = try JSONDecoder().decode(VisibleSegmentsResponse.self, from: data)
 
         var segments: [MapSegment] = []
@@ -163,7 +163,14 @@ actor TravelMappingAPI {
             "traveler": traveler
         ]
 
-        let data = try await post(endpoint: "/lib/getRouteData.php", params: params)
+        var data = try await post(endpoint: "/lib/getRouteData.php", params: params)
+
+        // The PHP endpoint may prepend HTML warnings before the JSON — strip them
+        if let jsonStart = String(data: data, encoding: .utf8)?.firstIndex(of: "{"),
+           let cleanData = String(data: data, encoding: .utf8)?[jsonStart...].data(using: .utf8) {
+            data = cleanData
+        }
+
         let response = try JSONDecoder().decode(RouteDataResponse.self, from: data)
 
         var details: [RouteDetail] = []
@@ -174,7 +181,8 @@ actor TravelMappingAPI {
                   let lngs = response.longitudes?[i] else { continue }
 
             let coords = zip(lats, lngs).compactMap { latStr, lngStr -> CLLocationCoordinate2D? in
-                guard let lat = Double(latStr), let lng = Double(lngStr) else { return nil }
+                guard let latStr, let lngStr,
+                      let lat = Double(latStr), let lng = Double(lngStr) else { return nil }
                 return CLLocationCoordinate2D(latitude: lat, longitude: lng)
             }
 
@@ -291,7 +299,12 @@ actor TravelMappingAPI {
         let jsonString = String(data: jsonData, encoding: .utf8) ?? "{}"
         request.httpBody = "params=\(jsonString)".data(using: .utf8)
 
-        let (data, _) = try await session.data(for: request)
+        let (data, response) = try await session.data(for: request)
+
+        // Validate HTTP status
+        if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode != 200 {
+            throw URLError(.badServerResponse)
+        }
 
         // Cache if TTL specified
         if let ttl = cacheTTL {

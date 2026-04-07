@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct GetStartedView: View {
+    @Environment(\.horizontalSizeClass) private var sizeClass
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
@@ -153,11 +155,12 @@ struct GetStartedView: View {
                         .background(.blue, in: RoundedRectangle(cornerRadius: 12))
                         .foregroundStyle(.white)
                     }
+                    .buttonStyle(.plain)
                 }
                 .padding(.top, 8)
             }
             .padding()
-            .frame(maxWidth: 700)
+            .frame(maxWidth: sizeClass == .regular ? 900 : 700)
             .frame(maxWidth: .infinity)
         }
         .navigationTitle("Get Started")

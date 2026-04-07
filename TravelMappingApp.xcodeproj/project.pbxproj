@@ -10,6 +10,7 @@
 		00E9DEBA5885CD859E2218A8 /* LeaderboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA5096B1694F95145A6DF492 /* LeaderboardView.swift */; };
 		00F16FB2072B0ABFBC0856E3 /* RouteProgressView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92BA403F0A56C24EF44D4226 /* RouteProgressView.swift */; };
 		03761C80AA5A45D6EAF0790C /* TravelMappingWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEC461CA55A8177187854326 /* TravelMappingWidget.swift */; };
+		07474ABCB0717F1C5295B246 /* WatchSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44954181B10D0AF59D4777BA /* WatchSessionManager.swift */; };
 		15D434722FE8C22273D8AFB4 /* TMStatsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A9E8B0AE6A191662B7E9B15 /* TMStatsService.swift */; };
 		195103B2CCCE22A7044E7417 /* TravelMappingWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 29B3997572F4391C91DAF729 /* TravelMappingWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		207F83210C9E65D5ABC30E1C /* TripStorageService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C3094EC78537F818F58784F /* TripStorageService.swift */; };
@@ -17,14 +18,21 @@
 		23E4533DEF7889092A2387DD /* StatisticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EBAAA144562AFA39F6CCA67 /* StatisticsView.swift */; };
 		2BF6FF29BD0783DC9EB4DDC0 /* ShareableStatsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9210663201BA7B9D3B1C427B /* ShareableStatsView.swift */; };
 		2DF0A345DC3C331454BC4FD3 /* RoadTripListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCE242CF12DA5FF9F2CF1B9E /* RoadTripListView.swift */; };
+		49B140F98CA24D8978D11B11 /* RichLinkActivityItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0EA45FDB549514A65423418 /* RichLinkActivityItem.swift */; };
 		4B20AEA737640C29047ED502 /* GetStartedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 051BB1706E06D96F99CD3958 /* GetStartedView.swift */; };
 		563AE1A01CB2E9F81214BA98 /* TripRecordingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36F6F875A0D3BEA18A62B0BD /* TripRecordingService.swift */; };
 		5892992A9AE1D929D4831F8A /* RoadTripRecordingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D35A740B2CB4E05C4F81A5A /* RoadTripRecordingView.swift */; };
+		5A9671E52F84DAC60013061D /* Sentry in Frameworks */ = {isa = PBXBuildFile; productRef = 5A9671E42F84DAC60013061D /* Sentry */; };
+		5A9671F32F84DAC60013061D /* SentrySwiftUI in Frameworks */ = {isa = PBXBuildFile; productRef = 5A9671F22F84DAC60013061D /* SentrySwiftUI */; };
+		5A9671F62F84DBA10013061D /* Sentry in Frameworks */ = {isa = PBXBuildFile; productRef = 5A9671F52F84DBA10013061D /* Sentry */; };
 		5B6716C984C0162375D056C6 /* TripShareCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5250E39625BEC7536065D23 /* TripShareCard.swift */; };
+		5B684653902E41E37B3476DB /* SharePreviewSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FEF42BEBFEAE4E64EB6347C /* SharePreviewSheet.swift */; };
 		608604A24DE75EAA80939181 /* RouteCategory.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6C9C53415C70244875AD2E4 /* RouteCategory.swift */; };
 		60C1D2B7B1026B0AE169397E /* RoadTripAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4C6EBE62DCAD2B484621406 /* RoadTripAttributes.swift */; };
 		64B2692530742CAD95533E79 /* UserDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1ED5BD0C47F77D26DB0E30FD /* UserDetailView.swift */; };
+		66704407A556FD3797B3BB16 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 139342DBA16072F0CBE48A9E /* Assets.xcassets */; };
 		6E81E5803B78C5E1CF16F445 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD5020AC24F7B6CCCFD7687E /* ContentView.swift */; };
+		710442E299C703250D9F18AD /* WatchSyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 479047D5B4036699115D21C8 /* WatchSyncService.swift */; };
 		7E8373658416AA2F216F0D97 /* ErrorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E83CDCA53AFE7F9E9A05D63E /* ErrorView.swift */; };
 		81A7ACA07C9BBFDE5C418C7F /* RoadTripDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 221802C6D659FD4D75C92FA7 /* RoadTripDetailView.swift */; };
 		8874BC6CBACC5139BD2FD176 /* ThemeService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8165352148EE0E5F90A2EDF8 /* ThemeService.swift */; };
@@ -39,6 +47,7 @@
 		AD4B1FABF591EB28B082EBC1 /* SpotlightService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 745F3C1DDEEE5CAD64C78F31 /* SpotlightService.swift */; };
 		AF1B398804BC9C433650D4AF /* RoadTripAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4C6EBE62DCAD2B484621406 /* RoadTripAttributes.swift */; };
 		B59684537049E1E44C647280 /* ListFileParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC4EA497A06B93C45AF2A0F3 /* ListFileParser.swift */; };
+		B78E42369EA31FAFA474F750 /* ShareCardViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3A343E7B5552FA2765B1B25 /* ShareCardViews.swift */; };
 		BE771F880694849D1C48EC4A /* TravelMappingAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44E1685494C72342C46BC8A9 /* TravelMappingAPI.swift */; };
 		BF83F74B198E713E11338628 /* TravelSegment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 236C4323C36BD1EC8FE72795 /* TravelSegment.swift */; };
 		C8766D992A63AF71FE7D967D /* FreshnessIndicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48456B71080730137BEF3025 /* FreshnessIndicator.swift */; };
@@ -54,6 +63,7 @@
 		F5F194775DA6AA2A7B10EEC5 /* RoadTripLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54CB6BF6CD2CBEAF6133EDF8 /* RoadTripLiveActivity.swift */; };
 		F6AD86AC2918B78524DB7B94 /* RegionDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D02776026919B26F66A4020 /* RegionDetailView.swift */; };
 		FA0396A0D7E7C518DFEFB9B1 /* UserProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = E52990A02947FB38A0B1328A /* UserProfile.swift */; };
+		FA9040F48D6713AE094D069D /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 215443C1B13D02E2B85943FC /* LaunchScreen.storyboard */; };
 		FB2D3C039218D11DCE6BBBDF /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBBF62B7C75957D35494B69B /* SettingsView.swift */; };
 /* End PBXBuildFile section */
 
@@ -85,7 +95,9 @@
 		029E318546828EB6AFCA381D /* DataService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataService.swift; sourceTree = "<group>"; };
 		051BB1706E06D96F99CD3958 /* GetStartedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GetStartedView.swift; sourceTree = "<group>"; };
 		0D3B2307AC859836B4FE7A34 /* CacheService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CacheService.swift; sourceTree = "<group>"; };
+		139342DBA16072F0CBE48A9E /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Assets.xcassets; path = TravelMappingWatch/Assets.xcassets; sourceTree = SOURCE_ROOT; };
 		1ED5BD0C47F77D26DB0E30FD /* UserDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserDetailView.swift; sourceTree = "<group>"; };
+		215443C1B13D02E2B85943FC /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = None; name = LaunchScreen.storyboard; path = TravelMappingApp/LaunchScreen.storyboard; sourceTree = SOURCE_ROOT; };
 		221802C6D659FD4D75C92FA7 /* RoadTripDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoadTripDetailView.swift; sourceTree = "<group>"; };
 		2258CBFA8327602A0E446FB9 /* TravelMappingApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TravelMappingApp.entitlements; sourceTree = "<group>"; };
 		236C4323C36BD1EC8FE72795 /* TravelSegment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TravelSegment.swift; sourceTree = "<group>"; };
@@ -97,7 +109,9 @@
 		2EBAAA144562AFA39F6CCA67 /* StatisticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatisticsView.swift; sourceTree = "<group>"; };
 		3491CF7C0124E8B7F5B3AABA /* WatchComplication.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchComplication.swift; sourceTree = "<group>"; };
 		36F6F875A0D3BEA18A62B0BD /* TripRecordingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripRecordingService.swift; sourceTree = "<group>"; };
+		44954181B10D0AF59D4777BA /* WatchSessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = WatchSessionManager.swift; path = TravelMappingWatch/WatchSessionManager.swift; sourceTree = SOURCE_ROOT; };
 		44E1685494C72342C46BC8A9 /* TravelMappingAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TravelMappingAPI.swift; sourceTree = "<group>"; };
+		479047D5B4036699115D21C8 /* WatchSyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = WatchSyncService.swift; path = TravelMappingApp/Services/WatchSyncService.swift; sourceTree = SOURCE_ROOT; };
 		48456B71080730137BEF3025 /* FreshnessIndicator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FreshnessIndicator.swift; sourceTree = "<group>"; };
 		54CB6BF6CD2CBEAF6133EDF8 /* RoadTripLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoadTripLiveActivity.swift; sourceTree = "<group>"; };
 		5D7AA373F0E75641F7A39E37 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
@@ -109,6 +123,7 @@
 		8165352148EE0E5F90A2EDF8 /* ThemeService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeService.swift; sourceTree = "<group>"; };
 		8621E1BCF4FDC3F5013AB9E3 /* UserListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserListView.swift; sourceTree = "<group>"; };
 		8E11F4373C0EF1DB4A6B8D04 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		8FEF42BEBFEAE4E64EB6347C /* SharePreviewSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SharePreviewSheet.swift; path = TravelMappingApp/Views/Sharing/SharePreviewSheet.swift; sourceTree = SOURCE_ROOT; };
 		911DD9B25F38B371816F31ED /* SegmentMatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentMatcher.swift; sourceTree = "<group>"; };
 		9210663201BA7B9D3B1C427B /* ShareableStatsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareableStatsView.swift; sourceTree = "<group>"; };
 		92BA403F0A56C24EF44D4226 /* RouteProgressView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteProgressView.swift; sourceTree = "<group>"; };
@@ -121,7 +136,7 @@
 		BCE242CF12DA5FF9F2CF1B9E /* RoadTripListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoadTripListView.swift; sourceTree = "<group>"; };
 		BE34762286340089EFA81617 /* SyncedSettingsService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncedSettingsService.swift; sourceTree = "<group>"; };
 		BF873616243F1219F0929618 /* TravelMappingWatch.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TravelMappingWatch.entitlements; sourceTree = "<group>"; };
-		C798E854FE1E31811A827AC8 /* TravelMappingApp.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = TravelMappingApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C798E854FE1E31811A827AC8 /* TravelMappingApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TravelMappingApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C83CB5691973205ACA0727A3 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		C8E936AC5CB50A92551B1850 /* RoadTrip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoadTrip.swift; sourceTree = "<group>"; };
 		CBBF62B7C75957D35494B69B /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
@@ -130,14 +145,36 @@
 		D4C6EBE62DCAD2B484621406 /* RoadTripAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoadTripAttributes.swift; sourceTree = "<group>"; };
 		D97D60728830469D653341D0 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		DD5020AC24F7B6CCCFD7687E /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		E3A343E7B5552FA2765B1B25 /* ShareCardViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ShareCardViews.swift; path = TravelMappingApp/Views/Sharing/ShareCardViews.swift; sourceTree = SOURCE_ROOT; };
 		E52990A02947FB38A0B1328A /* UserProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserProfile.swift; sourceTree = "<group>"; };
 		E83CDCA53AFE7F9E9A05D63E /* ErrorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErrorView.swift; sourceTree = "<group>"; };
 		EE525FE93FBD2CA229EDB996 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		F0EA45FDB549514A65423418 /* RichLinkActivityItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = RichLinkActivityItem.swift; path = TravelMappingApp/Views/Sharing/RichLinkActivityItem.swift; sourceTree = SOURCE_ROOT; };
 		F5250E39625BEC7536065D23 /* TripShareCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripShareCard.swift; sourceTree = "<group>"; };
 		F6C9C53415C70244875AD2E4 /* RouteCategory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteCategory.swift; sourceTree = "<group>"; };
 		FE5EB7AE4D996A6C4229E14C /* RoutePlannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoutePlannerView.swift; sourceTree = "<group>"; };
 		FEC461CA55A8177187854326 /* TravelMappingWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TravelMappingWidget.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		5A9671E22F84DAB60013061D /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5A9671E52F84DAC60013061D /* Sentry in Frameworks */,
+				5A9671F32F84DAC60013061D /* SentrySwiftUI in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5A9671F42F84DB9C0013061D /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5A9671F62F84DBA10013061D /* Sentry in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
 		281215F705BBE27274FF9527 = {
@@ -148,6 +185,14 @@
 				4088F8072C99224488358C8C /* TravelMappingWatch */,
 				E96D1E2F04D2BD84035AAFE1 /* TravelMappingWidget */,
 				7AC8F49E1976D34FD5A38C14 /* Products */,
+				44954181B10D0AF59D4777BA /* WatchSessionManager.swift */,
+				215443C1B13D02E2B85943FC /* LaunchScreen.storyboard */,
+				479047D5B4036699115D21C8 /* WatchSyncService.swift */,
+				8FEF42BEBFEAE4E64EB6347C /* SharePreviewSheet.swift */,
+				E3A343E7B5552FA2765B1B25 /* ShareCardViews.swift */,
+				F0EA45FDB549514A65423418 /* RichLinkActivityItem.swift */,
+				5A9671E32F84DAC60013061D /* Frameworks */,
+				139342DBA16072F0CBE48A9E /* Assets.xcassets */,
 			);
 			sourceTree = "<group>";
 		};
@@ -168,6 +213,13 @@
 				AFF7086F350E62D72F2F933E /* RoadTripIntents.swift */,
 			);
 			path = Intents;
+			sourceTree = "<group>";
+		};
+		5A9671E32F84DAC60013061D /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 		70B5D56D8A9148CB0B6F961F /* Parsers */ = {
@@ -306,6 +358,9 @@
 			buildConfigurationList = C05272944E90E298C18D4553 /* Build configuration list for PBXNativeTarget "TravelMappingWatch" */;
 			buildPhases = (
 				E81CBCCB1E3A0555BA0AF2FE /* Sources */,
+				5A9671F42F84DB9C0013061D /* Frameworks */,
+				1D354E63AA14FA63A96BF771 /* Resources */,
+				0389BE05B5984233B345A532 /* Upload Debug Symbols to Sentry */,
 			);
 			buildRules = (
 			);
@@ -313,6 +368,7 @@
 			);
 			name = TravelMappingWatch;
 			packageProductDependencies = (
+				5A9671F52F84DBA10013061D /* Sentry */,
 			);
 			productName = TravelMappingWatch;
 			productReference = 24DE4B11995D2772F4EA628B /* TravelMappingWatch.app */;
@@ -325,6 +381,8 @@
 				C13811FBE29DE04F7D4E05DD /* Sources */,
 				35D168975FC2CB5EE422D53B /* Resources */,
 				90972665F71B296F0A9B8811 /* Embed Foundation Extensions */,
+				5A9671E22F84DAB60013061D /* Frameworks */,
+				C47A7AAEBCD44018B9426D44 /* Upload Debug Symbols to Sentry */,
 			);
 			buildRules = (
 			);
@@ -333,6 +391,8 @@
 			);
 			name = TravelMappingApp;
 			packageProductDependencies = (
+				5A9671E42F84DAC60013061D /* Sentry */,
+				5A9671F22F84DAC60013061D /* SentrySwiftUI */,
 			);
 			productName = TravelMappingApp;
 			productReference = C798E854FE1E31811A827AC8 /* TravelMappingApp.app */;
@@ -370,6 +430,9 @@
 			);
 			mainGroup = 281215F705BBE27274FF9527;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				5AD301CA2F84D2EE006E410A /* XCRemoteSwiftPackageReference "sentry-cocoa" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 7AC8F49E1976D34FD5A38C14 /* Products */;
 			projectDirPath = "";
@@ -383,15 +446,59 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		1D354E63AA14FA63A96BF771 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				66704407A556FD3797B3BB16 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		35D168975FC2CB5EE422D53B /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 				91F25663D2345312A6E1E18B /* Assets.xcassets in Resources */,
+				FA9040F48D6713AE094D069D /* LaunchScreen.storyboard in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		0389BE05B5984233B345A532 /* Upload Debug Symbols to Sentry */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"${DWARF_DSYM_FOLDER_PATH}/${DWARF_DSYM_FILE_NAME}/Contents/Resources/DWARF/${TARGET_NAME}",
+			);
+			name = "Upload Debug Symbols to Sentry";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# This script is responsible for uploading debug symbols and source context for Sentry.\nif [[ \"$(uname -m)\" == arm64 ]]; then\n  export PATH=\"/opt/homebrew/bin:$PATH\"\nfi\n\nif which sentry-cli >/dev/null; then\n  export SENTRY_ORG=psiegel\n  export SENTRY_PROJECT=travelmapping\n  ERROR=$(sentry-cli debug-files upload --include-sources \"$DWARF_DSYM_FOLDER_PATH\" 2>&1 >/dev/null)\n  if [ ! $? -eq 0 ]; then\n    echo \"warning: sentry-cli - $ERROR\"\n  fi\nelse\n  echo \"warning: sentry-cli not installed, download from https://github.com/getsentry/sentry-cli/releases\"\nfi\n";
+		};
+		C47A7AAEBCD44018B9426D44 /* Upload Debug Symbols to Sentry */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"${DWARF_DSYM_FOLDER_PATH}/${DWARF_DSYM_FILE_NAME}/Contents/Resources/DWARF/${TARGET_NAME}",
+			);
+			name = "Upload Debug Symbols to Sentry";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# This script is responsible for uploading debug symbols and source context for Sentry.\nif [[ \"$(uname -m)\" == arm64 ]]; then\n  export PATH=\"/opt/homebrew/bin:$PATH\"\nfi\n\nif which sentry-cli >/dev/null; then\n  export SENTRY_ORG=psiegel\n  export SENTRY_PROJECT=travelmapping\n  ERROR=$(sentry-cli debug-files upload --include-sources \"$DWARF_DSYM_FOLDER_PATH\" 2>&1 >/dev/null)\n  if [ ! $? -eq 0 ]; then\n    echo \"warning: sentry-cli - $ERROR\"\n  fi\nelse\n  echo \"warning: sentry-cli not installed, download from https://github.com/getsentry/sentry-cli/releases\"\nfi\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		203145C6D70D9491C88154EC /* Sources */ = {
@@ -449,6 +556,10 @@
 				64B2692530742CAD95533E79 /* UserDetailView.swift in Sources */,
 				D6C7782D1E09754BAF6FFB1D /* UserListView.swift in Sources */,
 				FA0396A0D7E7C518DFEFB9B1 /* UserProfile.swift in Sources */,
+				710442E299C703250D9F18AD /* WatchSyncService.swift in Sources */,
+				5B684653902E41E37B3476DB /* SharePreviewSheet.swift in Sources */,
+				B78E42369EA31FAFA474F750 /* ShareCardViews.swift in Sources */,
+				49B140F98CA24D8978D11B11 /* RichLinkActivityItem.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -458,6 +569,7 @@
 			files = (
 				C9ABE62841000A135BEA4F94 /* TravelMappingWatchApp.swift in Sources */,
 				E16CC006D3A49C1FB58C1300 /* WatchComplication.swift in Sources */,
+				07474ABCB0717F1C5295B246 /* WatchSessionManager.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -536,6 +648,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_ENABLE_EXPLICIT_MODULES = NO;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.10;
 			};
@@ -598,6 +711,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_ENABLE_EXPLICIT_MODULES = NO;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 5.10;
 			};
@@ -610,6 +724,8 @@
 				CODE_SIGN_ENTITLEMENTS = TravelMappingWatch/TravelMappingWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				INFOPLIST_FILE = TravelMappingWatch/Info.plist;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.psiegel18.TravelMapping.watch;
@@ -627,7 +743,11 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				INFOPLIST_FILE = TravelMappingApp/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = TravelMapping;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.travel";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -666,7 +786,11 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				INFOPLIST_FILE = TravelMappingApp/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = TravelMapping;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.travel";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -685,6 +809,8 @@
 				CODE_SIGN_ENTITLEMENTS = TravelMappingWatch/TravelMappingWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				INFOPLIST_FILE = TravelMappingWatch/Info.plist;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.psiegel18.TravelMapping.watch;
@@ -753,6 +879,37 @@
 			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		5AD301CA2F84D2EE006E410A /* XCRemoteSwiftPackageReference "sentry-cocoa" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/getsentry/sentry-cocoa.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 9.9.0;
+			};
+			traits = (
+			);
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		5A9671E42F84DAC60013061D /* Sentry */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5AD301CA2F84D2EE006E410A /* XCRemoteSwiftPackageReference "sentry-cocoa" */;
+			productName = Sentry;
+		};
+		5A9671F22F84DAC60013061D /* SentrySwiftUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5AD301CA2F84D2EE006E410A /* XCRemoteSwiftPackageReference "sentry-cocoa" */;
+			productName = SentrySwiftUI;
+		};
+		5A9671F52F84DBA10013061D /* Sentry */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5AD301CA2F84D2EE006E410A /* XCRemoteSwiftPackageReference "sentry-cocoa" */;
+			productName = Sentry;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 8738B94C83BB6AE73AFA799A /* Project object */;
 }
