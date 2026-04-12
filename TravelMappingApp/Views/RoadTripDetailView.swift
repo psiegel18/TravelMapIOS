@@ -315,12 +315,27 @@ struct RoadTripDetailView: View {
 
 private struct ExportShareView: UIViewControllerRepresentable {
     let url: URL
+    @Environment(\.dismiss) private var dismiss
 
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        let vc = UIActivityViewController(activityItems: [url], applicationActivities: nil)
-        vc.popoverPresentationController?.permittedArrowDirections = []
-        return vc
+    func makeUIViewController(context: Context) -> UIViewController {
+        let wrapper = UIViewController()
+        wrapper.view.backgroundColor = .clear
+        return wrapper
     }
 
-    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+    func updateUIViewController(_ wrapper: UIViewController, context: Context) {
+        guard wrapper.presentedViewController == nil else { return }
+        DispatchQueue.main.async {
+            let activityVC = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+            activityVC.popoverPresentationController?.sourceView = wrapper.view
+            activityVC.popoverPresentationController?.sourceRect = CGRect(
+                x: wrapper.view.bounds.midX, y: wrapper.view.bounds.midY, width: 0, height: 0
+            )
+            activityVC.popoverPresentationController?.permittedArrowDirections = []
+            activityVC.completionWithItemsHandler = { _, _, _, _ in
+                dismiss()
+            }
+            wrapper.present(activityVC, animated: true)
+        }
+    }
 }

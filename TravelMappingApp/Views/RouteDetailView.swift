@@ -23,6 +23,7 @@ struct RouteDetailView: View {
     }
 
     @State private var routeDetail: TravelMappingAPI.RouteDetail?
+    @State private var allRegionDetails: [TravelMappingAPI.RouteDetail] = []
     @State private var regionBreakdown: [RegionBreakdown] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
@@ -74,10 +75,18 @@ struct RouteDetailView: View {
         }
     }
 
+    private var mapSegments: [(start: CLLocationCoordinate2D, end: CLLocationCoordinate2D, clinched: Bool)] {
+        if !allRegionDetails.isEmpty {
+            // Multi-region: draw each region's segments separately to avoid cross-region lines
+            return allRegionDetails.flatMap(\.segments)
+        }
+        return routeDetail?.segments ?? []
+    }
+
     private func mapView(detail: TravelMappingAPI.RouteDetail) -> some View {
         Map(position: $mapPosition) {
             // Draw segments colored by clinched status
-            ForEach(Array(detail.segments.enumerated()), id: \.offset) { index, segment in
+            ForEach(Array(mapSegments.enumerated()), id: \.offset) { index, segment in
                 MapPolyline(coordinates: [segment.start, segment.end])
                     .stroke(
                         segment.clinched ? Color.blue : Color.gray.opacity(0.7),
@@ -200,6 +209,7 @@ struct RouteDetailView: View {
         isLoading = true
         errorMessage = nil
         regionBreakdown = []
+        allRegionDetails = []
         do {
             let api = isRail ? TravelMappingAPI.rail : TravelMappingAPI.shared
             let details = try await api.getRouteData(
@@ -221,7 +231,10 @@ struct RouteDetailView: View {
                     )
                 }.sorted { $0.listName < $1.listName }
 
-                // Merge all region segments into one combined route detail
+                // Store individual region details for proper map rendering (no cross-region lines)
+                allRegionDetails = details
+
+                // Also create a combined detail for aggregate stats bar
                 var allCoords: [CLLocationCoordinate2D] = []
                 var allClinched: [Bool] = []
                 for detail in details {

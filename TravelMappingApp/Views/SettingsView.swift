@@ -278,9 +278,6 @@ struct SettingsView: View {
                 Link(destination: URL(string: "https://github.com/TravelMapping/UserData")!) {
                     Label("User Data on GitHub", systemImage: "chevron.left.forwardslash.chevron.right")
                 }
-                Link(destination: URL(string: "https://travelmapping.net/devel/devel.php")!) {
-                    Label("Developer Documentation", systemImage: "doc.text")
-                }
             }
             .alert("Send Test Event", isPresented: $showSentryTestAlert) {
                 Button("Send", role: .destructive) {
