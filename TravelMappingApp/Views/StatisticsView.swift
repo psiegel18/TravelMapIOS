@@ -1,4 +1,132 @@
+import Sentry
 import SwiftUI
+
+/// In-memory cache for stats data so navigating away and back doesn't reload.
+/// Invalidated after 1 hour or on pull-to-refresh.
+final class StatsCache {
+    static let shared = StatsCache()
+    private var entries: [String: CachedStats] = [:]
+
+    struct CachedStats {
+        let regionStats: [StatisticsView.RegionStat]
+        let allRoutes: [StatisticsView.RouteInfo]
+        let railTotals: StatisticsView.CategoryTotals
+        let rankInfo: (rank: Int, total: Int, percentile: Double)?
+        let regionCountryMap: [String: String]
+        let date: Date
+    }
+
+    func get(for username: String) -> CachedStats? {
+        guard let entry = entries[username.lowercased()],
+              Date().timeIntervalSince(entry.date) < 3600 else { return nil }
+        return entry
+    }
+
+    func set(for username: String, stats: CachedStats) {
+        entries[username.lowercased()] = stats
+    }
+
+    func invalidate(for username: String) {
+        entries.removeValue(forKey: username.lowercased())
+    }
+
+    /// Prefetch stats for a user in the background so the view loads instantly.
+    func prefetch(username: String, profile: UserProfile) async {
+        // Skip if already cached
+        guard get(for: username) == nil else { return }
+
+        let allRegions = Array(profile.allRegions).sorted()
+        let batchSize = 3
+
+        // CSV stats (fast)
+        var regionStats: [StatisticsView.RegionStat] = []
+        if let snapshot = try? await TMStatsService.shared.loadRegionStats(forceRefresh: false) {
+            let userRegions = Set(allRegions)
+            for user in snapshot.users where user.username.lowercased() == username.lowercased() {
+                for (region, miles) in user.byRegion where userRegions.contains(region) {
+                    let total = snapshot.regionTotals[region] ?? miles
+                    regionStats.append(StatisticsView.RegionStat(
+                        id: region, region: region,
+                        totalMileage: total, clinchedMileage: miles, routeCount: 0
+                    ))
+                }
+            }
+        }
+
+        // Route details (expensive — batched)
+        var allRoutes: [StatisticsView.RouteInfo] = []
+        await withTaskGroup(of: [StatisticsView.RouteInfo].self) { group in
+            for batchStart in stride(from: 0, to: allRegions.count, by: batchSize) {
+                let batch = Array(allRegions[batchStart..<min(batchStart + batchSize, allRegions.count)])
+                group.addTask {
+                    guard let result = try? await TravelMappingAPI.shared.getRegionSegments(
+                        regions: batch, traveler: username
+                    ) else { return [] }
+                    return result.routes.map { r in
+                        StatisticsView.RouteInfo(id: r.root, root: r.root, listName: r.listName,
+                                                  mileage: r.mileage, clinchedMileage: r.clinchedMileage)
+                    }
+                }
+            }
+            for await routes in group {
+                allRoutes.append(contentsOf: routes)
+            }
+        }
+
+        // Merge route counts into region stats
+        if !allRoutes.isEmpty {
+            var routeCountByRegion: [String: Int] = [:]
+            for route in allRoutes {
+                let region = String(route.root.split(separator: ".").first ?? "").uppercased()
+                routeCountByRegion[region, default: 0] += 1
+            }
+            regionStats = regionStats.map { stat in
+                StatisticsView.RegionStat(id: stat.id, region: stat.region,
+                                           totalMileage: stat.totalMileage, clinchedMileage: stat.clinchedMileage,
+                                           routeCount: routeCountByRegion[stat.region] ?? 0)
+            }
+        }
+
+        // Rail totals
+        var railTotals = StatisticsView.CategoryTotals()
+        await withTaskGroup(of: (Double, Double, Int).self) { group in
+            for batchStart in stride(from: 0, to: allRegions.count, by: batchSize) {
+                let batch = Array(allRegions[batchStart..<min(batchStart + batchSize, allRegions.count)])
+                group.addTask {
+                    guard let r = try? await TravelMappingAPI.rail.getRegionSegments(
+                        regions: batch, traveler: username
+                    ) else { return (0.0, 0.0, 0) }
+                    return (
+                        r.routes.reduce(0.0) { $0 + $1.clinchedMileage },
+                        r.routes.reduce(0.0) { $0 + $1.mileage },
+                        r.routes.count
+                    )
+                }
+            }
+            for await (c, t, n) in group {
+                railTotals.clinchedMileage += c
+                railTotals.totalMileage += t
+                railTotals.routeCount += n
+            }
+        }
+
+        // Rank info
+        var rankInfo: (rank: Int, total: Int, percentile: Double)?
+        if let snapshot = try? await TMStatsService.shared.loadRegionStats(forceRefresh: false),
+           let pos = snapshot.position(of: username) {
+            rankInfo = (pos.rank, snapshot.userCount, pos.percentile)
+        }
+
+        set(for: username, stats: CachedStats(
+            regionStats: regionStats,
+            allRoutes: allRoutes,
+            railTotals: railTotals,
+            rankInfo: rankInfo,
+            regionCountryMap: [:],
+            date: Date()
+        ))
+    }
+}
 
 struct StatisticsView: View {
     let profile: UserProfile
@@ -94,6 +222,7 @@ struct StatisticsView: View {
         }
         .refreshable {
             await CacheService.shared.clearAll()
+            StatsCache.shared.invalidate(for: profile.username)
             // Reset state so loading indicators show
             regionStats = []
             allRoutes = []
@@ -106,7 +235,19 @@ struct StatisticsView: View {
         }
         .task {
             if regionStats.isEmpty {
-                await loadMileageData()
+                // Try cache first
+                if let cached = StatsCache.shared.get(for: profile.username) {
+                    regionStats = cached.regionStats
+                    allRoutes = cached.allRoutes
+                    railTotals = cached.railTotals
+                    rankInfo = cached.rankInfo
+                    regionCountryMap = cached.regionCountryMap
+                    isLoadingMileage = false
+                    isLoadingRoutes = false
+                    isLoadingRail = false
+                } else {
+                    await loadMileageData()
+                }
             }
         }
     }
@@ -280,11 +421,54 @@ struct StatisticsView: View {
 
     // MARK: - Longest Clinched
 
+    /// Extract the route name from a root like "il.i090" → "i090" or listName "IL I-90" → "I-90"
+    private func routeBaseName(from root: String) -> String {
+        if let dotIndex = root.firstIndex(of: ".") {
+            return String(root[root.index(after: dotIndex)...])
+        }
+        return root
+    }
+
+    /// Aggregate routes across regions — I-90 in IL + WI + IN = one combined entry
+    private var aggregatedClinchedRoutes: [RouteInfo] {
+        // Group by route base name (the part after the dot in root)
+        let grouped = Dictionary(grouping: allRoutes) { routeBaseName(from: $0.root) }
+
+        return grouped.compactMap { (baseName, regionRoutes) -> RouteInfo? in
+            let totalMileage = regionRoutes.reduce(0) { $0 + $1.mileage }
+            let totalClinched = regionRoutes.reduce(0) { $0 + $1.clinchedMileage }
+            guard totalMileage > 0, totalClinched >= totalMileage else { return nil }
+
+            // Use the route name without region prefix for display
+            let routeName: String
+            if let firstName = regionRoutes.first?.listName {
+                let parts = firstName.split(separator: " ", maxSplits: 1)
+                routeName = parts.count > 1 ? String(parts[1]) : firstName
+            } else {
+                routeName = baseName
+            }
+
+            // Collect all roots for cross-region detail view
+            let allRoots = regionRoutes.map(\.root).sorted()
+            let regions = regionRoutes.compactMap { r -> String? in
+                let parts = r.listName.split(separator: " ", maxSplits: 1)
+                return parts.count > 0 ? String(parts[0]) : nil
+            }
+            let displayName = regions.count > 1 ? routeName : (regionRoutes.first?.listName ?? routeName)
+
+            return RouteInfo(
+                id: baseName,
+                root: allRoots.first ?? baseName,
+                listName: displayName,
+                mileage: totalMileage,
+                clinchedMileage: totalClinched
+            )
+        }
+        .sorted { $0.mileage > $1.mileage }
+    }
+
     private var longestClinchedCard: some View {
-        let clinched = allRoutes
-            .filter { $0.isClinched }
-            .sorted { $0.mileage > $1.mileage }
-            .prefix(5)
+        let clinched = Array(aggregatedClinchedRoutes.prefix(5))
 
         return VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -308,9 +492,15 @@ struct StatisticsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(Array(clinched)) { route in
+                ForEach(clinched) { route in
+                    let baseName = routeBaseName(from: route.root)
+                    let allRoots = allRoutes.filter { routeBaseName(from: $0.root) == baseName }.map(\.root)
                     NavigationLink {
-                        RouteDetailView(root: route.root, listName: route.listName, username: profile.username)
+                        RouteDetailView(
+                            roots: allRoots,
+                            listName: route.listName,
+                            username: profile.username
+                        )
                     } label: {
                         HStack {
                             Text(route.listName)
@@ -327,7 +517,7 @@ struct StatisticsView: View {
                     }
                     .buttonStyle(.plain)
                 }
-                Text("\(formatInt(allRoutes.filter(\.isClinched).count)) routes fully clinched")
+                Text("\(formatInt(aggregatedClinchedRoutes.count)) routes fully clinched")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(.top, 4)
@@ -560,7 +750,7 @@ struct StatisticsView: View {
                 }
                 regionCountryMap = mapping
             } catch {
-                print("[Stats] Failed to load country map: \(error)")
+                SentrySDK.capture(error: error)
             }
         }
 
@@ -571,7 +761,7 @@ struct StatisticsView: View {
                 isLoadingMileage = false // Show CSV data immediately
             }
         } catch {
-            print("[Stats] CSV load failed: \(error)")
+            SentrySDK.capture(error: error)
         }
 
         // PHASE 2: Load route-level data AND rail totals in parallel
@@ -626,6 +816,16 @@ struct StatisticsView: View {
         railTotals = await railResult
         isLoadingRail = false
         isLoadingMileage = false
+
+        // Cache for instant reload on re-navigation
+        StatsCache.shared.set(for: username, stats: .init(
+            regionStats: regionStats,
+            allRoutes: allRoutes,
+            railTotals: railTotals,
+            rankInfo: rankInfo,
+            regionCountryMap: regionCountryMap,
+            date: Date()
+        ))
     }
 
     /// Loads route details in small batches and updates allRoutes incrementally
@@ -651,7 +851,7 @@ struct StatisticsView: View {
                                 }
                                 continuation.resume(returning: (batch.count, routes))
                             } catch {
-                                print("[Stats] Route batch failed (\(batch.prefix(3))...): \(error)")
+                                SentrySDK.capture(error: error)
                                 continuation.resume(returning: (batch.count, []))
                             }
                         }
@@ -686,7 +886,7 @@ struct StatisticsView: View {
                                     r.routes.count
                                 ))
                             } catch {
-                                print("[Stats] Rail batch failed: \(error)")
+                                SentrySDK.capture(error: error)
                                 continuation.resume(returning: (0.0, 0.0, 0))
                             }
                         }

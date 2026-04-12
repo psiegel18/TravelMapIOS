@@ -226,12 +226,7 @@ struct RoadTripRecordingView: View {
 
             // Stop
             Button {
-                if recorder.elapsedTime < 30 {
-                    // Very short trip — warn
-                    showStopConfirmation = true
-                } else {
-                    showStopConfirmation = true
-                }
+                showStopConfirmation = true
             } label: {
                 Label("Stop", systemImage: "stop.circle.fill")
                     .font(.headline)

@@ -2,16 +2,42 @@ import SwiftUI
 import MapKit
 
 struct RouteDetailView: View {
-    let root: String
+    let roots: [String]
     let listName: String
     let username: String
     var isRail: Bool = false
 
+    /// Convenience init for single-root (backward compatible)
+    init(root: String, listName: String, username: String, isRail: Bool = false) {
+        self.roots = [root]
+        self.listName = listName
+        self.username = username
+        self.isRail = isRail
+    }
+
+    init(roots: [String], listName: String, username: String, isRail: Bool = false) {
+        self.roots = roots
+        self.listName = listName
+        self.username = username
+        self.isRail = isRail
+    }
+
     @State private var routeDetail: TravelMappingAPI.RouteDetail?
+    @State private var regionBreakdown: [RegionBreakdown] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var mapPosition: MapCameraPosition = .automatic
     @ObservedObject private var settings = SyncedSettingsService.shared
+
+    struct RegionBreakdown: Identifiable {
+        let id: String // listName
+        let listName: String
+        let clinchedMileage: Double
+        let totalMileage: Double
+        let clinchedSegments: Int
+        let totalSegments: Int
+        var percentage: Double { totalMileage > 0 ? clinchedMileage / totalMileage * 100 : 0 }
+    }
 
     private var unit: String { settings.useMiles ? "mi" : "km" }
     private func convert(_ miles: Double) -> Double { settings.useMiles ? miles : miles * 1.60934 }
@@ -41,6 +67,10 @@ struct RouteDetailView: View {
                 .frame(maxHeight: .infinity)
 
             statsBar(detail: detail)
+
+            if regionBreakdown.count > 1 {
+                regionBreakdownView
+            }
         }
     }
 
@@ -120,6 +150,35 @@ struct RouteDetailView: View {
         }
     }
 
+    private var regionBreakdownView: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("By Region")
+                .font(.caption.bold())
+                .foregroundStyle(.secondary)
+                .padding(.horizontal)
+                .padding(.top, 8)
+
+            ForEach(regionBreakdown) { region in
+                HStack(spacing: 8) {
+                    Text(region.listName)
+                        .font(.caption.bold())
+                        .frame(width: 80, alignment: .leading)
+
+                    ProgressView(value: region.clinchedMileage, total: max(region.totalMileage, 1))
+                        .tint(region.percentage >= 100 ? .green : .blue)
+
+                    Text(String(format: "%.1f / %.1f %@", convert(region.clinchedMileage), convert(region.totalMileage), unit))
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 110, alignment: .trailing)
+                }
+                .padding(.horizontal)
+            }
+        }
+        .padding(.bottom, 8)
+        .background(.ultraThinMaterial)
+    }
+
     private func zoomToRoute(detail: TravelMappingAPI.RouteDetail) {
         guard !detail.coordinates.isEmpty else { return }
         let lats = detail.coordinates.map(\.latitude)
@@ -140,13 +199,44 @@ struct RouteDetailView: View {
     private func load() async {
         isLoading = true
         errorMessage = nil
+        regionBreakdown = []
         do {
             let api = isRail ? TravelMappingAPI.rail : TravelMappingAPI.shared
             let details = try await api.getRouteData(
-                roots: [root],
+                roots: roots,
                 traveler: username
             )
-            routeDetail = details.first
+            if details.count > 1 {
+                // Build per-region breakdown
+                regionBreakdown = details.map { detail in
+                    let segs = detail.segments
+                    let clinchedSegs = segs.filter(\.clinched)
+                    return RegionBreakdown(
+                        id: detail.listName,
+                        listName: detail.listName,
+                        clinchedMileage: detail.clinchedMileage,
+                        totalMileage: detail.totalMileage,
+                        clinchedSegments: clinchedSegs.count,
+                        totalSegments: segs.count
+                    )
+                }.sorted { $0.listName < $1.listName }
+
+                // Merge all region segments into one combined route detail
+                var allCoords: [CLLocationCoordinate2D] = []
+                var allClinched: [Bool] = []
+                for detail in details {
+                    allCoords.append(contentsOf: detail.coordinates)
+                    allClinched.append(contentsOf: detail.clinched)
+                }
+                routeDetail = TravelMappingAPI.RouteDetail(
+                    id: listName,
+                    listName: listName,
+                    coordinates: allCoords,
+                    clinched: allClinched
+                )
+            } else {
+                routeDetail = details.first
+            }
         } catch {
             errorMessage = error.localizedDescription
         }

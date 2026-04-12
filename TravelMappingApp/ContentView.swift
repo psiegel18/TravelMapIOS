@@ -1,9 +1,11 @@
 import SwiftUI
 import CoreSpotlight
+import WidgetKit
 
 struct ContentView: View {
     @StateObject private var dataService = DataService()
     @ObservedObject private var settings = SyncedSettingsService.shared
+    @ObservedObject private var favorites = FavoritesService.shared
     @AppStorage("hasOnboarded") private var hasOnboarded = false
     @State private var showOnboarding = false
     @State private var travelersPath = NavigationPath()
@@ -28,6 +30,9 @@ struct ContentView: View {
                 if let id = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String {
                     handleSpotlightID(id)
                 }
+            }
+            .task {
+                await prefetchUserData()
             }
     }
 
@@ -117,5 +122,103 @@ struct ContentView: View {
             .tag(4)
         }
         .tint(ThemeService.color(named: settings.accentColorName))
+    }
+
+    private func prefetchUserData() async {
+        // 1. Prefetch primary user's profile and stats
+        let primaryUser = settings.primaryUser.trimmingCharacters(in: .whitespaces)
+        if !primaryUser.isEmpty {
+            let profile = await dataService.loadUserProfile(username: primaryUser)
+            let snapshot = try? await TMStatsService.shared.loadRegionStats(forceRefresh: false)
+
+            // Write widget data to app group so the widget can display without its own network calls
+            if let snapshot {
+                updateWidgetCache(username: primaryUser, profile: profile, snapshot: snapshot)
+            }
+
+            // Prefetch full stats so the Stats tab loads instantly when opened
+            if let profile {
+                await StatsCache.shared.prefetch(username: primaryUser, profile: profile)
+            }
+        }
+
+        // 2. Prefetch up to 3 favorites (excluding primary user) in background
+        let favoritesToPrefetch = Array(
+            favorites.favorites
+                .filter { $0 != primaryUser }
+                .prefix(3)
+        )
+        await withTaskGroup(of: Void.self) { group in
+            for username in favoritesToPrefetch {
+                group.addTask {
+                    _ = await dataService.loadUserProfile(username: username)
+                }
+            }
+        }
+    }
+
+    private func updateWidgetCache(username: String, profile: UserProfile?, snapshot: TMStatsService.LeaderboardSnapshot) {
+        let userStats = snapshot.users.first { $0.username.lowercased() == username.lowercased() }
+        let position = snapshot.position(of: username)
+
+        // Find top region
+        var topRegion = ""
+        var topMiles: Double = 0
+        for (region, miles) in userStats?.byRegion ?? [:] {
+            if miles > topMiles {
+                topMiles = miles
+                topRegion = region
+            }
+        }
+
+        let entry: [String: Any] = [
+            "date": Date().timeIntervalSince1970,
+            "username": username,
+            "routes": profile?.allRoutes.count ?? 0,
+            "totalMiles": userStats?.totalMiles ?? 0,
+            "rank": position?.rank ?? 0,
+            "userCount": snapshot.userCount,
+            "percentile": position?.percentile ?? 0,
+            "topRegion": topRegion,
+            "topRegionMiles": topMiles,
+            "regionCount": userStats?.byRegion.count ?? 0
+        ]
+
+        // Encode as the same format the widget expects
+        struct WidgetEntry: Codable {
+            let date: Date
+            let username: String
+            let routes: Int
+            let totalMiles: Double
+            let rank: Int
+            let userCount: Int
+            let percentile: Double
+            let topRegion: String
+            let topRegionMiles: Double
+            let regionCount: Int
+            let useMiles: Bool
+        }
+
+        let widgetEntry = WidgetEntry(
+            date: Date(),
+            username: username,
+            routes: entry["routes"] as? Int ?? 0,
+            totalMiles: entry["totalMiles"] as? Double ?? 0,
+            rank: entry["rank"] as? Int ?? 0,
+            userCount: entry["userCount"] as? Int ?? 0,
+            percentile: entry["percentile"] as? Double ?? 0,
+            topRegion: entry["topRegion"] as? String ?? "",
+            topRegionMiles: entry["topRegionMiles"] as? Double ?? 0,
+            regionCount: entry["regionCount"] as? Int ?? 0,
+            useMiles: settings.useMiles
+        )
+
+        if let encoded = try? JSONEncoder().encode(widgetEntry) {
+            let defaults = UserDefaults(suiteName: "group.com.psiegel18.TravelMapping")
+            defaults?.set(encoded, forKey: "cachedWidgetEntry")
+            defaults?.set(settings.useMiles, forKey: "widgetUseMiles")
+        }
+
+        WidgetCenter.shared.reloadAllTimelines()
     }
 }

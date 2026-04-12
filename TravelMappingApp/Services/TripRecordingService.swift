@@ -1,3 +1,4 @@
+import Sentry
 import Foundation
 import CoreLocation
 import Combine
@@ -203,7 +204,7 @@ class TripRecordingService: NSObject, ObservableObject {
                 pushType: nil
             )
         } catch {
-            print("Failed to start Live Activity: \(error)")
+            SentrySDK.capture(error: error)
         }
     }
 
@@ -272,7 +273,7 @@ class TripRecordingService: NSObject, ObservableObject {
                 )
                 segmentMatcher.updateCache(segments: result.segments, bbox: bbox)
             } catch {
-                print("Failed to fetch segments: \(error)")
+                SentrySDK.capture(error: error)
             }
         }
     }
@@ -320,7 +321,7 @@ extension TripRecordingService: CLLocationManagerDelegate {
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        print("Location error: \(error)")
+        SentrySDK.capture(error: error)
     }
 
     nonisolated func locationManagerDidPauseLocationUpdates(_ manager: CLLocationManager) {

@@ -1,3 +1,4 @@
+import Sentry
 import Foundation
 import CoreSpotlight
 import UniformTypeIdentifiers
@@ -35,7 +36,7 @@ class SpotlightService {
 
         CSSearchableIndex.default().indexSearchableItems(items) { error in
             if let error = error {
-                print("Spotlight indexing failed: \(error)")
+                SentrySDK.capture(error: error)
             }
         }
     }

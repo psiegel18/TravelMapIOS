@@ -1,3 +1,4 @@
+import Sentry
 import Foundation
 import WatchConnectivity
 
@@ -91,7 +92,7 @@ class WatchSyncService: NSObject, ObservableObject, WCSessionDelegate {
 
     func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
         if let error {
-            print("[WatchSync] Activation error: \(error)")
+            SentrySDK.capture(error: error)
         }
     }
 

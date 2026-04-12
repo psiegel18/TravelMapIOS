@@ -8,6 +8,7 @@ struct OnboardingView: View {
     @State private var usernameInput = ""
     @State private var isValidating = false
     @State private var validationError: String?
+    @State private var showGetStarted = false
 
     var body: some View {
         TabView(selection: $page) {
@@ -41,6 +42,11 @@ struct OnboardingView: View {
             .disabled(isValidating)
             .padding(.horizontal)
             .padding(.bottom, 60)
+        }
+        .sheet(isPresented: $showGetStarted) {
+            NavigationStack {
+                GetStartedView()
+            }
         }
     }
 
@@ -167,14 +173,17 @@ struct OnboardingView: View {
                 Text("New to Travel Mapping?")
                     .font(.caption.bold())
                     .foregroundStyle(.secondary)
-                Link(destination: URL(string: "https://travelmapping.net/participate.php")!) {
+                Button {
+                    showGetStarted = true
+                } label: {
                     HStack(spacing: 4) {
-                        Text("Sign up at travelmapping.net")
-                        Image(systemName: "arrow.up.forward")
+                        Text("Create an account")
+                        Image(systemName: "arrow.right.circle.fill")
                     }
-                    .font(.caption)
+                    .font(.caption.bold())
                 }
-                Text("You can browse the app without a username and add one later in Settings.")
+                .buttonStyle(.plain)
+                Text("You can also browse without an account and set one up later in Settings.")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .multilineTextAlignment(.center)

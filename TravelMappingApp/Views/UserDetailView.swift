@@ -55,7 +55,8 @@ struct UserDetailView: View {
                         TravelMapView(
                             username: username,
                             dataService: dataService,
-                            loadedRegionsBinding: $mapLoadedRegions
+                            loadedRegionsBinding: $mapLoadedRegions,
+                            isActiveTab: selectedTab == 1
                         )
                         .opacity(selectedTab == 1 ? 1 : 0)
                         .allowsHitTesting(selectedTab == 1)

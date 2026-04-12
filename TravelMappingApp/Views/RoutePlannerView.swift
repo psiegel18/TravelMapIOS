@@ -16,7 +16,6 @@ struct RoutePlannerView: View {
     @State private var isLoadingSegments = false
     @State private var errorMessage: String?
     @State private var showDirections = false
-    @State private var showShareSheet = false
     @AppStorage("primaryUser") private var primaryUser = ""
 
     private var selectedRoute: MKRoute? {
@@ -152,9 +151,6 @@ struct RoutePlannerView: View {
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showDirections) {
             directionsSheet
-        }
-        .sheet(isPresented: $showShareSheet) {
-            ShareSheet(items: [generateDirectionsText()])
         }
     }
 
@@ -301,10 +297,7 @@ struct RoutePlannerView: View {
                     }
 
                     // Share
-                    Button {
-                        Haptics.light()
-                        showShareSheet = true
-                    } label: {
+                    ShareLink(item: generateDirectionsText()) {
                         Image(systemName: "square.and.arrow.up")
                             .font(.caption.bold())
                             .padding(.vertical, 6)
@@ -419,13 +412,7 @@ struct RoutePlannerView: View {
                         } label: {
                             Label("Copy Directions", systemImage: "doc.on.doc")
                         }
-                        Button {
-                            Haptics.light()
-                            showDirections = false
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                                showShareSheet = true
-                            }
-                        } label: {
+                        ShareLink(item: generateDirectionsText()) {
                             Label("Share Directions", systemImage: "square.and.arrow.up")
                         }
                         Button {

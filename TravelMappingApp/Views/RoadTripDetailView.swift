@@ -1,3 +1,4 @@
+import Sentry
 import SwiftUI
 import MapKit
 
@@ -51,7 +52,7 @@ struct RoadTripDetailView: View {
         }
         .sheet(isPresented: $showExportSheet) {
             if let url = exportURL {
-                ShareSheet(items: [url])
+                ExportShareView(url: url)
             }
         }
     }
@@ -306,8 +307,20 @@ struct RoadTripDetailView: View {
                 exportURL = url
                 showExportSheet = true
             } catch {
-                print("Export failed: \(error)")
+                SentrySDK.capture(error: error)
             }
         }
     }
+}
+
+private struct ExportShareView: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        let vc = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        vc.popoverPresentationController?.permittedArrowDirections = []
+        return vc
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }

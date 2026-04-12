@@ -1,3 +1,4 @@
+import Sentry
 import SwiftUI
 
 struct RouteProgressView: View {
@@ -118,7 +119,7 @@ struct RouteProgressView: View {
 
             waypoints = wps
         } catch {
-            print("Route progress error: \(error)")
+            SentrySDK.capture(error: error)
         }
 
         isLoading = false

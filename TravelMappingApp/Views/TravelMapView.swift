@@ -1,3 +1,4 @@
+import Sentry
 import SwiftUI
 import MapKit
 import CoreLocation
@@ -6,6 +7,7 @@ struct TravelMapView: View {
     let username: String
     let dataService: DataService
     @Binding var loadedRegionsBinding: Set<String>
+    var isActiveTab: Bool = true
     @State private var segments: [TravelMappingAPI.MapSegment] = []
     @State private var routeMetadata: [TravelMappingAPI.RouteMetadata] = []
     @State private var isLoading = true
@@ -33,7 +35,6 @@ struct TravelMapView: View {
     @State private var zoomToUserOnNextFix = false
     @State private var isSelectMode = false
     @State private var selectedSegmentIDs: Set<Int> = []
-    @State private var showSelectionSheet = false
     @State private var showSelectionDetail = false
     @State private var routeSearchText = ""
     @State private var tappedSegmentDetail: SegmentDetail?
@@ -105,29 +106,46 @@ struct TravelMapView: View {
     private var totalCount: Int { segments.count + railSegments.count }
 
     /// Merge consecutive 2-point segments on the same route into multi-point polylines.
+    /// Runs the expensive sort/merge on a background thread to avoid main-thread hangs.
     private func rebuildPolylines() {
-        let filtered = segments.sorted { $0.root < $1.root || ($0.root == $1.root && $0.id < $1.id) }
+        let roadSegs = segments
+        let railSegs = railSegments
+        let maxCoords = maxPolylineCoords
 
+        Task.detached(priority: .userInitiated) {
+            let roads = Self.buildMergedPolylines(from: roadSegs, startID: 0, maxCoords: maxCoords)
+            let rails = Self.buildMergedPolylines(from: railSegs, startID: 500_000, maxCoords: maxCoords)
+            await MainActor.run {
+                mergedPolylines = roads
+                mergedRailPolylines = rails
+            }
+        }
+    }
+
+    nonisolated private static func buildMergedPolylines(
+        from segs: [TravelMappingAPI.MapSegment],
+        startID: Int,
+        maxCoords: Int
+    ) -> [MergedPolyline] {
+        let filtered = segs.sorted { $0.root < $1.root || ($0.root == $1.root && $0.id < $1.id) }
         var result: [MergedPolyline] = []
         var currentCoords: [CLLocationCoordinate2D] = []
         var currentRoot = ""
         var currentClinched = false
-        var polyID = 0
+        var polyID = startID
 
         for seg in filtered {
             let sameLine = seg.root == currentRoot && seg.isClinched == currentClinched
 
             if sameLine, let last = currentCoords.last,
-               distance(last, seg.start) < 500 { // within 500m = same line
+               coordDistance(last, seg.start) < 500 {
                 currentCoords.append(seg.end)
-                // Split long polylines so MapKit renders dash patterns consistently
-                if currentCoords.count >= maxPolylineCoords {
+                if currentCoords.count >= maxCoords {
                     result.append(MergedPolyline(id: polyID, coordinates: currentCoords, isClinched: currentClinched, root: currentRoot))
                     polyID += 1
                     currentCoords = [seg.end]
                 }
             } else {
-                // Flush previous
                 if currentCoords.count >= 2 {
                     result.append(MergedPolyline(id: polyID, coordinates: currentCoords, isClinched: currentClinched, root: currentRoot))
                     polyID += 1
@@ -137,55 +155,23 @@ struct TravelMapView: View {
                 currentClinched = seg.isClinched
             }
         }
-        // Flush last
         if currentCoords.count >= 2 {
             result.append(MergedPolyline(id: polyID, coordinates: currentCoords, isClinched: currentClinched, root: currentRoot))
         }
+        return result
+    }
 
-        mergedPolylines = result
-
-        // Also rebuild rail polylines
-        mergedRailPolylines = mergeSegments(railSegments, startID: 500_000)
+    /// Static version of distance for use in static methods
+    nonisolated private static func coordDistance(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> Double {
+        let dLat = (a.latitude - b.latitude) * 111_320
+        let dLng = (a.longitude - b.longitude) * 111_320 * cos(a.latitude * .pi / 180)
+        return sqrt(dLat * dLat + dLng * dLng)
     }
 
     /// Max coordinates per polyline — keeps MapKit dash rendering consistent on long routes.
     /// MapKit stops rendering dash patterns on geographically long polylines,
     /// so we keep this low to ensure dashes stay visible.
     private let maxPolylineCoords = 15
-
-    private func mergeSegments(_ segs: [TravelMappingAPI.MapSegment], startID: Int = 0) -> [MergedPolyline] {
-        let filtered = segs.sorted { $0.root < $1.root || ($0.root == $1.root && $0.id < $1.id) }
-        var result: [MergedPolyline] = []
-        var coords: [CLLocationCoordinate2D] = []
-        var root = ""
-        var clinched = false
-        var polyID = startID
-
-        for seg in filtered {
-            if seg.root == root && seg.isClinched == clinched,
-               let last = coords.last, distance(last, seg.start) < 500 {
-                coords.append(seg.end)
-                // Split long polylines so MapKit renders dash patterns consistently
-                if coords.count >= maxPolylineCoords {
-                    result.append(MergedPolyline(id: polyID, coordinates: coords, isClinched: clinched, root: root))
-                    polyID += 1
-                    coords = [seg.end]  // continue from last point
-                }
-            } else {
-                if coords.count >= 2 {
-                    result.append(MergedPolyline(id: polyID, coordinates: coords, isClinched: clinched, root: root))
-                    polyID += 1
-                }
-                coords = [seg.start, seg.end]
-                root = seg.root
-                clinched = seg.isClinched
-            }
-        }
-        if coords.count >= 2 {
-            result.append(MergedPolyline(id: polyID, coordinates: coords, isClinched: clinched, root: root))
-        }
-        return result
-    }
 
     private func distance(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> Double {
         let dLat = (a.latitude - b.latitude) * 111_320
@@ -197,7 +183,7 @@ struct TravelMapView: View {
         ZStack(alignment: .bottom) {
             mapLayer
 
-            // Right-side controls
+            // Right-side controls — padded below compass/nav bar to avoid overlap
             VStack {
                 HStack {
                     Spacer()
@@ -209,7 +195,7 @@ struct TravelMapView: View {
                         legendButton
                     }
                     .padding(.trailing, 12)
-                    .padding(.top, 8)
+                    .padding(.top, 70)
                 }
                 Spacer()
             }
@@ -252,15 +238,34 @@ struct TravelMapView: View {
         }
         .navigationTitle("\(username)'s Map")
         .navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $routeSearchText, prompt: "Search routes (e.g. I-95)")
+        .if(isActiveTab) { view in
+            view.searchable(text: $routeSearchText, prompt: "Search routes (e.g. I-95)")
+        }
         .onChange(of: routeSearchText) {
             if !routeSearchText.isEmpty {
                 zoomToRoute(routeSearchText)
             }
         }
         .sheet(item: $tappedSegmentDetail) { detail in
-            SegmentDetailSheet(detail: detail, username: username)
-                .presentationDetents([.medium])
+            SegmentDetailSheet(
+                detail: detail,
+                username: username,
+                onSelectAll: { root in
+                    isSelectMode = true
+                    let ids = segments.filter { $0.root == root }.map(\.id)
+                    selectedSegmentIDs.formUnion(ids)
+                    Haptics.success()
+                    tappedSegmentDetail = nil
+                },
+                onSelectClinched: { root in
+                    isSelectMode = true
+                    let ids = segments.filter { $0.root == root && $0.isClinched }.map(\.id)
+                    selectedSegmentIDs.formUnion(ids)
+                    Haptics.success()
+                    tappedSegmentDetail = nil
+                }
+            )
+            .presentationDetents([.medium])
         }
         .sheet(isPresented: $showRegionPicker, onDismiss: {
             // Commit pending selection when sheet closes
@@ -378,9 +383,12 @@ struct TravelMapView: View {
                 visibleRegion = context.region
             }
             .mapControls {
+                // Only show compass and scale — suppress all other default controls
+                // (pitch toggle, user location button, etc.) since we have custom versions
                 MapCompass()
                 MapScaleView()
             }
+            .mapControlVisibility(.automatic)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipped()
             .onTapGesture { screenPoint in
@@ -392,14 +400,30 @@ struct TravelMapView: View {
     }
 
     private func handleSegmentTap(at coordinate: CLLocationCoordinate2D) {
-        // Only search segments that are currently visible on the map
+        // Pre-filter to segments within the visible map region to avoid iterating all segments
+        let region = visibleRegion ?? MKCoordinateRegion(
+            center: coordinate,
+            span: MKCoordinateSpan(latitudeDelta: 1, longitudeDelta: 1)
+        )
+        let minLat = region.center.latitude - region.span.latitudeDelta / 2
+        let maxLat = region.center.latitude + region.span.latitudeDelta / 2
+        let minLng = region.center.longitude - region.span.longitudeDelta / 2
+        let maxLng = region.center.longitude + region.span.longitudeDelta / 2
+
+        func inBounds(_ seg: TravelMappingAPI.MapSegment) -> Bool {
+            (seg.start.latitude >= minLat && seg.start.latitude <= maxLat &&
+             seg.start.longitude >= minLng && seg.start.longitude <= maxLng) ||
+            (seg.end.latitude >= minLat && seg.end.latitude <= maxLat &&
+             seg.end.longitude >= minLng && seg.end.longitude <= maxLng)
+        }
+
         var visibleSegs: [TravelMappingAPI.MapSegment] = []
-        for seg in segments {
+        for seg in segments where inBounds(seg) {
             if showClinched && seg.isClinched { visibleSegs.append(seg) }
             else if showUnclinched && !seg.isClinched { visibleSegs.append(seg) }
         }
         if showRail {
-            for seg in railSegments {
+            for seg in railSegments where inBounds(seg) {
                 if showClinched && seg.isClinched { visibleSegs.append(seg) }
                 else if showUnclinched && !seg.isClinched { visibleSegs.append(seg) }
             }
@@ -697,10 +721,7 @@ struct TravelMapView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Copy .list text to clipboard")
 
-                Button {
-                    Haptics.light()
-                    showSelectionSheet = true
-                } label: {
+                ShareLink(item: generateSelectionText()) {
                     Image(systemName: "square.and.arrow.up")
                         .font(.caption)
                 }
@@ -756,10 +777,6 @@ struct TravelMapView: View {
         .background(.yellow.opacity(0.2), in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(.yellow, lineWidth: 1))
         .padding(.horizontal)
-        .sheet(isPresented: $showSelectionSheet) {
-            let text = generateSelectionText()
-            ShareSheet(items: [text])
-        }
     }
 
     private func generateSelectionText() -> String {
@@ -1179,7 +1196,7 @@ struct TravelMapView: View {
                                 traveler: self.username
                             )
                         } catch {
-                            print("Failed to load \(region): \(error)")
+                            SentrySDK.capture(error: error)
                             return nil
                         }
                     }
@@ -1308,7 +1325,7 @@ class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        print("Location error: \(error)")
+        SentrySDK.capture(error: error)
     }
 }
 
@@ -1371,6 +1388,8 @@ struct MileageLabel: View {
 struct SegmentDetailSheet: View {
     let detail: TravelMapView.SegmentDetail
     let username: String
+    var onSelectAll: ((String) -> Void)? = nil
+    var onSelectClinched: ((String) -> Void)? = nil
 
     var body: some View {
         NavigationStack {
@@ -1415,6 +1434,35 @@ struct SegmentDetailSheet: View {
                 }
                 .buttonStyle(.plain)
 
+                // Route-level selection actions
+                if onSelectAll != nil || onSelectClinched != nil {
+                    VStack(spacing: 10) {
+                        if let onSelectAll {
+                            Button {
+                                onSelectAll(detail.root)
+                            } label: {
+                                Label("Select All Segments on Route", systemImage: "checkmark.circle")
+                                    .frame(maxWidth: .infinity)
+                                    .padding()
+                                    .background(.yellow.opacity(0.15), in: RoundedRectangle(cornerRadius: 12))
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        if let onSelectClinched {
+                            Button {
+                                onSelectClinched(detail.root)
+                            } label: {
+                                Label("Select Traveled Segments on Route", systemImage: "checkmark.circle.fill")
+                                    .frame(maxWidth: .infinity)
+                                    .padding()
+                                    .background(.green.opacity(0.15), in: RoundedRectangle(cornerRadius: 12))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+
                 Spacer()
             }
             .padding()
@@ -1435,5 +1483,16 @@ extension Color {
         let g = Double((int >> 8) & 0xFF) / 255.0
         let b = Double(int & 0xFF) / 255.0
         self.init(red: r, green: g, blue: b)
+    }
+}
+
+extension View {
+    @ViewBuilder
+    func `if`<Content: View>(_ condition: Bool, transform: (Self) -> Content) -> some View {
+        if condition {
+            transform(self)
+        } else {
+            self
+        }
     }
 }

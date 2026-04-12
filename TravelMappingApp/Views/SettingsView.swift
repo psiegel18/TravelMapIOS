@@ -13,9 +13,41 @@ struct SettingsView: View {
     @State private var showSentryTestAlert = false
     @State private var showBugReport = false
     @State private var bugReportMessage = ""
+    @State private var isValidatingUser = false
+    @State private var userValidationResult: Bool? = Self.cachedValidationResult
+    @State private var lastValidatedUsername = Self.cachedValidatedUsername
+
+    // Persist validation across view recreations
+    private static var cachedValidatedUsername: String {
+        get { UserDefaults.standard.string(forKey: "validatedUsername") ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: "validatedUsername") }
+    }
+    private static var cachedValidationResult: Bool? {
+        get {
+            guard UserDefaults.standard.object(forKey: "validationResult") != nil else { return nil }
+            return UserDefaults.standard.bool(forKey: "validationResult")
+        }
+        set {
+            if let val = newValue {
+                UserDefaults.standard.set(val, forKey: "validationResult")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "validationResult")
+            }
+        }
+    }
 
     var body: some View {
         Form {
+            // 1. Get Started Guide
+            Section("Travel Mapping") {
+                NavigationLink {
+                    GetStartedView()
+                } label: {
+                    Label("Get Started Guide", systemImage: "questionmark.circle")
+                }
+            }
+
+            // 2. Primary User
             Section {
                 HStack {
                     Text("Primary User")
@@ -26,13 +58,11 @@ struct SettingsView: View {
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                         .onChange(of: settings.primaryUser) {
+                            userValidationResult = nil
                             watchUsername = settings.primaryUser
-                            // Write to app group so widget/watch can read
                             UserDefaults(suiteName: "group.com.psiegel18.TravelMapping")?
                                 .set(settings.primaryUser, forKey: "widgetUsername")
-                            // Reload widget timelines
                             WidgetCenter.shared.reloadAllTimelines()
-                            // Keep Sentry user in sync
                             if !settings.primaryUser.isEmpty {
                                 SentrySDK.configureScope { scope in
                                     scope.setUser(User(userId: settings.primaryUser))
@@ -40,36 +70,63 @@ struct SettingsView: View {
                                 }
                             }
                         }
+                    if isValidatingUser {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else if let valid = userValidationResult {
+                        Image(systemName: valid ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                            .foregroundStyle(valid ? .green : .orange)
+                    }
+                }
+                .task(id: settings.primaryUser) {
+                    let username = settings.primaryUser.trimmingCharacters(in: .whitespaces)
+                    guard !username.isEmpty else {
+                        userValidationResult = nil
+                        lastValidatedUsername = ""
+                        Self.cachedValidatedUsername = ""
+                        Self.cachedValidationResult = nil
+                        return
+                    }
+                    guard username != lastValidatedUsername else { return }
+                    try? await Task.sleep(for: .milliseconds(600))
+                    guard !Task.isCancelled else { return }
+                    isValidatingUser = true
+                    let result = await validateUsername(username)
+                    if let result {
+                        // Only cache definitive results, not network failures
+                        userValidationResult = result
+                        lastValidatedUsername = username
+                        Self.cachedValidatedUsername = username
+                        Self.cachedValidationResult = result
+                    }
+                    // If result is nil (request failed), leave previous state unchanged
+                    isValidatingUser = false
                 }
             } header: {
                 Text("Quick Access")
             } footer: {
-                Text("Set your username for one-tap access, widget stats, and Watch app.")
+                if let valid = userValidationResult, !valid {
+                    Text("Username not found on Travel Mapping. Check your spelling or create an account from the Get Started guide above.")
+                        .foregroundStyle(.orange)
+                } else {
+                    Text("Set your username for one-tap access, widget stats, and Watch app.")
+                }
             }
 
+            // 3. Units
             Section("Units") {
                 Picker("Distance", selection: $settings.useMiles) {
                     Text("Miles").tag(true)
                     Text("Kilometers").tag(false)
                 }
+                .onChange(of: settings.useMiles) {
+                    UserDefaults(suiteName: "group.com.psiegel18.TravelMapping")?
+                        .set(settings.useMiles, forKey: "widgetUseMiles")
+                    WidgetCenter.shared.reloadAllTimelines()
+                }
             }
 
-            Section {
-                Toggle("iCloud Sync", isOn: $favorites.iCloudSyncEnabled)
-            } header: {
-                Text("Sync")
-            } footer: {
-                Text("Sync favorites across your Apple devices. When disabled, favorites are stored only on this device.")
-            }
-
-            Section {
-                Toggle("Show on Apple Watch", isOn: $sendToWatch)
-            } header: {
-                Text("Apple Watch")
-            } footer: {
-                Text("Send live trip recording status and route directions to your Apple Watch. Disable to stop sending updates.")
-            }
-
+            // 4. Map Line Styles
             Section("Map Line Styles") {
                 Picker("Road Style", selection: $settings.roadLineStyle) {
                     ForEach(MapStyleService.LineStyle.allCases) { style in
@@ -88,7 +145,6 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                         .frame(width: 30)
                 }
-
                 HStack {
                     Text("Rail Width")
                     Slider(value: $settings.railLineWidth, in: 1...6, step: 0.5)
@@ -99,6 +155,7 @@ struct SettingsView: View {
                 }
             }
 
+            // 5. Accent Color
             Section {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 48))], spacing: 12) {
                     ForEach(ThemeService.availableColors, id: \.name) { item in
@@ -135,6 +192,7 @@ struct SettingsView: View {
                 Text("Controls tint for tab icons, buttons, links, and interactive elements throughout the app.")
             }
 
+            // 6. Cache
             Section {
                 CacheStatusView()
 
@@ -148,40 +206,20 @@ struct SettingsView: View {
             } header: {
                 Text("Cache")
             } footer: {
-                Text("Cached stats, user lists, and API responses (refreshes every 6–24 hours). Pull down on any page to force-refresh. Clear the cache if data seems stale or you want to free up space.")
+                Text("Cached stats, user lists, and API responses (refreshes every 6\u{2013}24 hours). Pull down on any page to force-refresh.")
             }
 
-            Section("Links") {
-                Link(destination: URL(string: "https://travelmapping.net")!) {
-                    Label("Travel Mapping (Roads)", systemImage: "car.fill")
-                }
-                Link(destination: URL(string: "https://tmrail.teresco.org")!) {
-                    Label("Travel Mapping (Rail)", systemImage: "tram.fill")
-                }
-                Link(destination: URL(string: "https://github.com/TravelMapping/UserData")!) {
-                    Label("User Data on GitHub", systemImage: "chevron.left.forwardslash.chevron.right")
-                }
-                Link(destination: URL(string: "https://travelmapping.net/devel/devel.php")!) {
-                    Label("Developer Documentation", systemImage: "doc.text")
-                }
-            }
-
-            Section("Travel Mapping") {
-                NavigationLink {
-                    GetStartedView()
-                } label: {
-                    Label("Get Started Guide", systemImage: "questionmark.circle")
-                }
-            }
-
+            // 7. Sync & Apple Watch
             Section {
-                TipJarView()
+                Toggle("iCloud Sync", isOn: $favorites.iCloudSyncEnabled)
+                Toggle("Show on Apple Watch", isOn: $sendToWatch)
             } header: {
-                Text("Tip Jar")
+                Text("Sync & Apple Watch")
             } footer: {
-                Text("Travel Mapping is free and open source. Tips help support continued development of the iOS app.")
+                Text("iCloud syncs favorites across devices. Apple Watch receives live trip status and route directions.")
             }
 
+            // 8. Support
             Section("Support") {
                 Button {
                     Haptics.light()
@@ -201,6 +239,16 @@ struct SettingsView: View {
                 }
             }
 
+            // 9. Tip Jar
+            Section {
+                TipJarView()
+            } header: {
+                Text("Tip Jar")
+            } footer: {
+                Text("Travel Mapping is free and open source. Tips help support continued iOS app development.")
+            }
+
+            // 10. About
             Section("About") {
                 LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0")
                     .onTapGesture {
@@ -212,8 +260,26 @@ struct SettingsView: View {
                     }
                 LabeledContent("Data Source", value: "travelmapping.net + tmrail.teresco.org")
                 LabeledContent("User Data", value: "GitHub API")
-                Link(destination: URL(string: "https://psiegel18.github.io/TravelMapIOS/PRIVACY.html")!) {
+                NavigationLink {
+                    PrivacyPolicyView()
+                } label: {
                     Label("Privacy Policy", systemImage: "hand.raised")
+                }
+            }
+
+            // 11. Links
+            Section("Links") {
+                Link(destination: URL(string: "https://travelmapping.net")!) {
+                    Label("Travel Mapping (Roads)", systemImage: "car.fill")
+                }
+                Link(destination: URL(string: "https://tmrail.teresco.org")!) {
+                    Label("Travel Mapping (Rail)", systemImage: "tram.fill")
+                }
+                Link(destination: URL(string: "https://github.com/TravelMapping/UserData")!) {
+                    Label("User Data on GitHub", systemImage: "chevron.left.forwardslash.chevron.right")
+                }
+                Link(destination: URL(string: "https://travelmapping.net/devel/devel.php")!) {
+                    Label("Developer Documentation", systemImage: "doc.text")
                 }
             }
             .alert("Send Test Event", isPresented: $showSentryTestAlert) {
@@ -254,6 +320,23 @@ struct SettingsView: View {
 
     private func requestReview() {
         requestReviewAction()
+    }
+
+    /// Returns true if found, false if confirmed not found, nil if the request failed (don't cache failures).
+    private func validateUsername(_ username: String) async -> Bool? {
+        let url = URL(string: "https://travelmapping.net/lib/getTravelerRoutes.php?dbname=TravelMapping")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.httpBody = "params={\"traveler\":\"\(username)\"}".data(using: .utf8)
+
+        guard let (data, _) = try? await URLSession.shared.data(for: request),
+              !data.isEmpty,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let routes = json["routes"] as? [Any] else {
+            return nil  // Request failed — don't treat as "not found"
+        }
+        return !routes.isEmpty
     }
 }
 
@@ -438,18 +521,18 @@ struct TipJarView: View {
                         Button {
                             Task { await purchase(product) }
                         } label: {
-                            VStack(spacing: 4) {
+                            HStack(spacing: 6) {
                                 Text(Self.tipEmojis[product.id] ?? "💰")
-                                    .font(.title2)
+                                    .font(.body)
                                 Text(Self.tipLabels[product.id] ?? "Tip")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
+                                    .font(.caption)
+                                Spacer()
                                 Text(product.displayPrice)
                                     .font(.caption.bold())
                             }
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 10)
-                            .background(Color.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(Color.blue.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
                         }
                         .buttonStyle(.plain)
                     }
@@ -467,7 +550,7 @@ struct TipJarView: View {
             do {
                 products = try await Product.products(for: Self.tipIDs)
             } catch {
-                print("[TipJar] Failed to load products: \(error)")
+                SentrySDK.capture(error: error)
             }
             isLoading = false
         }
@@ -501,7 +584,211 @@ struct TipJarView: View {
                 break
             }
         } catch {
-            print("[TipJar] Purchase failed: \(error)")
+            SentrySDK.capture(error: error)
+        }
+    }
+}
+
+// MARK: - Privacy Policy
+
+struct PrivacyPolicyView: View {
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                // Header
+                VStack(spacing: 8) {
+                    Image(systemName: "hand.raised.fill")
+                        .font(.system(size: 40))
+                        .foregroundStyle(.blue)
+                    Text("Your Privacy Matters")
+                        .font(.title2.bold())
+                    Text("Travel Mapping is designed to keep your data on your device.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(.vertical)
+
+                // Quick summary cards
+                HStack(spacing: 12) {
+                    summaryCard(icon: "xmark.shield.fill", color: .red, title: "No Ads", subtitle: "Ever")
+                    summaryCard(icon: "location.slash.fill", color: .green, title: "GPS Stays", subtitle: "On Device")
+                    summaryCard(icon: "eye.slash.fill", color: .purple, title: "No Tracking", subtitle: "Period")
+                }
+                .padding(.horizontal)
+
+                // Sections
+                policyCard(icon: "location.fill", color: .blue, title: "Location Data") {
+                    bullet("Accessed only when you start a Road Trip or tap the location button")
+                    bullet("Stored locally on your device and in iCloud if enabled")
+                    bullet("Never sent to third-party servers")
+                    bullet("Stops when you end the recording session")
+                }
+
+                policyCard(icon: "gear", color: .gray, title: "User Preferences") {
+                    bullet("Favorites, username, map settings stored on device")
+                    bullet("Optionally syncs via iCloud Key-Value Storage")
+                }
+
+                policyCard(icon: "network", color: .orange, title: "Network Requests") {
+                    Text("The app fetches public data from:")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    serviceRow("travelmapping.net", desc: "Route data & statistics")
+                    serviceRow("tmrail.teresco.org", desc: "Rail route data")
+                    serviceRow("GitHub", desc: "User travel list files")
+                    Text("No personal information is transmitted.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 4)
+                }
+
+                policyCard(icon: "ant.fill", color: .teal, title: "Crash Reporting") {
+                    Text("We use Sentry to collect anonymous crash reports to improve stability.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    bullet("Device model, OS version, app version")
+                    bullet("Stack trace (what code was running)")
+                    bullet("Your TravelMapping username if set")
+                    bullet("General device state (memory, battery)")
+                    HStack(spacing: 4) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                            .font(.caption)
+                        Text("Not used for ads, tracking, or analytics")
+                            .font(.caption.bold())
+                            .foregroundStyle(.green)
+                    }
+                    .padding(.top, 4)
+                }
+
+                policyCard(icon: "xmark.circle.fill", color: .red, title: "We Do Not Collect") {
+                    noBullet("Personal info (email, phone, real name)")
+                    noBullet("Advertising or tracking data")
+                    noBullet("Your road trip data or location history")
+                }
+
+                policyCard(icon: "externaldrive.fill", color: .indigo, title: "Data Storage") {
+                    storagePill(icon: "iphone", label: "Device", detail: "Preferences, favorites, cache, trips")
+                    storagePill(icon: "icloud", label: "iCloud", detail: "Favorites & preferences (optional)")
+                    storagePill(icon: "server.rack", label: "Sentry", detail: "Anonymous crash reports only")
+                }
+
+                policyCard(icon: "slider.horizontal.3", color: .mint, title: "Your Choices") {
+                    bullet("iCloud sync: Toggle on/off in Settings")
+                    bullet("Location: Only for trip recording \u{2014} deny and still use the app")
+                    bullet("Cache: Clear anytime from Settings")
+                }
+
+                policyCard(icon: "figure.child", color: .yellow, title: "Children's Privacy") {
+                    Text("We do not knowingly collect data from children under 13.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                // Footer
+                VStack(spacing: 4) {
+                    Text("Last updated: April 12, 2026")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    Link("View web version", destination: URL(string: "https://psiegel18.github.io/TravelMapIOS/PRIVACY.html")!)
+                        .font(.caption2)
+                }
+                .padding(.top, 8)
+                .padding(.bottom, 20)
+            }
+        }
+        .navigationTitle("Privacy Policy")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    // MARK: - Components
+
+    private func summaryCard(icon: String, color: Color, title: String, subtitle: String) -> some View {
+        VStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.title2)
+                .foregroundStyle(color)
+            Text(title)
+                .font(.caption.bold())
+            Text(subtitle)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 12)
+        .background(color.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    @ViewBuilder
+    private func policyCard<Content: View>(icon: String, color: Color, title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.subheadline)
+                    .foregroundStyle(color)
+                    .frame(width: 24)
+                Text(title)
+                    .font(.subheadline.bold())
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                content()
+            }
+            .padding(.leading, 32)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .padding(.horizontal)
+    }
+
+    private func bullet(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "checkmark")
+                .font(.caption2.bold())
+                .foregroundStyle(.green)
+                .frame(width: 14)
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func noBullet(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "xmark")
+                .font(.caption2.bold())
+                .foregroundStyle(.red)
+                .frame(width: 14)
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func serviceRow(_ name: String, desc: String) -> some View {
+        HStack(spacing: 6) {
+            Text(name)
+                .font(.caption.bold())
+            Text("\u{2014} \(desc)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.leading, 4)
+    }
+
+    private func storagePill(icon: String, label: String, detail: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.caption)
+                .foregroundStyle(.blue)
+                .frame(width: 20)
+            Text(label)
+                .font(.caption.bold())
+                .frame(width: 50, alignment: .leading)
+            Text(detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 }
