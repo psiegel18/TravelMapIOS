@@ -1,5 +1,7 @@
 import SwiftUI
 import MapKit
+import Sentry
+import SentrySwiftUI
 
 struct UserDetailView: View {
     let username: String
@@ -14,6 +16,12 @@ struct UserDetailView: View {
     @ObservedObject private var settings = SyncedSettingsService.shared
 
     var body: some View {
+        SentryTracedView("UserDetailView", waitForFullDisplay: true) {
+            bodyContent
+        }
+    }
+
+    private var bodyContent: some View {
         Group {
             if isLoading {
                 ProgressView("Loading \(username)...")
@@ -119,6 +127,7 @@ struct UserDetailView: View {
             profile = await dataService.loadUserProfile(username: username)
             // Show profile immediately so StatisticsView can start loading
             isLoading = false
+            SentrySDK.reportFullyDisplayed()
             // Load supporting data in background (doesn't block the UI)
             if let snapshot = try? await TMStatsService.shared.loadRegionStats(forceRefresh: false),
                let user = snapshot.users.first(where: { $0.username.lowercased() == username.lowercased() }) {

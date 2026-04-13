@@ -1,4 +1,5 @@
 import Sentry
+import SentrySwiftUI
 import SwiftUI
 
 /// In-memory cache for stats data so navigating away and back doesn't reload.
@@ -202,6 +203,12 @@ struct StatisticsView: View {
     }
 
     var body: some View {
+        SentryTracedView("StatisticsView", waitForFullDisplay: true) {
+            bodyContent
+        }
+    }
+
+    private var bodyContent: some View {
         ScrollView {
             VStack(spacing: 20) {
                 unitToggle
@@ -826,6 +833,7 @@ struct StatisticsView: View {
             regionCountryMap: regionCountryMap,
             date: Date()
         ))
+        SentrySDK.reportFullyDisplayed()
     }
 
     /// Loads route details in small batches and updates allRoutes incrementally

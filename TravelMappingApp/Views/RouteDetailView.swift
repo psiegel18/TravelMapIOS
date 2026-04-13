@@ -1,5 +1,7 @@
 import SwiftUI
 import MapKit
+import Sentry
+import SentrySwiftUI
 
 struct RouteDetailView: View {
     let roots: [String]
@@ -44,21 +46,23 @@ struct RouteDetailView: View {
     private func convert(_ miles: Double) -> Double { settings.useMiles ? miles : miles * 1.60934 }
 
     var body: some View {
-        Group {
-            if isLoading {
-                ProgressView("Loading route...")
-            } else if let error = errorMessage {
-                ErrorView(message: error) { await load() }
-            } else if let detail = routeDetail {
-                loadedContent(detail: detail)
-            } else {
-                ErrorView(message: "No route data returned for \(listName). The server may be temporarily unavailable.") { await load() }
+        SentryTracedView("RouteDetailView", waitForFullDisplay: true) {
+            Group {
+                if isLoading {
+                    ProgressView("Loading route...")
+                } else if let error = errorMessage {
+                    ErrorView(message: error) { await load() }
+                } else if let detail = routeDetail {
+                    loadedContent(detail: detail)
+                } else {
+                    ErrorView(message: "No route data returned for \(listName). The server may be temporarily unavailable.") { await load() }
+                }
             }
+            .navigationTitle(listName)
+            .navigationBarTitleDisplayMode(.inline)
+            .task { await load() }
+            .refreshable { await load() }
         }
-        .navigationTitle(listName)
-        .navigationBarTitleDisplayMode(.inline)
-        .task { await load() }
-        .refreshable { await load() }
     }
 
     @ViewBuilder
@@ -290,6 +294,7 @@ struct RouteDetailView: View {
             errorMessage = error.localizedDescription
         }
         isLoading = false
+        SentrySDK.reportFullyDisplayed()
     }
 }
 
