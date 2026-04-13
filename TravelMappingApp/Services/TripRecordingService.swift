@@ -77,7 +77,15 @@ class TripRecordingService: NSObject, ObservableObject {
         guard !isRecording else { return }
 
         currentTripType = tripType
+        // System permission dialog blocks the main thread — pause hang tracking so Sentry
+        // doesn't report it as a false-positive app hang. Resume after the dialog has
+        // had time to be shown and dismissed.
+        SentrySDK.pauseAppHangTracking()
         locationManager.requestAlwaysAuthorization()
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(3))
+            SentrySDK.resumeAppHangTracking()
+        }
         locationManager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
         locationManager.distanceFilter = 50
         locationManager.activityType = tripType == .rail ? .otherNavigation : .automotiveNavigation
