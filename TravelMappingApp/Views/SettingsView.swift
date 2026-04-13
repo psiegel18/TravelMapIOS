@@ -4,7 +4,6 @@ import WidgetKit
 import Sentry
 
 struct SettingsView: View {
-    @Environment(\.requestReview) private var requestReviewAction
     @ObservedObject private var settings = SyncedSettingsService.shared
     @ObservedObject private var favorites = FavoritesService.shared
     @AppStorage("watchUsername") private var watchUsername = ""
@@ -221,10 +220,7 @@ struct SettingsView: View {
 
             // 8. Support
             Section("Support") {
-                Button {
-                    Haptics.light()
-                    requestReview()
-                } label: {
+                Link(destination: URL(string: "https://apps.apple.com/app/id6761671062?action=write-review")!) {
                     Label("Rate the App", systemImage: "star.fill")
                 }
                 Link(destination: URL(string: "https://github.com/psiegel18/TravelMapIOS/discussions")!) {
@@ -313,10 +309,6 @@ struct SettingsView: View {
         } message: {
             Text("Describe what happened or what you expected. This will be sent as feedback to help improve the app.")
         }
-    }
-
-    private func requestReview() {
-        requestReviewAction()
     }
 
     /// Returns true if found, false if confirmed not found, nil if the request failed (don't cache failures).

@@ -34,6 +34,7 @@ xcodebuild -project TravelMappingApp.xcodeproj -scheme TravelMappingApp \
 - Use `ShareLink` for sharing text; for programmatic URL/file share sheets, use a direct `UIViewControllerRepresentable` wrapping `UIActivityViewController` (not a nested wrapper that presents it in `updateUIViewController` — that leaves a blank sheet on iPhone)
 - New types must be embedded in existing files (pbxproj edits don't work reliably)
 - Chained `.alert(...)` modifiers on a `Section` inside a `Form` silently fail to present — attach alerts to the `Form` itself (outside all sections)
+- Prefer the App Store write-review URL (`https://apps.apple.com/app/id{APP_ID}?action=write-review`) over `SKStoreReviewController.requestReview()` — the system prompt is silently throttled (3/year cap, can no-op in TestFlight)
 
 ### Project Structure
 
