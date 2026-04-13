@@ -72,6 +72,7 @@ struct TravelMappingApp: App {
             options.sessionReplay.onErrorSampleRate = 1.0
             options.sessionReplay.maskAllText = false
             options.sessionReplay.maskAllImages = false
+            options.sessionReplay.maskedViewClasses = []
             options.sessionReplay.quality = .medium
 
             // -- User Feedback Widget --
@@ -93,6 +94,19 @@ struct TravelMappingApp: App {
                     form.submitButtonLabel = "Send Report"
                     form.useSentryUser = true
                 }
+            }
+
+            // -- Filter out expected noise (cancelled URL tasks) --
+            options.beforeSend = { event in
+                if let exceptions = event.exceptions {
+                    for exception in exceptions {
+                        if exception.type == "NSURLErrorDomain",
+                           exception.value?.contains("Code=-999") == true {
+                            return nil
+                        }
+                    }
+                }
+                return event
             }
 
             // -- Custom tags & context --
