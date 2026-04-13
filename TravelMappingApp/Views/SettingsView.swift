@@ -323,9 +323,16 @@ struct SettingsView: View {
               !data.isEmpty,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let routes = json["routes"] as? [Any] else {
+            SentrySDK.logger.debug("Username validation request failed", attributes: ["username": username])
             return nil  // Request failed — don't treat as "not found"
         }
-        return !routes.isEmpty
+        let found = !routes.isEmpty
+        SentrySDK.logger.debug("Username validation", attributes: [
+            "username": username,
+            "found": found,
+            "routeCount": routes.count,
+        ])
+        return found
     }
 }
 

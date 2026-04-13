@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import Combine
+import Sentry
 
 /// Settings that sync across iCloud devices using NSUbiquitousKeyValueStore.
 /// Falls back to UserDefaults when iCloud isn't available.
@@ -116,6 +117,24 @@ class SyncedSettingsService: ObservableObject {
     }
 
     @objc private func cloudDidChange(_ notification: Notification) {
+        let userInfo = notification.userInfo
+        let reason = userInfo?[NSUbiquitousKeyValueStoreChangeReasonKey] as? Int ?? -1
+        let changedKeys = userInfo?[NSUbiquitousKeyValueStoreChangedKeysKey] as? [String] ?? []
+        let reasonName: String = switch reason {
+        case NSUbiquitousKeyValueStoreServerChange: "serverChange"
+        case NSUbiquitousKeyValueStoreInitialSyncChange: "initialSync"
+        case NSUbiquitousKeyValueStoreQuotaViolationChange: "quotaViolation"
+        case NSUbiquitousKeyValueStoreAccountChange: "accountChange"
+        default: "unknown(\(reason))"
+        }
+        if reason == NSUbiquitousKeyValueStoreQuotaViolationChange {
+            SentrySDK.logger.warn("iCloud KVS quota exceeded", attributes: ["changedKeys": changedKeys.joined(separator: ",")])
+        } else {
+            SentrySDK.logger.info("iCloud sync received", attributes: [
+                "reason": reasonName,
+                "keyCount": changedKeys.count,
+            ])
+        }
         Task { @MainActor in
             // Pull latest values from cloud
             if let v: String = Self.load("primaryUser") { primaryUser = v }

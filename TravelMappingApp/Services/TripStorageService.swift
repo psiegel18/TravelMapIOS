@@ -1,4 +1,5 @@
 import Foundation
+import Sentry
 
 actor TripStorageService {
     static let shared = TripStorageService()
@@ -60,6 +61,11 @@ actor TripStorageService {
         let content = ListFileGenerator.generate(from: trip.matchedSegments, tripName: trip.name)
         let fileURL = tripsDir.appendingPathComponent("\(trip.id.uuidString).list")
         try content.write(to: fileURL, atomically: true, encoding: .utf8)
+        SentrySDK.logger.info("Trip exported to .list", attributes: [
+            "segmentCount": trip.matchedSegments.count,
+            "bytes": content.utf8.count,
+            "tripType": trip.tripType == .rail ? "rail" : "road",
+        ])
         return fileURL
     }
 }
