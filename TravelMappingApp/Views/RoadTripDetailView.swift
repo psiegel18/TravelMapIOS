@@ -5,6 +5,7 @@ import MapKit
 struct RoadTripDetailView: View {
     @State var trip: RoadTrip
     @State private var shareContent: ShareContent?
+    @State private var exportURL: URL?
     @State private var replayProgress: Double = 1.0  // 0.0 to 1.0
     @State private var isPlaying = false
     @State private var playTimer: Timer?
@@ -27,7 +28,7 @@ struct RoadTripDetailView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    if let url = try? TripStorageService.shared.exportListFile(for: trip) {
+                    if let url = exportURL {
                         ShareLink(item: url, preview: SharePreview("\(trip.name).list")) {
                             Label("Export .list File", systemImage: "doc.text")
                         }
@@ -46,6 +47,9 @@ struct RoadTripDetailView: View {
         }
         .sheet(item: $shareContent) { content in
             SharePreviewSheet(content: content)
+        }
+        .task {
+            exportURL = try? await TripStorageService.shared.exportListFile(for: trip)
         }
     }
 
