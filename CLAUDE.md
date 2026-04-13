@@ -16,7 +16,7 @@ xcodebuild -project TravelMappingApp.xcodeproj -scheme TravelMappingApp \
 - Two TravelMapping APIs: `.shared` (roads) and `.rail` (rail/transit)
 - iCloud sync via `NSUbiquitousKeyValueStore` in `SyncedSettingsService`
 - GPS trip recording with real-time segment matching in `TripRecordingService`
-- Sentry crash reporting (all errors via `SentrySDK.capture(error:)`, no `print()`)
+- Sentry crash reporting (all errors via `SentrySDK.capture(error:)`, no `print()`); environment tagged `development`/`testflight`/`appstore` via `sandboxReceipt` detection; continuous profiling + session replay + `app.channel` tag
 - Stats prefetch on launch for primary user + up to 3 favorites
 - In-memory `StatsCache` (1hr TTL) for instant re-navigation
 - Widget data populated from main app via app group (`group.com.psiegel18.TravelMapping`)
@@ -31,8 +31,9 @@ xcodebuild -project TravelMappingApp.xcodeproj -scheme TravelMappingApp \
 - Backward-compatible Codable: use `decodeIfPresent` with defaults for new fields
 - Expensive map work (polyline rebuild, segment distance) runs off main thread
 - Multi-region routes aggregate by root base name (e.g. `il.i090` → `i090`)
-- Use `ShareLink` for sharing text, not `UIActivityViewController` wrappers
+- Use `ShareLink` for sharing text; for programmatic URL/file share sheets, use a direct `UIViewControllerRepresentable` wrapping `UIActivityViewController` (not a nested wrapper that presents it in `updateUIViewController` — that leaves a blank sheet on iPhone)
 - New types must be embedded in existing files (pbxproj edits don't work reliably)
+- Chained `.alert(...)` modifiers on a `Section` inside a `Form` silently fail to present — attach alerts to the `Form` itself (outside all sections)
 
 ### Project Structure
 

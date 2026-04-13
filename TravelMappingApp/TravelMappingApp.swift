@@ -3,16 +3,24 @@ import Sentry
 
 @main
 struct TravelMappingApp: App {
+    private static let isTestFlight = Bundle.main.appStoreReceiptURL?.lastPathComponent == "sandboxReceipt"
+
     init() {
+        let buildChannel: String
+        #if DEBUG
+        buildChannel = "development"
+        #else
+        buildChannel = Self.isTestFlight ? "testflight" : "appstore"
+        #endif
+
         SentrySDK.start(configureOptions: { options in
             options.dsn = "https://4d5e26ddfb95aaaef4721256a35176e5@o4510452629700608.ingest.us.sentry.io/4511177068183552"
 
+            options.environment = buildChannel
             #if DEBUG
             options.debug = true
-            options.environment = "development"
             #else
             options.debug = false
-            options.environment = "production"
             #endif
 
             // -- Release & Session Health --
@@ -22,8 +30,15 @@ struct TravelMappingApp: App {
 
             // -- Error & Performance Sampling --
             options.sampleRate = 1.0
-            options.tracesSampleRate = 1.0
+            options.tracesSampleRate = buildChannel == "appstore" ? 0.2 : 1.0
             options.enableAutoPerformanceTracing = true
+
+            // -- Continuous Profiling (Sentry 9.x) --
+            options.configureProfiling = { profiling in
+                profiling.sessionSampleRate = buildChannel == "appstore" ? 0.2 : 1.0
+                profiling.lifecycle = .trace
+                profiling.profileAppStarts = true
+            }
             options.enableUserInteractionTracing = true
             options.enableNetworkTracking = true
             options.enableFileIOTracing = true
@@ -48,11 +63,12 @@ struct TravelMappingApp: App {
             options.enableCaptureFailedRequests = true
 
             // -- Session Replay (all unmasked — no private info) --
-            #if DEBUG
-            options.sessionReplay.sessionSampleRate = 1.0
-            #else
-            options.sessionReplay.sessionSampleRate = 0.5
-            #endif
+            // TestFlight gets full coverage for beta debugging; App Store is sampled to conserve quota.
+            switch buildChannel {
+            case "development": options.sessionReplay.sessionSampleRate = 1.0
+            case "testflight":  options.sessionReplay.sessionSampleRate = 1.0
+            default:            options.sessionReplay.sessionSampleRate = 0.1
+            }
             options.sessionReplay.onErrorSampleRate = 1.0
             options.sessionReplay.maskAllText = false
             options.sessionReplay.maskAllImages = false
@@ -86,6 +102,7 @@ struct TravelMappingApp: App {
                 scope.setTag(value: version, key: "app.version")
                 scope.setTag(value: build, key: "app.build")
                 scope.setTag(value: "ios", key: "app.platform")
+                scope.setTag(value: buildChannel, key: "app.channel")
                 scope.setTag(value: UIDevice.current.systemVersion, key: "os.version")
                 scope.setTag(value: UIDevice.current.model, key: "device.model")
                 let useMiles = UserDefaults.standard.object(forKey: "useMiles") == nil || UserDefaults.standard.bool(forKey: "useMiles")

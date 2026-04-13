@@ -279,40 +279,40 @@ struct SettingsView: View {
                     Label("User Data on GitHub", systemImage: "chevron.left.forwardslash.chevron.right")
                 }
             }
-            .alert("Send Test Event", isPresented: $showSentryTestAlert) {
-                Button("Send", role: .destructive) {
-                    SentrySDK.capture(error: NSError(
-                        domain: "com.psiegel18.TravelMapping.test",
-                        code: 0,
-                        userInfo: [NSLocalizedDescriptionKey: "Test event from Settings (version tapped 7 times)"]
-                    ))
-                    Haptics.success()
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("This will send a test error event to Sentry to verify the integration is working. Continue?")
-            }
-            .alert("Report a Bug", isPresented: $showBugReport) {
-                TextField("Describe the issue...", text: $bugReportMessage)
-                Button("Send") {
-                    guard !bugReportMessage.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-                    let eventId = SentrySDK.capture(message: "Bug Report: \(bugReportMessage)")
-                    let feedback = SentryFeedback(
-                        message: bugReportMessage,
-                        name: settings.primaryUser.isEmpty ? nil : settings.primaryUser,
-                        email: nil,
-                        source: .custom,
-                        associatedEventId: eventId
-                    )
-                    SentrySDK.capture(feedback: feedback)
-                    Haptics.success()
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("Describe what happened or what you expected. This will be sent as feedback to help improve the app.")
-            }
         }
         .navigationTitle("Settings")
+        .alert("Send Test Event", isPresented: $showSentryTestAlert) {
+            Button("Send", role: .destructive) {
+                SentrySDK.capture(error: NSError(
+                    domain: "com.psiegel18.TravelMapping.test",
+                    code: 0,
+                    userInfo: [NSLocalizedDescriptionKey: "Test event from Settings (version tapped 7 times)"]
+                ))
+                Haptics.success()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will send a test error event to Sentry to verify the integration is working. Continue?")
+        }
+        .alert("Report a Bug", isPresented: $showBugReport) {
+            TextField("Describe the issue...", text: $bugReportMessage)
+            Button("Send") {
+                guard !bugReportMessage.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+                let eventId = SentrySDK.capture(message: "Bug Report: \(bugReportMessage)")
+                let feedback = SentryFeedback(
+                    message: bugReportMessage,
+                    name: settings.primaryUser.isEmpty ? nil : settings.primaryUser,
+                    email: nil,
+                    source: .custom,
+                    associatedEventId: eventId
+                )
+                SentrySDK.capture(feedback: feedback)
+                Haptics.success()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Describe what happened or what you expected. This will be sent as feedback to help improve the app.")
+        }
     }
 
     private func requestReview() {
@@ -513,22 +513,26 @@ struct TipJarView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                HStack(spacing: 12) {
+                HStack(spacing: 10) {
                     ForEach(products.sorted { $0.price < $1.price }) { product in
                         Button {
                             Task { await purchase(product) }
                         } label: {
-                            HStack(spacing: 6) {
+                            VStack(spacing: 4) {
                                 Text(Self.tipEmojis[product.id] ?? "💰")
-                                    .font(.body)
+                                    .font(.title2)
                                 Text(Self.tipLabels[product.id] ?? "Tip")
                                     .font(.caption)
-                                Spacer()
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.8)
                                 Text(product.displayPrice)
                                     .font(.caption.bold())
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.8)
                             }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .padding(.horizontal, 8)
                             .background(Color.blue.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
                         }
                         .buttonStyle(.plain)
@@ -775,17 +779,18 @@ struct PrivacyPolicyView: View {
     }
 
     private func storagePill(icon: String, label: String, detail: String) -> some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
             Image(systemName: icon)
                 .font(.caption)
                 .foregroundStyle(.blue)
                 .frame(width: 20)
             Text(label)
                 .font(.caption.bold())
-                .frame(width: 50, alignment: .leading)
+                .fixedSize(horizontal: true, vertical: false)
             Text(detail)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
