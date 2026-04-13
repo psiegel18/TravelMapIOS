@@ -109,6 +109,10 @@ class TripRecordingService: NSObject, ObservableObject {
         locationManager.startUpdatingLocation()
         startLiveActivity(tripName: trip.name, startDate: trip.startDate)
         Haptics.success()
+        SentrySDK.logger.info("Trip started", attributes: [
+            "tripType": tripType == .rail ? "rail" : "road",
+            "tripName": trip.name,
+        ])
 
         // Elapsed time timer + Watch sync
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
@@ -143,6 +147,7 @@ class TripRecordingService: NSObject, ObservableObject {
         isPaused = true
         currentSegmentName = "Paused"
         Haptics.light()
+        SentrySDK.logger.info("Trip paused", attributes: ["elapsedTime": elapsedTime])
     }
 
     func resumeTrip() {
@@ -150,6 +155,7 @@ class TripRecordingService: NSObject, ObservableObject {
         locationManager.startUpdatingLocation()
         isPaused = false
         Haptics.light()
+        SentrySDK.logger.info("Trip resumed", attributes: ["elapsedTime": elapsedTime])
     }
 
     func stopTrip() {
@@ -174,6 +180,13 @@ class TripRecordingService: NSObject, ObservableObject {
 
         stopLiveActivity()
         Haptics.success()
+        SentrySDK.logger.info("Trip stopped", attributes: [
+            "tripType": trip.tripType == .rail ? "rail" : "road",
+            "duration": elapsedTime,
+            "totalDistance": totalDistance,
+            "pointCount": pointCount,
+            "matchedSegments": trip.matchedSegments.count,
+        ])
 
         // Save final state
         Task {

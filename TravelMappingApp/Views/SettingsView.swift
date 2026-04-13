@@ -566,13 +566,19 @@ struct TipJarView: View {
                     await transaction.finish()
                     Haptics.success()
                     purchaseMessage = "Thank you for your support! 🎉"
+                    SentrySDK.logger.info("Tip purchased", attributes: [
+                        "productId": product.id,
+                        "price": product.displayPrice,
+                    ])
                 case .unverified:
                     purchaseMessage = "Purchase could not be verified."
+                    SentrySDK.logger.warn("Tip purchase unverified", attributes: ["productId": product.id])
                 }
             case .userCancelled:
                 break
             case .pending:
                 purchaseMessage = "Purchase pending..."
+                SentrySDK.logger.info("Tip purchase pending", attributes: ["productId": product.id])
             @unknown default:
                 break
             }

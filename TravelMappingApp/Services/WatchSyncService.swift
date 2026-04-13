@@ -93,7 +93,19 @@ class WatchSyncService: NSObject, ObservableObject, WCSessionDelegate {
     func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
         if let error {
             SentrySDK.capture(error: error)
+            return
         }
+        let stateName: String = switch activationState {
+        case .activated: "activated"
+        case .inactive: "inactive"
+        case .notActivated: "notActivated"
+        @unknown default: "unknown"
+        }
+        SentrySDK.logger.info("Watch session state changed", attributes: [
+            "state": stateName,
+            "paired": session.isPaired,
+            "watchAppInstalled": session.isWatchAppInstalled,
+        ])
     }
 
     func sessionDidBecomeInactive(_ session: WCSession) {}

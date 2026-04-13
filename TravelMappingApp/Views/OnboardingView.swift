@@ -1,4 +1,5 @@
 import SwiftUI
+import Sentry
 
 struct OnboardingView: View {
     @Binding var isPresented: Bool
@@ -100,6 +101,9 @@ struct OnboardingView: View {
             FavoritesService.shared.addFavorite(trimmed)
         }
         isPresented = false
+        SentrySDK.logger.info("Onboarding completed", attributes: [
+            "withUsername": !trimmed.isEmpty,
+        ])
     }
 
     // MARK: - Pages

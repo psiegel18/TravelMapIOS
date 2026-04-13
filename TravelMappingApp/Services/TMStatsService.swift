@@ -1,4 +1,5 @@
 import Foundation
+import Sentry
 
 /// Fetches aggregated stats CSV files from travelmapping.net/stats/.
 /// One file contains every user's mileage for every region/system — much faster than per-user API calls.
@@ -91,6 +92,7 @@ actor TMStatsService {
 
         if !forceRefresh, let cached = await CacheService.shared.get(key: cacheKey),
            let content = String(data: cached, encoding: .utf8) {
+            SentrySDK.logger.debug("Stats CSV cache hit", attributes: ["filename": filename])
             return content
         }
 
@@ -106,6 +108,10 @@ actor TMStatsService {
         guard let content = String(data: data, encoding: .utf8) else {
             throw URLError(.cannotDecodeContentData)
         }
+        SentrySDK.logger.debug("Stats CSV fetched", attributes: [
+            "filename": filename,
+            "bytes": data.count,
+        ])
         return content
     }
 

@@ -96,6 +96,16 @@ struct TravelMappingApp: App {
                 }
             }
 
+            // -- Structured logs (Sentry 9.x) --
+            options.enableLogs = true
+            options.beforeSendLog = { log in
+                // Drop trace/debug in App Store to save quota; keep them in dev/testflight
+                if buildChannel == "appstore", log.level == .trace || log.level == .debug {
+                    return nil
+                }
+                return log
+            }
+
             // -- Filter out expected noise (cancellations, denied permissions) --
             options.beforeSend = { event in
                 if let exceptions = event.exceptions {
@@ -140,6 +150,12 @@ struct TravelMappingApp: App {
                 scope.setTag(value: username, key: "tm.username")
             }
         }
+
+        SentrySDK.logger.info("App launched", attributes: [
+            "channel": buildChannel,
+            "hasPrimaryUser": !(UserDefaults.standard.string(forKey: "primaryUser") ?? "").isEmpty,
+            "favoritesCount": (UserDefaults.standard.array(forKey: "favoriteUsernames") as? [String])?.count ?? 0,
+        ])
     }
 
     var body: some Scene {
