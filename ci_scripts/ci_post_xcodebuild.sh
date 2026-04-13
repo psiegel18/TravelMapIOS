@@ -20,8 +20,10 @@ export SENTRY_ORG="psiegel"
 export SENTRY_PROJECT="travelmapping"
 
 # Install sentry-cli into a local prefix the script controls (Xcode Cloud bots don't allow sudo).
-INSTALL_DIR="$CI_WORKSPACE/.sentry-cli-bin"
-mkdir -p "$INSTALL_DIR"
+# Use TMPDIR — CI_WORKSPACE isn't consistently exported to post-build scripts, and /tmp
+# equivalents are always writable on macOS.
+INSTALL_DIR="${TMPDIR:-/tmp}/.sentry-cli-bin"
+mkdir -p "$INSTALL_DIR" || { echo "warning: could not create $INSTALL_DIR"; exit 0; }
 export INSTALL_DIR
 
 if ! curl -sL https://sentry.io/get-cli/ | INSTALL_DIR="$INSTALL_DIR" bash; then
