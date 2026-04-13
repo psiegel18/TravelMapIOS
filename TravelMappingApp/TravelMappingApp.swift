@@ -99,6 +99,7 @@ struct TravelMappingApp: App {
             options.configureUserFeedback = { config in
                 config.useShakeGesture = true
                 config.showFormForScreenshots = true
+                config.customButton = TravelMappingApp.feedbackTrigger
                 config.onSubmitSuccess = { data in
                     SentrySDK.logger.info("User feedback submitted", attributes: [
                         "hasName": !((data["name"] as? String) ?? "").isEmpty,
@@ -112,7 +113,6 @@ struct TravelMappingApp: App {
 
                 config.configureWidget = { widget in
                     widget.autoInject = false
-                    widget.customButton = TravelMappingApp.feedbackTrigger
                 }
 
                 config.configureForm = { form in
