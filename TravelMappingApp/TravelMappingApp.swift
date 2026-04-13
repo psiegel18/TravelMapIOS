@@ -74,6 +74,10 @@ struct TravelMappingApp: App {
             options.sessionReplay.maskAllImages = false
             options.sessionReplay.maskedViewClasses = []
             options.sessionReplay.quality = .medium
+            // App has no PII, so override the iOS 26+ Liquid Glass safeguard that auto-disables
+            // Session Replay on recent iOS/Xcode combos. Without this, most beta testers (iOS 26+)
+            // generate zero replays.
+            options.experimental.enableSessionReplayInUnreliableEnvironment = true
 
             // -- User Feedback Widget --
             options.configureUserFeedback = { config in
