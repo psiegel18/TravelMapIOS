@@ -69,5 +69,6 @@ ci_scripts/ci_post_xcodebuild.sh  # Xcode Cloud: uploads dSYMs, creates release,
 ### Xcode Cloud
 
 - `SENTRY_AUTH_TOKEN` stored as a Shared Environment Variable (Secret)
-- `ci_post_xcodebuild.sh` installs `sentry-cli` into `$CI_WORKSPACE/.sentry-cli-bin`, uploads dSYMs with `--include-sources`, creates/finalizes a Sentry release matching `com.psiegel18.TravelMapping@<version>+<build>`, associates commits via GitHub integration, and uploads the xcarchive for Size Analysis
-- All steps non-fatal so a transient failure in one doesn't skip the rest
+- `ci_post_xcodebuild.sh` installs `sentry-cli` into `$TMPDIR/.sentry-cli-bin`, uploads dSYMs with `--include-sources`, creates/finalizes a Sentry release matching `com.psiegel18.TravelMapping@<version>+<build>`, associates commits via GitHub integration, and uploads the xcarchive for Size Analysis
+- Uses `$TMPDIR`, not `$CI_WORKSPACE` — the latter isn't reliably exported to post-build scripts (empty in some runs → `mkdir /.sentry-cli-bin` fails on read-only root)
+- Script has **no `set -e`** and every `sentry-cli` call uses `|| echo "warning"`, script ends with `exit 0` — archive should ship even if Sentry integration has a transient failure
