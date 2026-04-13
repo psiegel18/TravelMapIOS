@@ -629,12 +629,15 @@ struct PrivacyPolicyView: View {
                         .padding(.top, 4)
                 }
 
-                policyCard(icon: "ant.fill", color: .teal, title: "Crash Reporting") {
-                    Text("We use Sentry to collect anonymous crash reports to improve stability.")
+                policyCard(icon: "ant.fill", color: .teal, title: "Crash Reporting & Diagnostics") {
+                    Text("We use Sentry to collect anonymous diagnostic data to improve stability and performance.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     bullet("Device model, OS version, app version")
                     bullet("Stack trace (what code was running)")
+                    bullet("Performance metrics (CPU profiles, slow frames, app hangs)")
+                    bullet("Screenshot, view hierarchy, and short session replay at the moment of an error")
+                    bullet("Breadcrumbs & logs of app events (trip start/stop, navigation)")
                     bullet("Your TravelMapping username if set")
                     bullet("General device state (memory, battery)")
                     HStack(spacing: 4) {
@@ -657,7 +660,7 @@ struct PrivacyPolicyView: View {
                 policyCard(icon: "externaldrive.fill", color: .indigo, title: "Data Storage") {
                     storagePill(icon: "iphone", label: "Device", detail: "Preferences, favorites, cache, trips")
                     storagePill(icon: "icloud", label: "iCloud", detail: "Favorites & preferences (optional)")
-                    storagePill(icon: "server.rack", label: "Sentry", detail: "Anonymous crash reports only")
+                    storagePill(icon: "server.rack", label: "Sentry", detail: "Anonymous crash, performance, and session replay data (no PII)")
                 }
 
                 policyCard(icon: "slider.horizontal.3", color: .mint, title: "Your Choices") {
@@ -674,7 +677,7 @@ struct PrivacyPolicyView: View {
 
                 // Footer
                 VStack(spacing: 4) {
-                    Text("Last updated: April 12, 2026")
+                    Text("Last updated: April 13, 2026")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                     Link("View web version", destination: URL(string: "https://psiegel18.github.io/TravelMapIOS/PRIVACY.html")!)
