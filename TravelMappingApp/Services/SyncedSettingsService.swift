@@ -146,6 +146,24 @@ class SyncedSettingsService: ObservableObject {
             if let v: Double = Self.load("railLineWidth") { railLineWidth = v }
             if let v: [String] = Self.load("recentUsers") { recentUsers = v }
             if let v: [String] = Self.load("favoriteRegions") { favoriteRegions = v }
+            self.syncPreferencesContext()
+        }
+    }
+
+    func syncPreferencesContext() {
+        SentrySDK.configureScope { [primaryUser, useMiles, accentColorName, roadLineStyle, railLineStyle, recentUsers] scope in
+            scope.setContext(value: [
+                "useMiles": useMiles,
+                "sendToWatch": UserDefaults.standard.bool(forKey: "sendToWatch"),
+                "accentColor": accentColorName,
+                "roadLineStyle": roadLineStyle,
+                "railLineStyle": railLineStyle,
+            ], key: "preferences")
+            scope.setContext(value: [
+                "hasPrimaryUser": !primaryUser.isEmpty,
+                "favoritesCount": FavoritesService.shared.favorites.count,
+                "recentUsersCount": recentUsers.count,
+            ], key: "profile")
         }
     }
 }

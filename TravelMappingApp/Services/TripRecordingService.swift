@@ -113,6 +113,7 @@ class TripRecordingService: NSObject, ObservableObject {
             "tripType": tripType == .rail ? "rail" : "road",
             "tripName": trip.name,
         ])
+        updateTripContext(isRecording: true, isPaused: false, tripType: tripType)
 
         // Elapsed time timer + Watch sync
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
@@ -148,6 +149,7 @@ class TripRecordingService: NSObject, ObservableObject {
         currentSegmentName = "Paused"
         Haptics.light()
         SentrySDK.logger.info("Trip paused", attributes: ["elapsedTime": elapsedTime])
+        updateTripContext(isRecording: true, isPaused: true, tripType: currentTripType)
     }
 
     func resumeTrip() {
@@ -156,6 +158,21 @@ class TripRecordingService: NSObject, ObservableObject {
         isPaused = false
         Haptics.light()
         SentrySDK.logger.info("Trip resumed", attributes: ["elapsedTime": elapsedTime])
+        updateTripContext(isRecording: true, isPaused: false, tripType: currentTripType)
+    }
+
+    private func updateTripContext(isRecording: Bool, isPaused: Bool, tripType: TripType) {
+        SentrySDK.configureScope { [weak self] scope in
+            guard let self else { return }
+            scope.setContext(value: [
+                "isRecording": isRecording,
+                "isPaused": isPaused,
+                "tripType": tripType == .rail ? "rail" : "road",
+                "elapsedTime": self.elapsedTime,
+                "pointCount": self.pointCount,
+                "matchedCount": self.matchedCount,
+            ], key: "trip_state")
+        }
     }
 
     func stopTrip() {
@@ -187,6 +204,9 @@ class TripRecordingService: NSObject, ObservableObject {
             "pointCount": pointCount,
             "matchedSegments": trip.matchedSegments.count,
         ])
+        SentrySDK.configureScope { scope in
+            scope.setContext(value: ["isRecording": false], key: "trip_state")
+        }
 
         // Save final state
         Task {

@@ -80,6 +80,7 @@ class FavoritesService: ObservableObject {
             "totalFavorites": favorites.count,
             "iCloudSync": iCloudSyncEnabled,
         ])
+        updateProfileContext()
     }
 
     func removeFavorite(_ username: String) {
@@ -97,6 +98,19 @@ class FavoritesService: ObservableObject {
             "totalFavorites": favorites.count,
             "iCloudSync": iCloudSyncEnabled,
         ])
+        updateProfileContext()
+    }
+
+    private func updateProfileContext() {
+        let primaryUser = UserDefaults.standard.string(forKey: "primaryUser") ?? ""
+        let recents = (UserDefaults.standard.array(forKey: "recentUsers") as? [String]) ?? []
+        SentrySDK.configureScope { [favorites] scope in
+            scope.setContext(value: [
+                "hasPrimaryUser": !primaryUser.isEmpty,
+                "favoritesCount": favorites.count,
+                "recentUsersCount": recents.count,
+            ], key: "profile")
+        }
     }
 
     // MARK: - Private
