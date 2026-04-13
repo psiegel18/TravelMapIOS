@@ -52,3 +52,26 @@ fi
 
 sentry-cli releases finalize "$RELEASE"
 echo "Sentry release $RELEASE finalized."
+
+# 3. Size Analysis: upload the xcarchive so Sentry can track app size trends + insights.
+if [ -d "$CI_ARCHIVE_PATH" ]; then
+  echo "Uploading archive to Sentry for Size Analysis"
+  SIZE_ARGS="--build-configuration Release"
+  if [ -n "$CI_COMMIT" ]; then
+    SIZE_ARGS="$SIZE_ARGS --head-sha $CI_COMMIT"
+  fi
+  if [ -n "$CI_BRANCH" ]; then
+    SIZE_ARGS="$SIZE_ARGS --head-ref $CI_BRANCH"
+  fi
+  if [ -n "$CI_PULL_REQUEST_NUMBER" ]; then
+    SIZE_ARGS="$SIZE_ARGS --pr-number $CI_PULL_REQUEST_NUMBER"
+  fi
+  if [ -n "$CI_PULL_REQUEST_TARGET_BRANCH" ]; then
+    SIZE_ARGS="$SIZE_ARGS --base-ref $CI_PULL_REQUEST_TARGET_BRANCH"
+  fi
+  SIZE_ARGS="$SIZE_ARGS --head-repo-name psiegel18/TravelMapIOS --vcs-provider github"
+  # shellcheck disable=SC2086
+  sentry-cli build upload $SIZE_ARGS "$CI_ARCHIVE_PATH" || echo "warning: Size Analysis upload failed (not fatal)"
+else
+  echo "warning: archive path not found — skipping Size Analysis upload"
+fi
