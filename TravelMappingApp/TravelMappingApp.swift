@@ -184,27 +184,11 @@ struct TravelMappingApp: App {
             }
         }
 
-        // Initial contexts — refreshed as state changes by the owning services.
-        let defaults = UserDefaults.standard
-        let primaryUser = defaults.string(forKey: "primaryUser") ?? ""
-        let favorites = (defaults.array(forKey: "favoriteUsernames") as? [String]) ?? []
-        let recents = (defaults.array(forKey: "recentUsers") as? [String]) ?? []
+        // Initial contexts — read from the source-of-truth services so the values match
+        // whatever those services will write on subsequent updates (no drift).
+        SyncedSettingsService.shared.syncPreferencesContext()
         SentrySDK.configureScope { scope in
-            scope.setContext(value: [
-                "hasPrimaryUser": !primaryUser.isEmpty,
-                "favoritesCount": favorites.count,
-                "recentUsersCount": recents.count,
-            ], key: "profile")
-            scope.setContext(value: [
-                "useMiles": defaults.object(forKey: "useMiles") == nil || defaults.bool(forKey: "useMiles"),
-                "sendToWatch": defaults.bool(forKey: "sendToWatch"),
-                "accentColor": defaults.string(forKey: "accentColorName") ?? "default",
-                "roadLineStyle": defaults.string(forKey: "roadLineStyle") ?? "default",
-                "railLineStyle": defaults.string(forKey: "railLineStyle") ?? "default",
-            ], key: "preferences")
-            scope.setContext(value: [
-                "isRecording": false,
-            ], key: "trip_state")
+            scope.setContext(value: ["isRecording": false], key: "trip_state")
         }
 
         SentrySDK.logger.info("App launched", attributes: [

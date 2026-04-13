@@ -131,6 +131,11 @@ class TripRecordingService: NSObject, ObservableObject {
                     isPaused: self.isPaused,
                     tripType: self.currentTripType == .rail ? "rail" : "road"
                 )
+                // Refresh trip_state context every 10 seconds so mid-trip Sentry events
+                // show a reasonably fresh pointCount/matchedCount rather than 0 from start.
+                if Int(self.elapsedTime) % 10 == 0 {
+                    self.updateTripContext(isRecording: true, isPaused: self.isPaused, tripType: self.currentTripType)
+                }
             }
         }
 

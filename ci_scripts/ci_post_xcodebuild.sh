@@ -26,11 +26,12 @@ export PATH="$INSTALL_DIR:$PATH"
 
 echo "sentry-cli version: $(sentry-cli --version)"
 
-# 1. Upload dSYMs from the archive.
+# 1. Upload dSYMs from the archive. Non-fatal so release + size analysis still run if
+# this step has a transient failure.
 DSYM_PATH="$CI_ARCHIVE_PATH/dSYMs"
 if [ -d "$DSYM_PATH" ]; then
   echo "Uploading dSYMs from $DSYM_PATH"
-  sentry-cli debug-files upload --include-sources "$DSYM_PATH"
+  sentry-cli debug-files upload --include-sources "$DSYM_PATH" || echo "warning: dSYM upload failed (not fatal — release + Size Analysis will still run)"
 else
   echo "warning: dSYM folder not found at $DSYM_PATH — skipping dSYM upload"
 fi
