@@ -10,8 +10,6 @@ struct SettingsView: View {
     @AppStorage("sendToWatch") private var sendToWatch = true
     @State private var versionTapCount = 0
     @State private var showSentryTestAlert = false
-    @State private var showBugReport = false
-    @State private var bugReportMessage = ""
     @State private var isValidatingUser = false
     @State private var userValidationResult: Bool? = Self.cachedValidationResult
     @State private var lastValidatedUsername = Self.cachedValidatedUsername
@@ -228,8 +226,9 @@ struct SettingsView: View {
                 }
                 Button {
                     Haptics.light()
-                    bugReportMessage = ""
-                    showBugReport = true
+                    // Fires the Sentry User Feedback form. The feedbackTrigger button is
+                    // registered as Sentry's customButton in TravelMappingApp.init.
+                    TravelMappingApp.feedbackTrigger.sendActions(for: .touchUpInside)
                 } label: {
                     Label("Report a Bug", systemImage: "ladybug")
                 }
@@ -289,25 +288,6 @@ struct SettingsView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This will send a test error event to Sentry to verify the integration is working. Continue?")
-        }
-        .alert("Report a Bug", isPresented: $showBugReport) {
-            TextField("Describe the issue...", text: $bugReportMessage)
-            Button("Send") {
-                guard !bugReportMessage.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-                let eventId = SentrySDK.capture(message: "Bug Report: \(bugReportMessage)")
-                let feedback = SentryFeedback(
-                    message: bugReportMessage,
-                    name: settings.primaryUser.isEmpty ? nil : settings.primaryUser,
-                    email: nil,
-                    source: .custom,
-                    associatedEventId: eventId
-                )
-                SentrySDK.capture(feedback: feedback)
-                Haptics.success()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Describe what happened or what you expected. This will be sent as feedback to help improve the app.")
         }
     }
 

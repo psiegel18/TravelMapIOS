@@ -1,9 +1,20 @@
 import SwiftUI
 import Sentry
+import UIKit
 
 @main
 struct TravelMappingApp: App {
     private static let isTestFlight = Bundle.main.appStoreReceiptURL?.lastPathComponent == "sandboxReceipt"
+
+    /// Hidden UIButton wired into Sentry's User Feedback widget via `customButton`.
+    /// Tapping this button (programmatically) triggers the Sentry feedback form
+    /// directly — bypassing the floating widget UI.
+    static let feedbackTrigger: UIButton = {
+        let b = UIButton(type: .custom)
+        b.setTitle("Report a Bug", for: .normal)
+        b.isHidden = true
+        return b
+    }()
 
     init() {
         let buildChannel: String
@@ -83,20 +94,33 @@ struct TravelMappingApp: App {
             options.configureUserFeedback = { config in
                 config.useShakeGesture = true
                 config.showFormForScreenshots = true
+                config.onSubmitSuccess = { data in
+                    SentrySDK.logger.info("User feedback submitted", attributes: [
+                        "hasName": !((data["name"] as? String) ?? "").isEmpty,
+                        "hasEmail": !((data["email"] as? String) ?? "").isEmpty,
+                        "hasAttachment": !((data["attachments"] as? [Any]) ?? []).isEmpty,
+                    ])
+                }
+                config.onSubmitError = { error in
+                    SentrySDK.capture(error: error)
+                }
 
                 config.configureWidget = { widget in
                     widget.autoInject = false
+                    widget.customButton = TravelMappingApp.feedbackTrigger
                 }
 
                 config.configureForm = { form in
                     form.formTitle = "Report a Bug"
-                    form.messagePlaceholder = "What happened? What did you expect?"
+                    form.messageLabel = "What happened?"
+                    form.messagePlaceholder = "Describe the issue or what you expected to happen."
                     form.showName = true
                     form.showEmail = true
                     form.isNameRequired = false
                     form.isEmailRequired = false
                     form.submitButtonLabel = "Send Report"
                     form.useSentryUser = true
+                    form.showBranding = false
                 }
             }
 
