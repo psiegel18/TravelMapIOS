@@ -69,6 +69,11 @@ struct TravelMappingApp: App {
             // -- Screenshots & View Hierarchy on Errors --
             options.attachScreenshot = true
             options.attachViewHierarchy = true
+            // Screenshot masking is configured separately from Session Replay. App has no PII,
+            // so clear the defaults so error-attached screenshots aren't black-boxed.
+            options.screenshot.maskAllText = false
+            options.screenshot.maskAllImages = false
+            options.screenshot.maskedViewClasses = []
 
             // -- HTTP Client Errors --
             options.enableCaptureFailedRequests = true
