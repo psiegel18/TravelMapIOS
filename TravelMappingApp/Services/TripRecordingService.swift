@@ -321,6 +321,11 @@ extension TripRecordingService: CLLocationManagerDelegate {
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        // Skip expected/transient CL errors: denied permission, temporary location unknown, region monitoring denied.
+        if let clError = error as? CLError,
+           [.denied, .locationUnknown, .regionMonitoringDenied].contains(clError.code) {
+            return
+        }
         SentrySDK.capture(error: error)
     }
 

@@ -96,12 +96,20 @@ struct TravelMappingApp: App {
                 }
             }
 
-            // -- Filter out expected noise (cancelled URL tasks) --
+            // -- Filter out expected noise (cancellations, denied permissions) --
             options.beforeSend = { event in
                 if let exceptions = event.exceptions {
                     for exception in exceptions {
+                        // URLSessionTask cancelled — normal when user navigates away mid-request
                         if exception.type == "NSURLErrorDomain",
                            exception.value?.contains("Code=-999") == true {
+                            return nil
+                        }
+                        // Core Location: user denied permission (1), transient location unknown (0),
+                        // or region-monitoring denied (4). All user-driven or transient, not bugs.
+                        if exception.type == "kCLErrorDomain",
+                           let value = exception.value,
+                           ["Code: 0", "Code: 1", "Code: 4"].contains(where: value.contains) {
                             return nil
                         }
                     }
