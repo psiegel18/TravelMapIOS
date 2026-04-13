@@ -1,10 +1,8 @@
 # TravelMapping
 
-Monorepo for TravelMapping project. The iOS app lives in `TravelMappingApp/`.
+iOS/watchOS/widget app for the TravelMapping community project. GitHub: `psiegel18/TravelMapIOS`.
 
-## iOS App (TravelMappingApp/)
-
-### Build
+## Build
 
 ```bash
 xcodebuild -project TravelMappingApp.xcodeproj -scheme TravelMappingApp \
@@ -35,27 +33,27 @@ xcodebuild -project TravelMappingApp.xcodeproj -scheme TravelMappingApp \
 - Multi-region routes aggregate by root base name (e.g. `il.i090` → `i090`)
 - Use `ShareLink` for sharing text, not `UIActivityViewController` wrappers
 - New types must be embedded in existing files (pbxproj edits don't work reliably)
-- Files exist at both `TravelMappingApp/Views/` and `TravelMappingApp/TravelMappingApp/Views/` — always sync both after edits
 
 ### Project Structure
 
 ```
-TravelMappingApp/
-  ContentView.swift              # Tab bar (5 tabs), prefetch, widget cache
+TravelMappingApp.xcodeproj/    # Xcode project (repo root)
+TravelMappingApp/              # iOS app target sources
+  ContentView.swift            # Tab bar (5 tabs), prefetch, widget cache
   Views/
-    GetStartedView.swift         # Native onboarding (region picker, segment picker map, email composer)
-    SettingsView.swift           # Settings, TipJar, PrivacyPolicyView
-    StatisticsView.swift         # Stats with StatsCache, cross-region route aggregation
-    TravelMapView.swift          # Map with background polyline rebuild, bounding box tap filter
-    RouteDetailView.swift        # Cross-region route detail with per-region breakdown
-    UserDetailView.swift         # User profile with List/Map/Stats tabs
+    GetStartedView.swift       # Native onboarding (region picker, segment picker map, email composer)
+    SettingsView.swift         # Settings, TipJar, PrivacyPolicyView
+    StatisticsView.swift       # Stats with StatsCache, cross-region route aggregation
+    TravelMapView.swift        # Map with background polyline rebuild, bounding box tap filter
+    RouteDetailView.swift      # Cross-region route detail with per-region breakdown
+    UserDetailView.swift       # User profile with List/Map/Stats tabs
     ...
-  Services/                      # API, sync, recording, caching
-  Models/                        # RoadTrip, UserProfile, etc.
-  Parsers/                       # .list file parsing
-  Intents/                       # Siri/Shortcuts
-  TravelMappingApp/              # Nested copy of sources (must stay in sync)
-  TravelMappingWatch/            # watchOS companion
-  TravelMappingWidget/           # Home screen widgets (reads from app group)
-  docs/PRIVACY.html              # Web privacy policy (GitHub Pages)
+  Services/                    # API, sync, recording, caching
+  Models/                      # RoadTrip, UserProfile, etc.
+  Parsers/                     # .list file parsing
+  Intents/                     # Siri/Shortcuts
+Shared/                        # Code shared across targets
+TravelMappingWatch/            # watchOS companion target
+TravelMappingWidget/           # Home screen widgets target (reads from app group)
+docs/PRIVACY.html              # Web privacy policy (GitHub Pages)
 ```
