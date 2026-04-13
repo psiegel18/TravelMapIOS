@@ -1,10 +1,8 @@
 # TravelMapping
 
-Monorepo for TravelMapping project. The iOS app lives in `TravelMappingApp/`.
+iOS/watchOS/widget app for the TravelMapping community project. GitHub: `psiegel18/TravelMapIOS`.
 
-## iOS App (TravelMappingApp/)
-
-### Build
+## Build
 
 ```bash
 xcodebuild -project TravelMappingApp.xcodeproj -scheme TravelMappingApp \
@@ -18,6 +16,10 @@ xcodebuild -project TravelMappingApp.xcodeproj -scheme TravelMappingApp \
 - Two TravelMapping APIs: `.shared` (roads) and `.rail` (rail/transit)
 - iCloud sync via `NSUbiquitousKeyValueStore` in `SyncedSettingsService`
 - GPS trip recording with real-time segment matching in `TripRecordingService`
+- Sentry crash reporting (all errors via `SentrySDK.capture(error:)`, no `print()`); environment tagged `development`/`testflight`/`appstore` via `sandboxReceipt` detection; continuous profiling + session replay + `app.channel` tag
+- Stats prefetch on launch for primary user + up to 3 favorites
+- In-memory `StatsCache` (1hr TTL) for instant re-navigation
+- Widget data populated from main app via app group (`group.com.psiegel18.TravelMapping`)
 
 ### Key Conventions
 
@@ -27,18 +29,33 @@ xcodebuild -project TravelMappingApp.xcodeproj -scheme TravelMappingApp \
 - Polylines capped at 15 coordinates to work around MapKit dash rendering issues
 - `TMStatsService` CSV parser skips "TOTAL" summary rows
 - Backward-compatible Codable: use `decodeIfPresent` with defaults for new fields
+- Expensive map work (polyline rebuild, segment distance) runs off main thread
+- Multi-region routes aggregate by root base name (e.g. `il.i090` → `i090`)
+- Use `ShareLink` for sharing text; for programmatic URL/file share sheets, use a direct `UIViewControllerRepresentable` wrapping `UIActivityViewController` (not a nested wrapper that presents it in `updateUIViewController` — that leaves a blank sheet on iPhone)
+- New types must be embedded in existing files (pbxproj edits don't work reliably)
+- Chained `.alert(...)` modifiers on a `Section` inside a `Form` silently fail to present — attach alerts to the `Form` itself (outside all sections)
+- Prefer the App Store write-review URL (`https://apps.apple.com/app/id{APP_ID}?action=write-review`) over `SKStoreReviewController.requestReview()` — the system prompt is silently throttled (3/year cap, can no-op in TestFlight)
 
 ### Project Structure
 
 ```
-TravelMappingApp/
-  TravelMappingApp/
-    ContentView.swift          # Tab bar (5 tabs)
-    Views/                     # All SwiftUI views
-    Services/                  # API, sync, recording, caching
-    Models/                    # RoadTrip, UserProfile, etc.
-    Parsers/                   # .list file parsing
-    Intents/                   # Siri/Shortcuts
-  TravelMappingWatch/          # watchOS companion
-  TravelMappingWidget/         # Home screen widgets
+TravelMappingApp.xcodeproj/    # Xcode project (repo root)
+TravelMappingApp/              # iOS app target sources
+  ContentView.swift            # Tab bar (5 tabs), prefetch, widget cache
+  Views/
+    GetStartedView.swift       # Native onboarding (region picker, segment picker map, email composer)
+    SettingsView.swift         # Settings, TipJar, PrivacyPolicyView
+    StatisticsView.swift       # Stats with StatsCache, cross-region route aggregation
+    TravelMapView.swift        # Map with background polyline rebuild, bounding box tap filter
+    RouteDetailView.swift      # Cross-region route detail with per-region breakdown
+    UserDetailView.swift       # User profile with List/Map/Stats tabs
+    ...
+  Services/                    # API, sync, recording, caching
+  Models/                      # RoadTrip, UserProfile, etc.
+  Parsers/                     # .list file parsing
+  Intents/                     # Siri/Shortcuts
+Shared/                        # Code shared across targets
+TravelMappingWatch/            # watchOS companion target
+TravelMappingWidget/           # Home screen widgets target (reads from app group)
+docs/PRIVACY.html              # Web privacy policy (GitHub Pages)
 ```
