@@ -6,13 +6,15 @@ import UIKit
 struct TravelMappingApp: App {
     private static let isTestFlight = Bundle.main.appStoreReceiptURL?.lastPathComponent == "sandboxReceipt"
 
-    /// Hidden UIButton wired into Sentry's User Feedback widget via `customButton`.
-    /// Tapping this button (programmatically) triggers the Sentry feedback form
-    /// directly — bypassing the floating widget UI.
+    /// UIButton wired into Sentry's User Feedback widget via `customButton`.
+    /// Tapping it (programmatically) triggers the Sentry feedback form. The button
+    /// must be embedded in the actual view hierarchy for Sentry to find a presenting
+    /// view controller — see `FeedbackTriggerHost` below.
     static let feedbackTrigger: UIButton = {
         let b = UIButton(type: .custom)
         b.setTitle("Report a Bug", for: .normal)
-        b.isHidden = true
+        b.alpha = 0
+        b.isUserInteractionEnabled = false
         return b
     }()
 
@@ -201,6 +203,29 @@ struct TravelMappingApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .background(FeedbackTriggerHost().frame(width: 0, height: 0))
         }
     }
+}
+
+/// Embeds the Sentry feedback UIButton into the SwiftUI hierarchy so it has a window/VC
+/// chain. Without this, sendActions(for:) on an orphan UIButton silently fails because
+/// Sentry can't find a presenting view controller.
+private struct FeedbackTriggerHost: UIViewRepresentable {
+    func makeUIView(context: Context) -> UIView {
+        let container = UIView()
+        container.isUserInteractionEnabled = false
+        let button = TravelMappingApp.feedbackTrigger
+        button.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(button)
+        NSLayoutConstraint.activate([
+            button.topAnchor.constraint(equalTo: container.topAnchor),
+            button.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            button.widthAnchor.constraint(equalToConstant: 1),
+            button.heightAnchor.constraint(equalToConstant: 1),
+        ])
+        return container
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {}
 }
