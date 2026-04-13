@@ -1,9 +1,22 @@
 import SwiftUI
 import Sentry
+import UIKit
 
 @main
 struct TravelMappingApp: App {
     private static let isTestFlight = Bundle.main.appStoreReceiptURL?.lastPathComponent == "sandboxReceipt"
+
+    /// UIButton wired into Sentry's User Feedback widget via `customButton`.
+    /// Tapping it (programmatically) triggers the Sentry feedback form. The button
+    /// must be embedded in the actual view hierarchy for Sentry to find a presenting
+    /// view controller — see `FeedbackTriggerHost` below.
+    static let feedbackTrigger: UIButton = {
+        let b = UIButton(type: .custom)
+        b.setTitle("Report a Bug", for: .normal)
+        b.alpha = 0
+        b.isUserInteractionEnabled = false
+        return b
+    }()
 
     init() {
         let buildChannel: String
@@ -58,6 +71,11 @@ struct TravelMappingApp: App {
             // -- Screenshots & View Hierarchy on Errors --
             options.attachScreenshot = true
             options.attachViewHierarchy = true
+            // Screenshot masking is configured separately from Session Replay. App has no PII,
+            // so clear the defaults so error-attached screenshots aren't black-boxed.
+            options.screenshot.maskAllText = false
+            options.screenshot.maskAllImages = false
+            options.screenshot.maskedViewClasses = []
 
             // -- HTTP Client Errors --
             options.enableCaptureFailedRequests = true
@@ -72,12 +90,28 @@ struct TravelMappingApp: App {
             options.sessionReplay.onErrorSampleRate = 1.0
             options.sessionReplay.maskAllText = false
             options.sessionReplay.maskAllImages = false
+            options.sessionReplay.maskedViewClasses = []
             options.sessionReplay.quality = .medium
+            // App has no PII, so override the iOS 26+ Liquid Glass safeguard that auto-disables
+            // Session Replay on recent iOS/Xcode combos. Without this, most beta testers (iOS 26+)
+            // generate zero replays.
+            options.experimental.enableSessionReplayInUnreliableEnvironment = true
 
             // -- User Feedback Widget --
             options.configureUserFeedback = { config in
                 config.useShakeGesture = true
                 config.showFormForScreenshots = true
+                config.customButton = TravelMappingApp.feedbackTrigger
+                config.onSubmitSuccess = { data in
+                    SentrySDK.logger.info("User feedback submitted", attributes: [
+                        "hasName": !((data["name"] as? String) ?? "").isEmpty,
+                        "hasEmail": !((data["email"] as? String) ?? "").isEmpty,
+                        "hasAttachment": !((data["attachments"] as? [Any]) ?? []).isEmpty,
+                    ])
+                }
+                config.onSubmitError = { error in
+                    SentrySDK.capture(error: error)
+                }
 
                 config.configureWidget = { widget in
                     widget.autoInject = false
@@ -85,14 +119,47 @@ struct TravelMappingApp: App {
 
                 config.configureForm = { form in
                     form.formTitle = "Report a Bug"
-                    form.messagePlaceholder = "What happened? What did you expect?"
+                    form.messageLabel = "What happened?"
+                    form.messagePlaceholder = "Describe the issue or what you expected to happen."
                     form.showName = true
                     form.showEmail = true
                     form.isNameRequired = false
                     form.isEmailRequired = false
                     form.submitButtonLabel = "Send Report"
                     form.useSentryUser = true
+                    form.showBranding = false
                 }
+            }
+
+            // -- Structured logs (Sentry 9.x) --
+            options.enableLogs = true
+            options.beforeSendLog = { log in
+                // Drop trace/debug in App Store to save quota; keep them in dev/testflight
+                if buildChannel == "appstore", log.level == .trace || log.level == .debug {
+                    return nil
+                }
+                return log
+            }
+
+            // -- Filter out expected noise (cancellations, denied permissions) --
+            options.beforeSend = { event in
+                if let exceptions = event.exceptions {
+                    for exception in exceptions {
+                        // URLSessionTask cancelled — normal when user navigates away mid-request
+                        if exception.type == "NSURLErrorDomain",
+                           exception.value?.contains("Code=-999") == true {
+                            return nil
+                        }
+                        // Core Location: user denied permission (1), transient location unknown (0),
+                        // or region-monitoring denied (4). All user-driven or transient, not bugs.
+                        if exception.type == "kCLErrorDomain",
+                           let value = exception.value,
+                           ["Code: 0", "Code: 1", "Code: 4"].contains(where: value.contains) {
+                            return nil
+                        }
+                    }
+                }
+                return event
             }
 
             // -- Custom tags & context --
@@ -118,11 +185,47 @@ struct TravelMappingApp: App {
                 scope.setTag(value: username, key: "tm.username")
             }
         }
+
+        // Initial contexts — read from the source-of-truth services so the values match
+        // whatever those services will write on subsequent updates (no drift).
+        SyncedSettingsService.shared.syncPreferencesContext()
+        SentrySDK.configureScope { scope in
+            scope.setContext(value: ["isRecording": false], key: "trip_state")
+        }
+
+        SentrySDK.logger.info("App launched", attributes: [
+            "channel": buildChannel,
+            "hasPrimaryUser": !(UserDefaults.standard.string(forKey: "primaryUser") ?? "").isEmpty,
+            "favoritesCount": (UserDefaults.standard.array(forKey: "favoriteUsernames") as? [String])?.count ?? 0,
+        ])
     }
 
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .background(FeedbackTriggerHost().frame(width: 0, height: 0))
         }
     }
+}
+
+/// Embeds the Sentry feedback UIButton into the SwiftUI hierarchy so it has a window/VC
+/// chain. Without this, sendActions(for:) on an orphan UIButton silently fails because
+/// Sentry can't find a presenting view controller.
+private struct FeedbackTriggerHost: UIViewRepresentable {
+    func makeUIView(context: Context) -> UIView {
+        let container = UIView()
+        container.isUserInteractionEnabled = false
+        let button = TravelMappingApp.feedbackTrigger
+        button.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(button)
+        NSLayoutConstraint.activate([
+            button.topAnchor.constraint(equalTo: container.topAnchor),
+            button.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            button.widthAnchor.constraint(equalToConstant: 1),
+            button.heightAnchor.constraint(equalToConstant: 1),
+        ])
+        return container
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {}
 }

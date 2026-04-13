@@ -5,7 +5,6 @@ import MapKit
 struct RoadTripDetailView: View {
     @State var trip: RoadTrip
     @State private var shareContent: ShareContent?
-    @State private var showExportSheet = false
     @State private var exportURL: URL?
     @State private var replayProgress: Double = 1.0  // 0.0 to 1.0
     @State private var isPlaying = false
@@ -29,11 +28,10 @@ struct RoadTripDetailView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    Button {
-                        Haptics.light()
-                        exportTrip()
-                    } label: {
-                        Label("Export .list File", systemImage: "doc.text")
+                    if let url = exportURL {
+                        ShareLink(item: url, preview: SharePreview("\(trip.name).list")) {
+                            Label("Export .list File", systemImage: "doc.text")
+                        }
                     }
                     Button {
                         Haptics.light()
@@ -50,10 +48,8 @@ struct RoadTripDetailView: View {
         .sheet(item: $shareContent) { content in
             SharePreviewSheet(content: content)
         }
-        .sheet(isPresented: $showExportSheet) {
-            if let url = exportURL {
-                ExportShareView(url: url)
-            }
+        .task {
+            exportURL = try? await TripStorageService.shared.exportListFile(for: trip)
         }
     }
 
@@ -300,27 +296,4 @@ struct RoadTripDetailView: View {
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
     }
 
-    private func exportTrip() {
-        Task {
-            do {
-                let url = try await TripStorageService.shared.exportListFile(for: trip)
-                exportURL = url
-                showExportSheet = true
-            } catch {
-                SentrySDK.capture(error: error)
-            }
-        }
-    }
-}
-
-private struct ExportShareView: UIViewControllerRepresentable {
-    let url: URL
-
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        let vc = UIActivityViewController(activityItems: [url], applicationActivities: nil)
-        vc.popoverPresentationController?.permittedArrowDirections = []
-        return vc
-    }
-
-    func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
 }

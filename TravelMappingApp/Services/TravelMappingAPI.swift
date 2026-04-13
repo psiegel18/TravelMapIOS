@@ -1,5 +1,6 @@
 import Foundation
 import CoreLocation
+import Sentry
 
 /// Client for the TravelMapping website's PHP endpoints.
 /// These return pre-processed coordinate data from the site's database.
@@ -158,6 +159,11 @@ actor TravelMappingAPI {
 
     /// Get full route data with waypoints for specific route roots.
     func getRouteData(roots: [String], traveler: String) async throws -> [RouteDetail] {
+        SentrySDK.logger.debug("Loading route data", attributes: [
+            "rootCount": roots.count,
+            "firstRoot": roots.first ?? "",
+            "traveler": traveler,
+        ])
         let params: [String: Any] = [
             "roots": roots,
             "traveler": traveler

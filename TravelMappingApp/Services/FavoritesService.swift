@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import Sentry
 
 /// Manages favorite users with iCloud sync.
 /// Uses deletion-wins conflict resolution: if a user is unfavorited on any device,
@@ -75,6 +76,11 @@ class FavoritesService: ObservableObject {
         } else {
             saveToLocal()
         }
+        SentrySDK.logger.info("Favorite added", attributes: [
+            "totalFavorites": favorites.count,
+            "iCloudSync": iCloudSyncEnabled,
+        ])
+        updateProfileContext()
     }
 
     func removeFavorite(_ username: String) {
@@ -87,6 +93,23 @@ class FavoritesService: ObservableObject {
             saveToCloud(favorites: favorites, deleted: deleted)
         } else {
             saveToLocal()
+        }
+        SentrySDK.logger.info("Favorite removed", attributes: [
+            "totalFavorites": favorites.count,
+            "iCloudSync": iCloudSyncEnabled,
+        ])
+        updateProfileContext()
+    }
+
+    private func updateProfileContext() {
+        let primaryUser = UserDefaults.standard.string(forKey: "primaryUser") ?? ""
+        let recents = (UserDefaults.standard.array(forKey: "recentUsers") as? [String]) ?? []
+        SentrySDK.configureScope { [favorites] scope in
+            scope.setContext(value: [
+                "hasPrimaryUser": !primaryUser.isEmpty,
+                "favoritesCount": favorites.count,
+                "recentUsersCount": recents.count,
+            ], key: "profile")
         }
     }
 

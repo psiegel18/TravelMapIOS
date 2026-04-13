@@ -1,0 +1,105 @@
+================================================================
+APP STORE DESCRIPTION
+================================================================
+
+Travel Mapping is the companion app for travelmapping.net — the community-driven project that tracks highway and rail travel across the world.
+
+Browse interactive maps showing every road and rail segment you've clinched. See your progress across regions, compare stats with other travelers on the leaderboard, and discover new routes to explore.
+
+FEATURES
+
+Maps & Visualization
+- Interactive maps with your traveled and remaining road segments
+- Rail and transit route overlays
+- Customizable line styles, widths, and map themes
+- Select segments directly on the map to generate .list file entries
+
+Statistics & Rankings
+- Mileage breakdowns by region, category, and route
+- See your closest-to-clinched and longest-clinched routes
+- Overall ranking and percentile among all travelers
+- Distance tracking in miles or kilometers
+
+Road Trip Recording
+- GPS-based trip recording that runs in the background
+- Automatic segment matching to TravelMapping routes
+- Trip replay with timeline slider
+- Export matched segments as .list file entries
+
+Route Planner
+- Preview TravelMapping segments along a planned route
+- Discover which routes you'd clinch on your next road trip
+
+Sharing & Export
+- Share polished stats cards and map snapshots
+- Rich link previews in Messages with interactive map access
+- Copy or share .list file entries for GitHub submission
+- Export road trip data as .list files
+
+Cross-Device Sync
+- iCloud sync for favorites, settings, and preferences
+- Home screen widgets showing your travel stats
+- Apple Watch companion app
+
+HOW IT WORKS
+
+Travel Mapping tracks which highway and rail segments you've traveled by maintaining .list files — simple text files listing your clinched route segments. The community at travelmapping.net processes these files and visualizes your travels on interactive maps.
+
+This app lets you browse that data, track your progress, and generate new .list entries — either by selecting segments on the map or recording GPS road trips that automatically match to TravelMapping routes.
+
+New to Travel Mapping? The app includes a Get Started guide to help you create your username and submit your first .list file.
+
+SUPPORTED REGIONS
+
+Travel Mapping covers highway systems across North America, Europe, Asia, South America, Africa, and Oceania — with nearly 400 regions across 147 countries. Rail and transit networks are also tracked via the companion tmrail.teresco.org database.
+
+OPEN SOURCE & COMMUNITY
+
+Travel Mapping is a volunteer-driven project. Route data, user files, and the web application are all open source and hosted on GitHub. This app connects to the public TravelMapping API — no account creation or personal data collection required.
+
+Privacy: No ads, no third-party analytics. Anonymous diagnostic data (crashes, performance metrics, and brief session replays on errors) is collected via Sentry to improve app stability. Your location data stays on your device or syncs privately via iCloud.
+
+
+================================================================
+APP REVIEW NOTES
+================================================================
+
+Travel Mapping is a companion app for the travelmapping.net community project. It displays highway and rail travel data from the public TravelMapping API.
+
+TESTING THE APP
+
+No account creation is required. To test with an existing user's data, enter any username from the Travelers list (530+ users are available). Suggested test users:
+
+- "opspe" — 29 regions, good variety of US and Canadian routes
+- "duke87" — large traveler with many regions for testing loading performance
+
+The app loads travel data from two public APIs:
+- Roads: https://travelmapping.net (TravelMapping database)
+- Rail: https://tmrail.teresco.org (TravelMappingRail database)
+
+KEY FEATURES TO TEST
+
+1. Travelers tab: Tap any user to see their List, Map, and Stats views
+2. Map tab: Use the globe icon to select regions, pencil icon to select segments
+3. Stats tab: Shows mileage breakdowns, rankings, closest-to-clinched routes
+4. Road Trips tab: Requires GPS/location access to record trips
+
+LOCATION USAGE
+
+The app requests location access only when the user initiates a Road Trip recording. Background location is used to track GPS points while driving. Location data is stored locally on-device and is never sent to external servers (except via iCloud sync if enabled by the user).
+
+CONTENT CLASSIFICATION
+
+This app contains no news, religious, book, or magazine content. It displays geographic/mapping data only. No permits are required.
+
+THIRD-PARTY CONTENT
+
+All route and traveler data is sourced from the open-source TravelMapping project (travelmapping.net). Map tiles are provided by Apple MapKit. No analytics or advertising SDKs are included. The Sentry SDK is integrated for anonymous crash, performance, and diagnostic reporting (disclosed in the App Privacy survey).
+
+DATA & PRIVACY
+
+- No personal data is collected or shared
+- Sentry is used for anonymous diagnostic reporting (crashes, performance metrics, app hangs, screenshots and ~30 seconds of session replay on errors, and structured event logs). No personal data is transmitted — the only identifier is the TravelMapping username if the user has set one.
+- No advertising frameworks are included.
+- Location data stays on-device or syncs via iCloud only
+- The app connects to public APIs (travelmapping.net) using only usernames — no authentication, passwords, or personal identifiers are transmitted

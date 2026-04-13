@@ -23,7 +23,7 @@ a { color: #0066cc; }
 </head>
 <body>
 <h1>Travel Mapping iOS App Privacy Policy</h1>
-<p class="meta"><strong>Last updated:</strong> April 12, 2026</p>
+<p class="meta"><strong>Last updated:</strong> April 13, 2026</p>
 
 <h2>Overview</h2>
 <p>Travel Mapping is an iOS app for browsing and tracking road and rail travel data from travelmapping.net. This privacy policy describes what information the app collects and how it is used.</p>
@@ -53,15 +53,19 @@ a { color: #0066cc; }
 </ul>
 <p>No personal information is transmitted. The app does not have user accounts or login.</p>
 
-<h2>Crash Reporting</h2>
-<p>The app uses <a href="https://sentry.io">Sentry</a> to collect anonymous crash reports and error data. This helps us identify and fix bugs to improve app stability. Crash reports may include:</p>
+<h2>Crash Reporting &amp; Diagnostics</h2>
+<p>The app uses <a href="https://sentry.io">Sentry</a> to collect anonymous diagnostic data that helps us identify and fix bugs and performance issues. Data collected may include:</p>
 <ul>
 <li>Device model, OS version, and app version</li>
-<li>Stack trace information (which code was executing when the error occurred)</li>
+<li>Stack trace information (which code was executing when an error occurred)</li>
+<li>Performance metrics (CPU profiles, app hang detection, slow screen transitions)</li>
+<li>Screenshots and view hierarchy captured at the moment of an error</li>
+<li>Session replay video (a visual recording of the few seconds leading up to an error) for a sampled subset of sessions</li>
+<li>Breadcrumbs and structured logs of app events (trip lifecycle, navigation, settings changes) — no trip coordinates, note content, or personal data</li>
 <li>Your TravelMapping username (if set) to help reproduce user-specific issues</li>
-<li>General device state (memory usage, battery level)</li>
+<li>General device state (memory usage, battery level, connectivity)</li>
 </ul>
-<p>Crash data is <strong>not</strong> used for advertising, tracking, or analytics. It is used solely to improve app functionality. You can report bugs directly via the shake gesture or Settings &gt; Report a Bug.</p>
+<p>Diagnostic data is <strong>not</strong> used for advertising, tracking, or analytics. It is used solely to improve app functionality. Session replays exclude any content inside AVFoundation views, system photo pickers, and camera views by iOS design. You can report bugs directly via the shake gesture or Settings &gt; Report a Bug, which optionally includes your name, email, and a screenshot only if you provide them in the form.</p>
 
 <h2>Information We Do Not Collect</h2>
 <ul>

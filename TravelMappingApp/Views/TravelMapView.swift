@@ -1,4 +1,5 @@
 import Sentry
+import SentrySwiftUI
 import SwiftUI
 import MapKit
 import CoreLocation
@@ -180,6 +181,12 @@ struct TravelMapView: View {
     }
 
     var body: some View {
+        SentryTracedView("TravelMapView", waitForFullDisplay: true) {
+            bodyContent
+        }
+    }
+
+    private var bodyContent: some View {
         ZStack(alignment: .bottom) {
             mapLayer
 
@@ -1261,6 +1268,7 @@ struct TravelMapView: View {
 
         loadingProgress = nil
         isLoading = false
+        SentrySDK.reportFullyDisplayed()
     }
 
     /// Zoom the map to fit the currently loaded clinched segments

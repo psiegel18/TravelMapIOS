@@ -1,5 +1,7 @@
 import SwiftUI
 import MapKit
+import Sentry
+import SentrySwiftUI
 
 struct RouteDetailView: View {
     let roots: [String]
@@ -44,21 +46,23 @@ struct RouteDetailView: View {
     private func convert(_ miles: Double) -> Double { settings.useMiles ? miles : miles * 1.60934 }
 
     var body: some View {
-        Group {
-            if isLoading {
-                ProgressView("Loading route...")
-            } else if let error = errorMessage {
-                ErrorView(message: error) { await load() }
-            } else if let detail = routeDetail {
-                loadedContent(detail: detail)
-            } else {
-                ErrorView(message: "No route data returned for \(listName). The server may be temporarily unavailable.") { await load() }
+        SentryTracedView("RouteDetailView", waitForFullDisplay: true) {
+            Group {
+                if isLoading {
+                    ProgressView("Loading route...")
+                } else if let error = errorMessage {
+                    ErrorView(message: error) { await load() }
+                } else if let detail = routeDetail {
+                    loadedContent(detail: detail)
+                } else {
+                    ErrorView(message: "No route data returned for \(listName). The server may be temporarily unavailable.") { await load() }
+                }
             }
+            .navigationTitle(listName)
+            .navigationBarTitleDisplayMode(.inline)
+            .task { await load() }
+            .refreshable { await load() }
         }
-        .navigationTitle(listName)
-        .navigationBarTitleDisplayMode(.inline)
-        .task { await load() }
-        .refreshable { await load() }
     }
 
     @ViewBuilder
@@ -75,23 +79,59 @@ struct RouteDetailView: View {
         }
     }
 
-    private var mapSegments: [(start: CLLocationCoordinate2D, end: CLLocationCoordinate2D, clinched: Bool)] {
+    private struct MergedDetailPolyline: Identifiable {
+        let id: Int
+        let coordinates: [CLLocationCoordinate2D]
+        let clinched: Bool
+    }
+
+    private var mergedPolylines: [MergedDetailPolyline] {
+        // Coalesce consecutive same-clinched segments whose endpoints align into a single polyline
+        // to avoid thousands of MapPolyline objects — the main-thread Metal teardown of those
+        // caused 7s+ app hangs on iPad.
+        let segments: [(start: CLLocationCoordinate2D, end: CLLocationCoordinate2D, clinched: Bool)]
         if !allRegionDetails.isEmpty {
-            // Multi-region: draw each region's segments separately to avoid cross-region lines
-            return allRegionDetails.flatMap(\.segments)
+            segments = allRegionDetails.flatMap(\.segments)
+        } else {
+            segments = routeDetail?.segments ?? []
         }
-        return routeDetail?.segments ?? []
+
+        var result: [MergedDetailPolyline] = []
+        var coords: [CLLocationCoordinate2D] = []
+        var currentClinched: Bool? = nil
+        var nextID = 0
+
+        func flush() {
+            guard coords.count >= 2, let clinched = currentClinched else { return }
+            result.append(MergedDetailPolyline(id: nextID, coordinates: coords, clinched: clinched))
+            nextID += 1
+        }
+
+        for seg in segments {
+            if currentClinched == seg.clinched,
+               let last = coords.last,
+               abs(last.latitude - seg.start.latitude) < 1e-6,
+               abs(last.longitude - seg.start.longitude) < 1e-6 {
+                coords.append(seg.end)
+            } else {
+                flush()
+                coords = [seg.start, seg.end]
+                currentClinched = seg.clinched
+            }
+        }
+        flush()
+        return result
     }
 
     private func mapView(detail: TravelMappingAPI.RouteDetail) -> some View {
         Map(position: $mapPosition) {
-            // Draw segments colored by clinched status
-            ForEach(Array(mapSegments.enumerated()), id: \.offset) { index, segment in
-                MapPolyline(coordinates: [segment.start, segment.end])
+            // Draw merged polylines colored by clinched status
+            ForEach(mergedPolylines) { poly in
+                MapPolyline(coordinates: poly.coordinates)
                     .stroke(
-                        segment.clinched ? Color.blue : Color.gray.opacity(0.7),
+                        poly.clinched ? Color.blue : Color.gray.opacity(0.7),
                         style: StrokeStyle(
-                            lineWidth: segment.clinched ? 4 : 2,
+                            lineWidth: poly.clinched ? 4 : 2,
                             lineCap: .round
                         )
                     )
@@ -254,6 +294,7 @@ struct RouteDetailView: View {
             errorMessage = error.localizedDescription
         }
         isLoading = false
+        SentrySDK.reportFullyDisplayed()
     }
 }
 

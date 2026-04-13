@@ -77,7 +77,15 @@ class TripRecordingService: NSObject, ObservableObject {
         guard !isRecording else { return }
 
         currentTripType = tripType
+        // System permission dialog blocks the main thread — pause hang tracking so Sentry
+        // doesn't report it as a false-positive app hang. Resume after the dialog has
+        // had time to be shown and dismissed.
+        SentrySDK.pauseAppHangTracking()
         locationManager.requestAlwaysAuthorization()
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(3))
+            SentrySDK.resumeAppHangTracking()
+        }
         locationManager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
         locationManager.distanceFilter = 50
         locationManager.activityType = tripType == .rail ? .otherNavigation : .automotiveNavigation
@@ -101,6 +109,11 @@ class TripRecordingService: NSObject, ObservableObject {
         locationManager.startUpdatingLocation()
         startLiveActivity(tripName: trip.name, startDate: trip.startDate)
         Haptics.success()
+        SentrySDK.logger.info("Trip started", attributes: [
+            "tripType": tripType == .rail ? "rail" : "road",
+            "tripName": trip.name,
+        ])
+        updateTripContext(isRecording: true, isPaused: false, tripType: tripType)
 
         // Elapsed time timer + Watch sync
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
@@ -118,6 +131,11 @@ class TripRecordingService: NSObject, ObservableObject {
                     isPaused: self.isPaused,
                     tripType: self.currentTripType == .rail ? "rail" : "road"
                 )
+                // Refresh trip_state context every 10 seconds so mid-trip Sentry events
+                // show a reasonably fresh pointCount/matchedCount rather than 0 from start.
+                if Int(self.elapsedTime) % 10 == 0 {
+                    self.updateTripContext(isRecording: true, isPaused: self.isPaused, tripType: self.currentTripType)
+                }
             }
         }
 
@@ -135,6 +153,8 @@ class TripRecordingService: NSObject, ObservableObject {
         isPaused = true
         currentSegmentName = "Paused"
         Haptics.light()
+        SentrySDK.logger.info("Trip paused", attributes: ["elapsedTime": elapsedTime])
+        updateTripContext(isRecording: true, isPaused: true, tripType: currentTripType)
     }
 
     func resumeTrip() {
@@ -142,6 +162,22 @@ class TripRecordingService: NSObject, ObservableObject {
         locationManager.startUpdatingLocation()
         isPaused = false
         Haptics.light()
+        SentrySDK.logger.info("Trip resumed", attributes: ["elapsedTime": elapsedTime])
+        updateTripContext(isRecording: true, isPaused: false, tripType: currentTripType)
+    }
+
+    private func updateTripContext(isRecording: Bool, isPaused: Bool, tripType: TripType) {
+        SentrySDK.configureScope { [weak self] scope in
+            guard let self else { return }
+            scope.setContext(value: [
+                "isRecording": isRecording,
+                "isPaused": isPaused,
+                "tripType": tripType == .rail ? "rail" : "road",
+                "elapsedTime": self.elapsedTime,
+                "pointCount": self.pointCount,
+                "matchedCount": self.matchedCount,
+            ], key: "trip_state")
+        }
     }
 
     func stopTrip() {
@@ -166,6 +202,16 @@ class TripRecordingService: NSObject, ObservableObject {
 
         stopLiveActivity()
         Haptics.success()
+        SentrySDK.logger.info("Trip stopped", attributes: [
+            "tripType": trip.tripType == .rail ? "rail" : "road",
+            "duration": elapsedTime,
+            "totalDistance": totalDistance,
+            "pointCount": pointCount,
+            "matchedSegments": trip.matchedSegments.count,
+        ])
+        SentrySDK.configureScope { scope in
+            scope.setContext(value: ["isRecording": false], key: "trip_state")
+        }
 
         // Save final state
         Task {
@@ -321,6 +367,11 @@ extension TripRecordingService: CLLocationManagerDelegate {
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        // Skip expected/transient CL errors: denied permission, temporary location unknown, region monitoring denied.
+        if let clError = error as? CLError,
+           [.denied, .locationUnknown, .regionMonitoringDenied].contains(clError.code) {
+            return
+        }
         SentrySDK.capture(error: error)
     }
 
