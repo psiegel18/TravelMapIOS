@@ -22,6 +22,8 @@
 		4B20AEA737640C29047ED502 /* GetStartedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 051BB1706E06D96F99CD3958 /* GetStartedView.swift */; };
 		563AE1A01CB2E9F81214BA98 /* TripRecordingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36F6F875A0D3BEA18A62B0BD /* TripRecordingService.swift */; };
 		5892992A9AE1D929D4831F8A /* RoadTripRecordingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D35A740B2CB4E05C4F81A5A /* RoadTripRecordingView.swift */; };
+		5A1690692F8C81B90073EBF6 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 5A1690682F8C81B90073EBF6 /* PrivacyInfo.xcprivacy */; };
+		5A16906A2F8C81B90073EBF6 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 5A1690682F8C81B90073EBF6 /* PrivacyInfo.xcprivacy */; };
 		5A9671E52F84DAC60013061D /* Sentry in Frameworks */ = {isa = PBXBuildFile; productRef = 5A9671E42F84DAC60013061D /* Sentry */; };
 		5A9671F32F84DAC60013061D /* SentrySwiftUI in Frameworks */ = {isa = PBXBuildFile; productRef = 5A9671F22F84DAC60013061D /* SentrySwiftUI */; };
 		5A9671F62F84DBA10013061D /* Sentry in Frameworks */ = {isa = PBXBuildFile; productRef = 5A9671F52F84DBA10013061D /* Sentry */; };
@@ -114,6 +116,7 @@
 		479047D5B4036699115D21C8 /* WatchSyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = WatchSyncService.swift; path = TravelMappingApp/Services/WatchSyncService.swift; sourceTree = SOURCE_ROOT; };
 		48456B71080730137BEF3025 /* FreshnessIndicator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FreshnessIndicator.swift; sourceTree = "<group>"; };
 		54CB6BF6CD2CBEAF6133EDF8 /* RoadTripLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoadTripLiveActivity.swift; sourceTree = "<group>"; };
+		5A1690682F8C81B90073EBF6 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		5D7AA373F0E75641F7A39E37 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		6D35A740B2CB4E05C4F81A5A /* RoadTripRecordingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoadTripRecordingView.swift; sourceTree = "<group>"; };
 		6D38C145D3688EAA3D522453 /* RouteDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteDetailView.swift; sourceTree = "<group>"; };
@@ -180,6 +183,7 @@
 		281215F705BBE27274FF9527 = {
 			isa = PBXGroup;
 			children = (
+				5A1690682F8C81B90073EBF6 /* PrivacyInfo.xcprivacy */,
 				E5AF85CE34CBB53422429CB5 /* Shared */,
 				7D6F54F715DE6792657D6017 /* TravelMappingApp */,
 				4088F8072C99224488358C8C /* TravelMappingWatch */,
@@ -450,6 +454,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5A16906A2F8C81B90073EBF6 /* PrivacyInfo.xcprivacy in Resources */,
 				66704407A556FD3797B3BB16 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -458,6 +463,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5A1690692F8C81B90073EBF6 /* PrivacyInfo.xcprivacy in Resources */,
 				91F25663D2345312A6E1E18B /* Assets.xcassets in Resources */,
 				FA9040F48D6713AE094D069D /* LaunchScreen.storyboard in Resources */,
 			);
