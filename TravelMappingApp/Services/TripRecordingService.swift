@@ -46,11 +46,75 @@ class TripRecordingService: NSObject, ObservableObject {
         }
     }
 
+    /// Maximum age of an orphaned trip eligible for silent auto-resume.
+    /// Older trips fall back to the keep/discard dialog so we don't surprise the user
+    /// by re-arming GPS for a trip they forgot about days ago.
+    private static let autoResumeMaxAge: TimeInterval = 12 * 60 * 60
+
     private func checkForOrphanedTrip() async {
         guard let trips = try? await TripStorageService.shared.listTrips() else { return }
-        if let orphan = trips.first(where: { $0.status == .recording }) {
+        guard let orphan = trips.first(where: { $0.status == .recording }) else { return }
+
+        let age = Date().timeIntervalSince(orphan.startDate)
+        let status = locationManager.authorizationStatus
+        let canResume = (status == .authorizedAlways || status == .authorizedWhenInUse)
+            && age >= 0
+            && age < Self.autoResumeMaxAge
+
+        if canResume {
+            resumeFromOrphan(orphan)
+        } else {
+            // Fall back to the existing keep/discard dialog
             orphanedTrip = orphan
         }
+    }
+
+    /// Restore an in-progress trip after the app was killed (or evicted by the OS) mid-recording.
+    /// Rebinds in-memory state to what was already on disk, restarts location updates and timers,
+    /// re-seeds the segment matcher, and reattaches the still-running Live Activity.
+    private func resumeFromOrphan(_ trip: RoadTrip) {
+        currentTripType = trip.tripType
+        currentTrip = trip
+        isRecording = true
+        isPaused = false
+        pointCount = trip.rawPoints.count
+        matchedCount = trip.matchedSegments.count
+        elapsedTime = Date().timeIntervalSince(trip.startDate)
+        currentSegmentName = nil
+        currentAccuracy = -1
+        currentSpeed = 0
+        totalDistance = Self.totalDistance(of: trip.rawPoints)
+        matchedCoordinates = []
+
+        segmentMatcher.restoreMatchedSegments(trip.matchedSegments)
+
+        configureLocationManager(for: trip.tripType)
+        locationManager.startUpdatingLocation()
+
+        rebindOrStartLiveActivity(tripName: trip.name, startDate: trip.startDate)
+
+        startTimers(tripStartDate: trip.startDate)
+
+        SentrySDK.logger.info("Trip resumed from orphan", attributes: [
+            "tripType": trip.tripType == .rail ? "rail" : "road",
+            "tripName": trip.name,
+            "elapsedAtResume": elapsedTime,
+            "pointsAtResume": pointCount,
+            "matchedAtResume": matchedCount,
+        ])
+        updateTripContext(isRecording: true, isPaused: false, tripType: trip.tripType)
+    }
+
+    private static func totalDistance(of points: [GPSPoint]) -> Double {
+        guard points.count > 1 else { return 0 }
+        var total: Double = 0
+        var prev = CLLocation(latitude: points[0].latitude, longitude: points[0].longitude)
+        for i in 1..<points.count {
+            let next = CLLocation(latitude: points[i].latitude, longitude: points[i].longitude)
+            total += next.distance(from: prev)
+            prev = next
+        }
+        return total
     }
 
     /// Finalize a trip that was interrupted by a crash or force-quit
@@ -86,12 +150,7 @@ class TripRecordingService: NSObject, ObservableObject {
             try? await Task.sleep(for: .seconds(3))
             SentrySDK.resumeAppHangTracking()
         }
-        locationManager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
-        locationManager.distanceFilter = 50
-        locationManager.activityType = tripType == .rail ? .otherNavigation : .automotiveNavigation
-        locationManager.allowsBackgroundLocationUpdates = true
-        locationManager.pausesLocationUpdatesAutomatically = true
-        locationManager.showsBackgroundLocationIndicator = true
+        configureLocationManager(for: tripType)
 
         var trip = RoadTrip(name: name, tripType: tripType)
         trip.status = .recording
@@ -115,11 +174,27 @@ class TripRecordingService: NSObject, ObservableObject {
         ])
         updateTripContext(isRecording: true, isPaused: false, tripType: tripType)
 
+        startTimers(tripStartDate: trip.startDate)
+    }
+
+    private func configureLocationManager(for tripType: TripType) {
+        locationManager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
+        locationManager.distanceFilter = 50
+        locationManager.activityType = tripType == .rail ? .otherNavigation : .automotiveNavigation
+        locationManager.allowsBackgroundLocationUpdates = true
+        locationManager.pausesLocationUpdatesAutomatically = true
+        locationManager.showsBackgroundLocationIndicator = true
+    }
+
+    private func startTimers(tripStartDate: Date) {
+        timer?.invalidate()
+        saveTimer?.invalidate()
+
         // Elapsed time timer + Watch sync
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                guard let self else { return }
-                self.elapsedTime = Date().timeIntervalSince(trip.startDate)
+                guard let self, let trip = self.currentTrip else { return }
+                self.elapsedTime = Date().timeIntervalSince(tripStartDate)
                 WatchSyncService.shared.sendTripUpdate(
                     tripName: trip.name,
                     elapsedTime: self.elapsedTime,
@@ -251,6 +326,22 @@ class TripRecordingService: NSObject, ObservableObject {
             )
         } catch {
             SentrySDK.capture(error: error)
+        }
+    }
+
+    /// On resume, locate the Live Activity that the previous app session started so we can
+    /// keep updating it (and end it when the user stops). If the system has already cleared it,
+    /// start a fresh one.
+    private func rebindOrStartLiveActivity(tripName: String, startDate: Date) {
+        let activities = Activity<RoadTripAttributes>.activities
+        let match = activities.first {
+            $0.attributes.tripName == tripName
+                && abs($0.attributes.startDate.timeIntervalSince(startDate)) < 1
+        } ?? activities.first
+        if let match {
+            liveActivity = match
+        } else {
+            startLiveActivity(tripName: tripName, startDate: startDate)
         }
     }
 

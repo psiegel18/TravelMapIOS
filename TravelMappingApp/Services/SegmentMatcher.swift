@@ -156,6 +156,15 @@ class SegmentMatcher {
         return matchedSegments
     }
 
+    /// Re-seed previously matched segments after the app was killed mid-trip.
+    /// Called from the resume path so finalizeTrip() returns the full set, not just the post-resume tail.
+    func restoreMatchedSegments(_ segments: [MatchedSegment]) {
+        matchedSegments = segments
+        currentSegmentID = nil
+        currentSegmentEntryTime = nil
+        consecutiveMatchCount = 0
+    }
+
     // MARK: - Private
 
     private func finalizeCurrentSegment(at exitTime: Date) {
