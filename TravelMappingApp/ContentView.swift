@@ -1,6 +1,7 @@
 import SwiftUI
 import CoreSpotlight
 import WidgetKit
+import Sentry
 
 struct ContentView: View {
     @StateObject private var dataService = DataService()
@@ -10,6 +11,8 @@ struct ContentView: View {
     @State private var showOnboarding = false
     @State private var travelersPath = NavigationPath()
     @State private var selectedTab = 0
+
+    private static let tabScreenNames = ["Travelers", "RoadTrips", "RoutePlanner", "Leaderboard", "Settings"]
 
     var body: some View {
         mainContent
@@ -22,6 +25,10 @@ struct ContentView: View {
                     showOnboarding = true
                     hasOnboarded = true
                 }
+                Self.updateScreenTag(for: selectedTab)
+            }
+            .onChange(of: selectedTab) {
+                Self.updateScreenTag(for: selectedTab)
             }
             .onOpenURL { url in
                 handleURL(url)
@@ -32,6 +39,8 @@ struct ContentView: View {
                 }
             }
             .task {
+                CatalogService.shared.loadIfNeeded()
+                await CacheService.shared.purgeExpired()
                 await prefetchUserData()
             }
     }
@@ -70,6 +79,15 @@ struct ContentView: View {
             )
             travelersPath = NavigationPath()
             travelersPath.append(user)
+        }
+    }
+
+    /// Set the `current_screen` Sentry tag so future events surface which top-level
+    /// tab the user was on. Detail navigation can layer on top with its own tags.
+    private static func updateScreenTag(for tab: Int) {
+        let name = tabScreenNames.indices.contains(tab) ? tabScreenNames[tab] : "Unknown"
+        SentrySDK.configureScope { scope in
+            scope.setTag(value: name, key: "current_screen")
         }
     }
 

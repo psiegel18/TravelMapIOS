@@ -60,6 +60,7 @@ struct RouteDetailView: View {
             }
             .navigationTitle(listName)
             .navigationBarTitleDisplayMode(.inline)
+            .sentryScreen("RouteDetail")
             .task { await load() }
             .refreshable { await load() }
         }

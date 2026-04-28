@@ -24,10 +24,13 @@ class SegmentMatcher {
     private var consecutiveMatchCount: Int = 0
     private(set) var matchedSegments: [MatchedSegment] = []
 
-    private static let matchThreshold: CLLocationDistance = 100  // meters
+    private static let matchThreshold: CLLocationDistance = 60   // meters, perpendicular projection
+    private static let endpointMatchThreshold: CLLocationDistance = 25  // tighter when projection clamps to a segment endpoint
     private static let minConsecutiveMatches = 3
     private static let bboxPadding: Double = 0.5  // ~35 miles
     private static let refetchThreshold: Double = 0.125 // ~25% of bbox
+    private static let bearingTolerance: Double = 30  // degrees — heading must align with segment direction (or its 180° complement)
+    private static let minSpeedForBearingCheck: Double = 2.235  // ~5 mph; CLLocation.course is unreliable below this
 
     // MARK: - Public API
 
@@ -40,24 +43,40 @@ class SegmentMatcher {
 
         var bestSegment: TravelMappingAPI.MapSegment?
         var bestDistance: CLLocationDistance = .greatestFiniteMagnitude
+        let useBearingFilter = point.course >= 0 && point.speed >= Self.minSpeedForBearingCheck
 
+        var visited = Set<Int>()
         for neighborCell in neighborCells {
             guard let segmentIDs = spatialGrid[neighborCell] else { continue }
             for segID in segmentIDs {
-                guard let seg = segmentCache[segID] else { continue }
-                let dist = perpendicularDistance(
+                guard !visited.contains(segID), let seg = segmentCache[segID] else { continue }
+                visited.insert(segID)
+
+                // Bearing filter — drop segments perpendicular to (or otherwise misaligned with)
+                // the user's actual direction of travel. Kills overpass / cross-street false positives.
+                if useBearingFilter && !bearingMatches(course: point.course, segStart: seg.start, segEnd: seg.end) {
+                    continue
+                }
+
+                let result = perpendicularDistance(
                     point: point.coordinate,
                     segStart: seg.start,
                     segEnd: seg.end
                 )
-                if dist < bestDistance {
-                    bestDistance = dist
+
+                // Endpoint-clamped projections mean the GPS point is past the segment, not perpendicular
+                // to it — those need a much tighter threshold or touching/intersecting roads pull matches.
+                let threshold = result.isClamped ? Self.endpointMatchThreshold : Self.matchThreshold
+                if result.distance > threshold { continue }
+
+                if result.distance < bestDistance {
+                    bestDistance = result.distance
                     bestSegment = seg
                 }
             }
         }
 
-        guard bestDistance < Self.matchThreshold, let matched = bestSegment else {
+        guard let matched = bestSegment else {
             // No match — if we were tracking a segment, finalize it
             if currentSegmentID != nil {
                 finalizeCurrentSegment(at: point.timestamp)
@@ -156,6 +175,15 @@ class SegmentMatcher {
         return matchedSegments
     }
 
+    /// Re-seed previously matched segments after the app was killed mid-trip.
+    /// Called from the resume path so finalizeTrip() returns the full set, not just the post-resume tail.
+    func restoreMatchedSegments(_ segments: [MatchedSegment]) {
+        matchedSegments = segments
+        currentSegmentID = nil
+        currentSegmentEntryTime = nil
+        consecutiveMatchCount = 0
+    }
+
     // MARK: - Private
 
     private func finalizeCurrentSegment(at exitTime: Date) {
@@ -225,12 +253,20 @@ class SegmentMatcher {
         }
     }
 
-    /// Perpendicular distance from a point to a line segment, in meters.
+    /// Distance from a point to a line segment plus whether the perpendicular projection
+    /// fell outside the segment (and was clamped to an endpoint). Clamped matches are
+    /// "near the segment's endpoint" rather than "perpendicular to it" — useful to flag
+    /// because they're the source of intersection / overpass false positives.
+    private struct DistanceResult {
+        let distance: CLLocationDistance
+        let isClamped: Bool
+    }
+
     private func perpendicularDistance(
         point: CLLocationCoordinate2D,
         segStart: CLLocationCoordinate2D,
         segEnd: CLLocationCoordinate2D
-    ) -> CLLocationDistance {
+    ) -> DistanceResult {
         // Use equirectangular projection (fast, accurate for short distances)
         let cosLat = cos(point.latitude * .pi / 180)
 
@@ -241,14 +277,17 @@ class SegmentMatcher {
 
         let segLenSq = dx * dx + dy * dy
         guard segLenSq > 0 else {
-            // Degenerate segment (start == end)
+            // Degenerate segment (start == end) — treat as a point, always "clamped"
             let dLat = point.latitude - segStart.latitude
             let dLng = (point.longitude - segStart.longitude) * cosLat
-            return sqrt(dLat * dLat + dLng * dLng) * 111_320
+            let dist = sqrt(dLat * dLat + dLng * dLng) * 111_320
+            return DistanceResult(distance: dist, isClamped: true)
         }
 
         // Project point onto segment line, clamped to [0,1]
-        let t = max(0, min(1, (px * dx + py * dy) / segLenSq))
+        let rawT = (px * dx + py * dy) / segLenSq
+        let t = max(0, min(1, rawT))
+        let isClamped = (rawT < 0 || rawT > 1)
 
         let closestX = segStart.longitude * cosLat + t * dx
         let closestY = segStart.latitude + t * dy
@@ -256,6 +295,37 @@ class SegmentMatcher {
         let distX = point.longitude * cosLat - closestX
         let distY = point.latitude - closestY
 
-        return sqrt(distX * distX + distY * distY) * 111_320 // degrees to meters
+        let dist = sqrt(distX * distX + distY * distY) * 111_320 // degrees to meters
+        return DistanceResult(distance: dist, isClamped: isClamped)
+    }
+
+    /// Heading match: GPS course must be within `bearingTolerance` of the segment's bearing
+    /// or its 180° complement (handles driving the segment in either direction).
+    private func bearingMatches(
+        course: Double,
+        segStart: CLLocationCoordinate2D,
+        segEnd: CLLocationCoordinate2D
+    ) -> Bool {
+        let segBearing = bearing(from: segStart, to: segEnd)
+        let forwardDiff = angleDifference(course, segBearing)
+        let reverseDiff = angleDifference(course, (segBearing + 180).truncatingRemainder(dividingBy: 360))
+        return min(forwardDiff, reverseDiff) <= Self.bearingTolerance
+    }
+
+    /// Compass bearing from one coordinate to another, 0..<360 degrees.
+    private func bearing(from start: CLLocationCoordinate2D, to end: CLLocationCoordinate2D) -> Double {
+        let lat1 = start.latitude * .pi / 180
+        let lat2 = end.latitude * .pi / 180
+        let dLng = (end.longitude - start.longitude) * .pi / 180
+        let y = sin(dLng) * cos(lat2)
+        let x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLng)
+        let degrees = atan2(y, x) * 180 / .pi
+        return (degrees + 360).truncatingRemainder(dividingBy: 360)
+    }
+
+    /// Smallest absolute difference between two compass angles, in degrees (0...180).
+    private func angleDifference(_ a: Double, _ b: Double) -> Double {
+        let diff = abs(a - b).truncatingRemainder(dividingBy: 360)
+        return min(diff, 360 - diff)
     }
 }

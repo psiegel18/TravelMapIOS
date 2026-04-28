@@ -12,7 +12,7 @@ struct UserDetailView: View {
     @State private var shareContent: ShareContent?
     @State private var mapLoadedRegions: Set<String> = []
     @State private var userMiles: Double = 0
-    @State private var regionCountryMap: [String: String] = [:]
+    @ObservedObject private var catalog = CatalogService.shared
     @ObservedObject private var settings = SyncedSettingsService.shared
 
     var body: some View {
@@ -83,6 +83,7 @@ struct UserDetailView: View {
             }
         }
         .navigationTitle(username)
+        .sentryScreen("UserDetail")
         .toolbar {
             if profile != nil {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -133,19 +134,7 @@ struct UserDetailView: View {
                let user = snapshot.users.first(where: { $0.username.lowercased() == username.lowercased() }) {
                 userMiles = user.totalMiles
             }
-            if regionCountryMap.isEmpty {
-                if let catalog = try? await TravelMappingAPI.shared.getAllRoutes() {
-                    var mapping: [String: String] = [:]
-                    let regions = catalog.regions ?? []
-                    let countries = catalog.countries ?? []
-                    for (i, region) in regions.enumerated() where i < countries.count {
-                        if mapping[region] == nil {
-                            mapping[region] = countries[i]
-                        }
-                    }
-                    regionCountryMap = mapping
-                }
-            }
+            CatalogService.shared.loadIfNeeded()
         }
         .refreshable {
             profile = await dataService.loadUserProfile(username: username)
@@ -323,7 +312,7 @@ struct UserDetailView: View {
                     category: category,
                     regionGroups: regionGroups,
                     username: username,
-                    regionCountryMap: regionCountryMap
+                    regionCountryMap: catalog.regionCountryMap
                 )
             }
         }

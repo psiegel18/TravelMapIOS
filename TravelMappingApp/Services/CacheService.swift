@@ -71,6 +71,25 @@ actor CacheService {
         try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
     }
 
+    /// Sweep expired entries off disk. `get()` only removes the file it was asked for,
+    /// so abandoned keys (data the user stopped browsing) sit around forever and bloat
+    /// both the cache directory and the "Oldest Cache" display in Settings. Call on
+    /// app launch to keep things tidy.
+    func purgeExpired() {
+        guard let files = try? FileManager.default.contentsOfDirectory(at: cacheDir, includingPropertiesForKeys: nil) else { return }
+        let now = Date()
+        for metaURL in files where metaURL.pathExtension == "meta" {
+            guard let metaData = try? Data(contentsOf: metaURL),
+                  let meta = try? JSONDecoder().decode(CacheMeta.self, from: metaData)
+            else { continue }
+            if now > meta.expiresAt {
+                let dataURL = metaURL.deletingPathExtension()
+                try? FileManager.default.removeItem(at: dataURL)
+                try? FileManager.default.removeItem(at: metaURL)
+            }
+        }
+    }
+
     private struct CacheMeta: Codable {
         let createdAt: Date
         let expiresAt: Date
