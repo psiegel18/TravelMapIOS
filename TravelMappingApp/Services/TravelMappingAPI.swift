@@ -318,6 +318,7 @@ actor TravelMappingAPI {
         // fail fast with a meaningful error instead of producing the cryptic
         // NSCocoaErrorDomain 4864 ("Unexpected character '<'") from JSONDecoder downstream.
         if let firstByte = data.first, firstByte == 0x3C { // '<'
+            Self.captureHTMLResponse(endpoint: endpoint, method: "POST", data: data)
             throw APIError.htmlResponseInsteadOfJSON
         }
 
@@ -327,6 +328,25 @@ actor TravelMappingAPI {
         }
 
         return data
+    }
+
+    /// Capture a Sentry issue WITH the offending response body when the API gives us HTML.
+    /// Callers swallow the throw with `try?`, so without an explicit capture we'd never see
+    /// what the server actually returned — defeating the point of the typed error.
+    private static func captureHTMLResponse(endpoint: String, method: String, data: Data) {
+        let preview = String(data: data.prefix(2048), encoding: .utf8) ?? "<non-utf8>"
+        let attachment = Attachment(
+            data: data,
+            filename: "api_response.html",
+            contentType: "text/html"
+        )
+        SentrySDK.capture(error: APIError.htmlResponseInsteadOfJSON) { scope in
+            scope.addAttachment(attachment)
+            scope.setExtra(value: preview, key: "response_preview_2kb")
+            scope.setExtra(value: data.count, key: "response_bytes")
+            scope.setTag(value: endpoint, key: "api_endpoint")
+            scope.setTag(value: method, key: "api_method")
+        }
     }
 
     enum APIError: Error, LocalizedError {
@@ -356,6 +376,7 @@ actor TravelMappingAPI {
             throw URLError(.badServerResponse)
         }
         if let firstByte = data.first, firstByte == 0x3C { // '<'
+            Self.captureHTMLResponse(endpoint: endpoint, method: "GET", data: data)
             throw APIError.htmlResponseInsteadOfJSON
         }
 

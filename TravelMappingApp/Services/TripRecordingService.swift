@@ -102,7 +102,28 @@ class TripRecordingService: NSObject, ObservableObject {
             "pointsAtResume": pointCount,
             "matchedAtResume": matchedCount,
         ])
+        Self.tripBreadcrumb(
+            "Trip resumed from orphan",
+            data: [
+                "tripType": trip.tripType == .rail ? "rail" : "road",
+                "elapsedAtResume": elapsedTime,
+                "pointsAtResume": pointCount,
+                "matchedAtResume": matchedCount,
+            ]
+        )
         updateTripContext(isRecording: true, isPaused: false, tripType: trip.tripType)
+    }
+
+    /// Drop a breadcrumb on the user's session so future Sentry events show what trip
+    /// activity happened in the lead-up — far more triage-friendly than reading separate
+    /// logger.info entries when an issue fires hours into a recording.
+    private static func tripBreadcrumb(_ message: String, data: [String: Any] = [:]) {
+        let crumb = Breadcrumb()
+        crumb.category = "trip"
+        crumb.message = message
+        crumb.level = .info
+        crumb.data = data
+        SentrySDK.addBreadcrumb(crumb)
     }
 
     private static func totalDistance(of points: [GPSPoint]) -> Double {
@@ -172,6 +193,10 @@ class TripRecordingService: NSObject, ObservableObject {
             "tripType": tripType == .rail ? "rail" : "road",
             "tripName": trip.name,
         ])
+        Self.tripBreadcrumb(
+            "Trip started",
+            data: ["tripType": tripType == .rail ? "rail" : "road"]
+        )
         updateTripContext(isRecording: true, isPaused: false, tripType: tripType)
 
         startTimers(tripStartDate: trip.startDate)
@@ -229,6 +254,7 @@ class TripRecordingService: NSObject, ObservableObject {
         currentSegmentName = "Paused"
         Haptics.light()
         SentrySDK.logger.info("Trip paused", attributes: ["elapsedTime": elapsedTime])
+        Self.tripBreadcrumb("Trip paused", data: ["elapsedTime": elapsedTime])
         updateTripContext(isRecording: true, isPaused: true, tripType: currentTripType)
     }
 
@@ -238,6 +264,7 @@ class TripRecordingService: NSObject, ObservableObject {
         isPaused = false
         Haptics.light()
         SentrySDK.logger.info("Trip resumed", attributes: ["elapsedTime": elapsedTime])
+        Self.tripBreadcrumb("Trip resumed", data: ["elapsedTime": elapsedTime])
         updateTripContext(isRecording: true, isPaused: false, tripType: currentTripType)
     }
 
@@ -285,6 +312,16 @@ class TripRecordingService: NSObject, ObservableObject {
             "pointCount": pointCount,
             "matchedSegments": trip.matchedSegments.count,
         ])
+        Self.tripBreadcrumb(
+            "Trip stopped",
+            data: [
+                "tripType": trip.tripType == .rail ? "rail" : "road",
+                "duration": elapsedTime,
+                "totalDistance": totalDistance,
+                "pointCount": pointCount,
+                "matchedSegments": trip.matchedSegments.count,
+            ]
+        )
         SentrySDK.configureScope { scope in
             scope.setContext(value: ["isRecording": false], key: "trip_state")
             scope.setTag(value: "false", key: "trip_active")

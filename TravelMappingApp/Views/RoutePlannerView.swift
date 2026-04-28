@@ -1,6 +1,8 @@
 import SwiftUI
 import MapKit
 import LinkPresentation
+import Sentry
+import SentrySwiftUI
 
 struct RoutePlannerView: View {
     @State private var startQuery = ""
@@ -28,6 +30,12 @@ struct RoutePlannerView: View {
     }
 
     var body: some View {
+        SentryTracedView("RoutePlannerView", waitForFullDisplay: true) {
+            bodyContent
+        }
+    }
+
+    private var bodyContent: some View {
         VStack(spacing: 0) {
             // Input fields
             VStack(spacing: 8) {
@@ -564,6 +572,7 @@ struct RoutePlannerView: View {
                 }
             }
             isLoadingSegments = false
+            SentrySDK.reportFullyDisplayed()
         } catch {
             errorMessage = "Error: \(error.localizedDescription)"
             isCalculating = false
