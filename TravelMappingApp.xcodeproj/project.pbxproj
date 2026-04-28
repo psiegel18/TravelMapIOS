@@ -105,7 +105,7 @@
 		236C4323C36BD1EC8FE72795 /* TravelSegment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TravelSegment.swift; sourceTree = "<group>"; };
 		24DE4B11995D2772F4EA628B /* TravelMappingWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TravelMappingWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2674737BE4A7AB85314507CB /* TravelMappingWidgetExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TravelMappingWidgetExtension.entitlements; sourceTree = "<group>"; };
-		29B3997572F4391C91DAF729 /* TravelMappingWidgetExtension.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = TravelMappingWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		29B3997572F4391C91DAF729 /* TravelMappingWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TravelMappingWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		2A9E8B0AE6A191662B7E9B15 /* TMStatsService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TMStatsService.swift; sourceTree = "<group>"; };
 		2D02776026919B26F66A4020 /* RegionDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RegionDetailView.swift; sourceTree = "<group>"; };
 		2EBAAA144562AFA39F6CCA67 /* StatisticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatisticsView.swift; sourceTree = "<group>"; };
@@ -733,7 +733,7 @@
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				INFOPLIST_FILE = TravelMappingWatch/Info.plist;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.psiegel18.TravelMapping.watch;
 				SDKROOT = watchos;
 				SKIP_INSTALL = YES;
@@ -758,7 +758,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.psiegel18.TravelMapping;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -777,7 +777,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.psiegel18.TravelMapping.widget;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -801,7 +801,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.psiegel18.TravelMapping;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -818,7 +818,7 @@
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				INFOPLIST_FILE = TravelMappingWatch/Info.plist;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.psiegel18.TravelMapping.watch;
 				SDKROOT = watchos;
 				SKIP_INSTALL = YES;
@@ -838,7 +838,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.psiegel18.TravelMapping.widget;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
