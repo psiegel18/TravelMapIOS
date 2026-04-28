@@ -249,20 +249,6 @@ struct SettingsView: View {
                 }
             }
 
-            // 9. Community
-            Section {
-                Link(destination: URL(string: "https://github.com/psiegel18/TravelMapIOS/discussions")!) {
-                    Label("App Discussion Board", systemImage: "bubble.left.and.text.bubble.right")
-                }
-                Link(destination: URL(string: "https://forum.travelmapping.net/")!) {
-                    Label("TM Community Forum", systemImage: "person.3")
-                }
-            } header: {
-                Text("Community")
-            } footer: {
-                Text("Discuss the iOS app on GitHub. Discuss the broader TravelMapping project (routes, data, web tools) on the community forum.")
-            }
-
             // 9. Tip Jar
             Section {
                 TipJarView()
@@ -301,6 +287,12 @@ struct SettingsView: View {
                 }
                 Link(destination: URL(string: "https://github.com/TravelMapping/UserData")!) {
                     Label("User Data on GitHub", systemImage: "chevron.left.forwardslash.chevron.right")
+                }
+                Link(destination: URL(string: "https://github.com/psiegel18/TravelMapIOS/discussions")!) {
+                    Label("App Discussion Board", systemImage: "bubble.left.and.text.bubble.right")
+                }
+                Link(destination: URL(string: "https://forum.travelmapping.net/")!) {
+                    Label("TM Community Forum", systemImage: "person.3")
                 }
             }
         }
