@@ -252,6 +252,7 @@ class TripRecordingService: NSObject, ObservableObject {
                 "pointCount": self.pointCount,
                 "matchedCount": self.matchedCount,
             ], key: "trip_state")
+            scope.setTag(value: isRecording ? "true" : "false", key: "trip_active")
         }
     }
 
@@ -286,6 +287,7 @@ class TripRecordingService: NSObject, ObservableObject {
         ])
         SentrySDK.configureScope { scope in
             scope.setContext(value: ["isRecording": false], key: "trip_state")
+            scope.setTag(value: "false", key: "trip_active")
         }
 
         // Save final state

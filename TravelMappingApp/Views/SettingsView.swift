@@ -60,8 +60,10 @@ struct SettingsView: View {
                             UserDefaults(suiteName: "group.com.psiegel18.TravelMapping")?
                                 .set(settings.primaryUser, forKey: "widgetUsername")
                             WidgetCenter.shared.reloadAllTimelines()
-                            if !settings.primaryUser.isEmpty {
-                                SentrySDK.configureScope { scope in
+                            SentrySDK.configureScope { scope in
+                                let isSet = !settings.primaryUser.isEmpty
+                                scope.setTag(value: isSet ? "true" : "false", key: "primary_user_set")
+                                if isSet {
                                     scope.setUser(User(userId: settings.primaryUser))
                                     scope.setTag(value: settings.primaryUser, key: "tm.username")
                                 }
@@ -221,17 +223,44 @@ struct SettingsView: View {
                 Link(destination: URL(string: "https://apps.apple.com/app/id6761671062?action=write-review")!) {
                     Label("Rate the App", systemImage: "star.fill")
                 }
-                Link(destination: URL(string: "https://github.com/psiegel18/TravelMapIOS/discussions")!) {
+                Button {
+                    Haptics.light()
+                    TravelMappingApp.presentFeedbackForm(
+                        type: "feedback",
+                        title: "Send Feedback",
+                        placeholder: "Share thoughts, feature ideas, or general feedback.",
+                        submitLabel: "Send",
+                        captureIssue: false
+                    )
+                } label: {
                     Label("Share Feedback", systemImage: "bubble.left.and.bubble.right")
                 }
                 Button {
                     Haptics.light()
-                    // Fires the Sentry User Feedback form. The feedbackTrigger button is
-                    // registered as Sentry's customButton in TravelMappingApp.init.
-                    TravelMappingApp.feedbackTrigger.sendActions(for: .touchUpInside)
+                    TravelMappingApp.presentFeedbackForm(
+                        type: "bug_report",
+                        title: "Report a Bug",
+                        placeholder: "What happened? Steps to reproduce help a lot.",
+                        submitLabel: "Send Report",
+                        captureIssue: true
+                    )
                 } label: {
                     Label("Report a Bug", systemImage: "ladybug")
                 }
+            }
+
+            // 9. Community
+            Section {
+                Link(destination: URL(string: "https://github.com/psiegel18/TravelMapIOS/discussions")!) {
+                    Label("App Discussion Board", systemImage: "bubble.left.and.text.bubble.right")
+                }
+                Link(destination: URL(string: "https://forum.travelmapping.net/")!) {
+                    Label("TM Community Forum", systemImage: "person.3")
+                }
+            } header: {
+                Text("Community")
+            } footer: {
+                Text("Discuss the iOS app on GitHub. Discuss the broader TravelMapping project (routes, data, web tools) on the community forum.")
             }
 
             // 9. Tip Jar
