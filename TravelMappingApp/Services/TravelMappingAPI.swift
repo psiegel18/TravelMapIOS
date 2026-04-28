@@ -312,12 +312,31 @@ actor TravelMappingAPI {
             throw URLError(.badServerResponse)
         }
 
+        // The PHP backend occasionally returns HTML (a maintenance page, an error page,
+        // or a captive-portal redirect) with a 200 status. Detecting that here lets callers
+        // fail fast with a meaningful error instead of producing the cryptic
+        // NSCocoaErrorDomain 4864 ("Unexpected character '<'") from JSONDecoder downstream.
+        if let firstByte = data.first, firstByte == 0x3C { // '<'
+            throw APIError.htmlResponseInsteadOfJSON
+        }
+
         // Cache if TTL specified
         if let ttl = cacheTTL {
             await CacheService.shared.set(key: cacheKey, data: data, ttl: ttl)
         }
 
         return data
+    }
+
+    enum APIError: Error, LocalizedError {
+        case htmlResponseInsteadOfJSON
+
+        var errorDescription: String? {
+            switch self {
+            case .htmlResponseInsteadOfJSON:
+                return "TravelMapping API returned HTML instead of JSON (likely a server error or maintenance page)."
+            }
+        }
     }
 
     private func get(endpoint: String) async throws -> Data {

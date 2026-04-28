@@ -449,12 +449,19 @@ struct RoutePlannerView: View {
         return hours > 0 ? "\(hours)h \(minutes)m" : "\(minutes)m"
     }
 
-    /// Find which TM segments are near a specific route step
+    /// Find which TM segments are near a specific route step. Synchronous because each
+    /// step's polyline is short (~1km, dozens of points), so the filter is cheap here.
     private func segmentsForStep(_ step: MKRoute.Step) -> [TravelMappingAPI.MapSegment] {
-        guard step.polyline.pointCount > 0 else { return [] }
-        return tmSegments.filter { seg in
-            isSegmentNearRoute(seg: seg, polyline: step.polyline)
-        }
+        let polyline = step.polyline
+        let count = polyline.pointCount
+        guard count > 0 else { return [] }
+        let pts = polyline.points()
+        let coords = (0..<count).map { pts[$0].coordinate }
+        return Self.filterSegmentsNearRoute(
+            segments: tmSegments,
+            routeCoords: coords,
+            routeRect: polyline.boundingMapRect
+        )
     }
 
     /// Generate formatted directions text for sharing
@@ -582,6 +589,15 @@ struct RoutePlannerView: View {
         let minLng = min(topLeft.longitude, bottomRight.longitude) - 0.1
         let maxLng = max(topLeft.longitude, bottomRight.longitude) + 0.1
 
+        // Snapshot the polyline's coordinates on the main actor so the heavy filter can
+        // run on a background task. MKPolyline isn't Sendable; coordinate arrays are.
+        let polylineCoords: [CLLocationCoordinate2D] = {
+            let pts = polyline.points()
+            let count = polyline.pointCount
+            return (0..<count).map { pts[$0].coordinate }
+        }()
+        let polylineRect = polyline.boundingMapRect
+
         let traveler = primaryUser.isEmpty ? "" : primaryUser
         let tileSize = 2.0
         var allSegments: [TravelMappingAPI.MapSegment] = []
@@ -615,27 +631,60 @@ struct RoutePlannerView: View {
             }
         }
 
-        return allSegments.filter { seg in
-            isSegmentNearRoute(seg: seg, polyline: polyline)
-        }
+        // Run the geometry filter off the main thread — for long routes this is the
+        // operation that used to hang the app for 10+ seconds.
+        return await Task.detached(priority: .userInitiated) {
+            Self.filterSegmentsNearRoute(
+                segments: allSegments,
+                routeCoords: polylineCoords,
+                routeRect: polylineRect
+            )
+        }.value
     }
 
-    private func isSegmentNearRoute(seg: TravelMappingAPI.MapSegment, polyline: MKPolyline) -> Bool {
-        let midLat = (seg.start.latitude + seg.end.latitude) / 2
-        let midLng = (seg.start.longitude + seg.end.longitude) / 2
-        let mid = CLLocation(latitude: midLat, longitude: midLng)
+    /// Returns segments whose midpoint is within ~500m of any (sampled) point along the route.
+    /// Uses a bounding-box pre-filter and equirectangular distance to avoid CLLocation
+    /// allocations and Haversine calls. Designed to run off the main thread.
+    private static func filterSegmentsNearRoute(
+        segments: [TravelMappingAPI.MapSegment],
+        routeCoords: [CLLocationCoordinate2D],
+        routeRect: MKMapRect
+    ) -> [TravelMappingAPI.MapSegment] {
+        let pointCount = routeCoords.count
+        guard pointCount > 0 else { return [] }
 
-        let pointCount = polyline.pointCount
-        let points = polyline.points()
+        // Sample down to ~200 points — a 500m threshold doesn't need every point on a
+        // route polyline that may have thousands.
+        let stride = max(1, pointCount / 200)
+        let thresholdMeters: Double = 500
+        let thresholdSq = thresholdMeters * thresholdMeters
 
-        for i in 0..<pointCount {
-            let coord = points[i].coordinate
-            let routePt = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
-            if routePt.distance(from: mid) < 500 {
-                return true
+        return segments.filter { seg in
+            let midLat = (seg.start.latitude + seg.end.latitude) / 2
+            let midLng = (seg.start.longitude + seg.end.longitude) / 2
+
+            // Cheap bounding-box reject before the per-point loop.
+            let mppm = MKMapPointsPerMeterAtLatitude(midLat)
+            let inflated = routeRect.insetBy(
+                dx: -thresholdMeters * mppm,
+                dy: -thresholdMeters * mppm
+            )
+            let midMapPoint = MKMapPoint(CLLocationCoordinate2D(latitude: midLat, longitude: midLng))
+            guard inflated.contains(midMapPoint) else { return false }
+
+            let cosLat = cos(midLat * .pi / 180)
+            var i = 0
+            while i < pointCount {
+                let c = routeCoords[i]
+                let dLat = (c.latitude - midLat) * 111_320
+                let dLng = (c.longitude - midLng) * 111_320 * cosLat
+                if dLat * dLat + dLng * dLng < thresholdSq {
+                    return true
+                }
+                i += stride
             }
+            return false
         }
-        return false
     }
 
     // MARK: - Navigation App Export
