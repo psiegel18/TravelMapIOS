@@ -39,6 +39,8 @@ struct ContentView: View {
                 }
             }
             .task {
+                CatalogService.shared.loadIfNeeded()
+                await CacheService.shared.purgeExpired()
                 await prefetchUserData()
             }
     }

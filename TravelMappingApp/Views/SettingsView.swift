@@ -412,12 +412,16 @@ struct CacheStatusView: View {
             cacheSize = String(format: "%.0f KB", Double(totalBytes) / 1_000)
         }
 
-        // Find oldest cache file modification date
+        // Oldest still-valid cache entry. Skip expired entries — they're abandoned
+        // keys that will get swept the next time CacheService.purgeExpired() runs and
+        // would otherwise make the display read "15 days ago" right after a fresh fetch.
         let metaFiles = files.filter { $0.lastPathComponent.hasSuffix(".meta") }
+        let now = Date()
         var oldestDate: Date?
         for file in metaFiles {
             if let data = try? Data(contentsOf: file),
-               let meta = try? JSONDecoder().decode(CacheMetaRead.self, from: data) {
+               let meta = try? JSONDecoder().decode(CacheMetaRead.self, from: data),
+               now <= meta.expiresAt {
                 if oldestDate == nil || meta.createdAt < oldestDate! {
                     oldestDate = meta.createdAt
                 }
@@ -475,6 +479,7 @@ struct CacheStatusView: View {
 
     private struct CacheMetaRead: Decodable {
         let createdAt: Date
+        let expiresAt: Date
     }
 
     private struct GitHubPR: Decodable {

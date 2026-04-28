@@ -279,9 +279,10 @@ actor TravelMappingAPI {
         return (segments, routes)
     }
 
-    /// Get the full route catalog (cacheable).
+    /// Get the full route catalog (cacheable). The TM site only updates once a day,
+    /// so a long TTL is appropriate; values rarely change otherwise.
     func getAllRoutes() async throws -> AllRoutesResponse {
-        let data = try await get(endpoint: "/lib/getAllRoutesInfo.php")
+        let data = try await get(endpoint: "/lib/getAllRoutesInfo.php", cacheTTL: 24 * 3600)
         return try JSONDecoder().decode(AllRoutesResponse.self, from: data)
     }
 
@@ -339,13 +340,75 @@ actor TravelMappingAPI {
         }
     }
 
-    private func get(endpoint: String) async throws -> Data {
+    private func get(endpoint: String, cacheTTL: TimeInterval? = nil) async throws -> Data {
+        let cacheKey = "tm_\(dbName)_GET_\(endpoint)"
+        if cacheTTL != nil, let cached = await CacheService.shared.get(key: cacheKey) {
+            return cached
+        }
+
         var urlComponents = URLComponents(string: baseURL + endpoint)!
         urlComponents.queryItems = [URLQueryItem(name: "dbname", value: dbName)]
 
         let request = URLRequest(url: urlComponents.url!)
-        let (data, _) = try await session.data(for: request)
+        let (data, response) = try await session.data(for: request)
+
+        if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode != 200 {
+            throw URLError(.badServerResponse)
+        }
+        if let firstByte = data.first, firstByte == 0x3C { // '<'
+            throw APIError.htmlResponseInsteadOfJSON
+        }
+
+        if let ttl = cacheTTL {
+            await CacheService.shared.set(key: cacheKey, data: data, ttl: ttl)
+        }
+
         return data
+    }
+}
+
+/// In-memory snapshot of the TravelMapping route catalog. Loaded once per app launch
+/// (with a 24h disk cache as a fallback) and shared across views that need region→country
+/// or region→listName lookups, instead of every view re-fetching the multi-MB catalog.
+@MainActor
+final class CatalogService: ObservableObject {
+    static let shared = CatalogService()
+
+    @Published private(set) var regionCountryMap: [String: String] = [:]
+    @Published private(set) var isLoaded: Bool = false
+
+    private var loadTask: Task<Void, Never>?
+
+    /// Kick off a load if one isn't already in flight. Safe to call repeatedly.
+    func loadIfNeeded() {
+        guard !isLoaded, loadTask == nil else { return }
+        loadTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let catalog = try await TravelMappingAPI.shared.getAllRoutes()
+                var mapping: [String: String] = [:]
+                let regions = catalog.regions ?? []
+                let countries = catalog.countries ?? []
+                for (i, region) in regions.enumerated() where i < countries.count && mapping[region] == nil {
+                    mapping[region] = countries[i]
+                }
+                self.regionCountryMap = mapping
+                self.isLoaded = true
+            } catch {
+                SentrySDK.capture(error: error)
+            }
+            self.loadTask = nil
+        }
+    }
+
+    /// Await the in-flight load (or trigger one) and return the current mapping.
+    /// Views that need the data immediately should call this instead of reading the
+    /// published value, which may still be empty during the first launch.
+    func awaitMapping() async -> [String: String] {
+        if isLoaded { return regionCountryMap }
+        if loadTask == nil { loadIfNeeded() }
+        await loadTask?.value
+        return regionCountryMap
     }
 }
 

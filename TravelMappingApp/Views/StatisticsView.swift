@@ -13,7 +13,6 @@ final class StatsCache {
         let allRoutes: [StatisticsView.RouteInfo]
         let railTotals: StatisticsView.CategoryTotals
         let rankInfo: (rank: Int, total: Int, percentile: Double)?
-        let regionCountryMap: [String: String]
         let date: Date
     }
 
@@ -123,7 +122,6 @@ final class StatsCache {
             allRoutes: allRoutes,
             railTotals: railTotals,
             rankInfo: rankInfo,
-            regionCountryMap: [:],
             date: Date()
         ))
     }
@@ -172,7 +170,8 @@ struct StatisticsView: View {
 
     @State private var allRoutes: [RouteInfo] = []
     @State private var rankInfo: (rank: Int, total: Int, percentile: Double)?
-    @State private var regionCountryMap: [String: String] = [:] // region code → country name
+    @ObservedObject private var catalog = CatalogService.shared
+    private var regionCountryMap: [String: String] { catalog.regionCountryMap }
 
     private var unit: String { useMiles ? "mi" : "km" }
     private func convert(_ miles: Double) -> Double { useMiles ? miles : miles * 1.60934 }
@@ -248,10 +247,10 @@ struct StatisticsView: View {
                     allRoutes = cached.allRoutes
                     railTotals = cached.railTotals
                     rankInfo = cached.rankInfo
-                    regionCountryMap = cached.regionCountryMap
                     isLoadingMileage = false
                     isLoadingRoutes = false
                     isLoadingRail = false
+                    CatalogService.shared.loadIfNeeded()
                 } else {
                     await loadMileageData()
                 }
@@ -743,23 +742,10 @@ struct StatisticsView: View {
         let username = profile.username
         let allRegions = Array(profile.allRegions).sorted()
 
-        // Load region → country mapping (cached after first fetch)
-        if regionCountryMap.isEmpty {
-            do {
-                let catalog = try await TravelMappingAPI.shared.getAllRoutes()
-                var mapping: [String: String] = [:]
-                let regions = catalog.regions ?? []
-                let countries = catalog.countries ?? []
-                for (i, region) in regions.enumerated() where i < countries.count {
-                    if mapping[region] == nil {
-                        mapping[region] = countries[i]
-                    }
-                }
-                regionCountryMap = mapping
-            } catch {
-                SentrySDK.capture(error: error)
-            }
-        }
+        // Region → country mapping is loaded once per launch by CatalogService and
+        // shared across views. Trigger a load if it isn't already in flight; the view
+        // re-renders when the published mapping fills in.
+        _ = await CatalogService.shared.awaitMapping()
 
         // PHASE 1: Load from CSV — instant, gives clinched + total available per region
         do {
@@ -830,7 +816,6 @@ struct StatisticsView: View {
             allRoutes: allRoutes,
             railTotals: railTotals,
             rankInfo: rankInfo,
-            regionCountryMap: regionCountryMap,
             date: Date()
         ))
         SentrySDK.reportFullyDisplayed()
