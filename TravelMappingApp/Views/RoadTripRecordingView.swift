@@ -167,6 +167,7 @@ struct RoadTripRecordingView: View {
         }
         .navigationTitle(recorder.currentTrip?.name ?? "Recording")
         .navigationBarTitleDisplayMode(.inline)
+        .sentryScreen("RoadTripRecording")
         .toolbar {
             if recorder.isRecording {
                 ToolbarItem(placement: .topBarTrailing) {

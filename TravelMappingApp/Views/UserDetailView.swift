@@ -83,6 +83,7 @@ struct UserDetailView: View {
             }
         }
         .navigationTitle(username)
+        .sentryScreen("UserDetail")
         .toolbar {
             if profile != nil {
                 ToolbarItem(placement: .topBarTrailing) {

@@ -25,6 +25,7 @@ struct RoadTripDetailView: View {
             .padding()
         }
         .navigationTitle(trip.name)
+        .sentryScreen("RoadTripDetail")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {

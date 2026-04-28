@@ -252,6 +252,19 @@ struct TravelMappingApp: App {
     }
 }
 
+extension View {
+    /// Set Sentry's `current_screen` tag whenever this view appears. ContentView already
+    /// sets this on tab change for the 5 main tabs; use this on detail views pushed onto
+    /// a navigation stack so future Sentry events show which sub-screen the user was on.
+    func sentryScreen(_ name: String) -> some View {
+        self.onAppear {
+            SentrySDK.configureScope { scope in
+                scope.setTag(value: name, key: "current_screen")
+            }
+        }
+    }
+}
+
 /// Embeds the Sentry feedback UIButton into the SwiftUI hierarchy so it has a window/VC
 /// chain. Without this, sendActions(for:) on an orphan UIButton silently fails because
 /// Sentry can't find a presenting view controller.
