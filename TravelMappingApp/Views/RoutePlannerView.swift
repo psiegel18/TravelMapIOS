@@ -653,8 +653,9 @@ struct RoutePlannerView: View {
 
     /// Returns segments whose midpoint is within ~500m of any (sampled) point along the route.
     /// Uses a bounding-box pre-filter and equirectangular distance to avoid CLLocation
-    /// allocations and Haversine calls. Designed to run off the main thread.
-    private static func filterSegmentsNearRoute(
+    /// allocations and Haversine calls. `nonisolated` so the Task.detached caller in
+    /// findOverlappingSegments can run it off the main thread (Swift 6 concurrency).
+    private nonisolated static func filterSegmentsNearRoute(
         segments: [TravelMappingAPI.MapSegment],
         routeCoords: [CLLocationCoordinate2D],
         routeRect: MKMapRect
