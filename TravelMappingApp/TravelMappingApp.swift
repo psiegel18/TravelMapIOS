@@ -18,14 +18,12 @@ struct TravelMappingApp: App {
         return b
     }()
 
-    // Sentry's user-feedback `customButton` and form config are set once at SDK init,
-    // so these statics are mutated right before each invocation to give the same form
-    // a different title/placeholder/submit-label depending on whether the user tapped
-    // "Share Feedback" or "Report a Bug". The `configureForm` closure reads them at
-    // present time.
-    static var pendingFeedbackTitle: String = "Send Feedback"
-    static var pendingFeedbackPlaceholder: String = "Tell us what's on your mind."
-    static var pendingFeedbackSubmitLabel: String = "Send"
+    /// Sentry calls `configureForm` exactly once at SDK init, so we capture the
+    /// singleton form-config reference there and mutate it directly before each
+    /// `sendActions(.touchUpInside)` to switch between Share-Feedback and Report-a-Bug
+    /// presentation. `pendingFeedbackType` is read inside `onSubmitSuccess`, which
+    /// does fire per-submit, so the static var works for that one.
+    static var formConfig: SentryUserFeedbackFormConfiguration?
     static var pendingFeedbackType: String = "general"
 
     /// Show the Sentry feedback form. For `bug_report` the call also captures a
@@ -40,9 +38,9 @@ struct TravelMappingApp: App {
         captureIssue: Bool
     ) {
         pendingFeedbackType = type
-        pendingFeedbackTitle = title
-        pendingFeedbackPlaceholder = placeholder
-        pendingFeedbackSubmitLabel = submitLabel
+        formConfig?.formTitle = title
+        formConfig?.messagePlaceholder = placeholder
+        formConfig?.submitButtonLabel = submitLabel
 
         SentrySDK.configureScope { scope in
             scope.setTag(value: type, key: "feedback_type")
@@ -159,16 +157,19 @@ struct TravelMappingApp: App {
                 }
 
                 config.configureForm = { form in
-                    form.formTitle = TravelMappingApp.pendingFeedbackTitle
+                    TravelMappingApp.formConfig = form
                     form.messageLabel = "Message"
-                    form.messagePlaceholder = TravelMappingApp.pendingFeedbackPlaceholder
                     form.showName = true
                     form.showEmail = true
                     form.isNameRequired = false
                     form.isEmailRequired = false
-                    form.submitButtonLabel = TravelMappingApp.pendingFeedbackSubmitLabel
                     form.useSentryUser = true
                     form.showBranding = false
+                    // Defaults for shake-gesture / screenshot-detection paths that
+                    // bypass `presentFeedbackForm`. The Settings buttons override these.
+                    form.formTitle = "Send Feedback"
+                    form.messagePlaceholder = "Tell us what's on your mind."
+                    form.submitButtonLabel = "Send"
                 }
             }
 
@@ -186,9 +187,12 @@ struct TravelMappingApp: App {
             options.beforeSend = { event in
                 if let exceptions = event.exceptions {
                     for exception in exceptions {
-                        // URLSessionTask cancelled — normal when user navigates away mid-request
+                        // NSURLError noise we don't want pinged for: -999 cancelled (user
+                        // navigated away mid-request), -1001 timeout, -1005 connection
+                        // lost. All transient network conditions, not app bugs.
                         if exception.type == "NSURLErrorDomain",
-                           exception.value?.contains("Code=-999") == true {
+                           let value = exception.value,
+                           ["Code=-999", "Code=-1001", "Code=-1005"].contains(where: value.contains) {
                             return nil
                         }
                         // Core Location: user denied permission (1), transient location unknown (0),
