@@ -844,7 +844,7 @@ struct StatisticsView: View {
                                 }
                                 continuation.resume(returning: (batch.count, routes))
                             } catch {
-                                SentrySDK.capture(error: error)
+                                // API layer already captures with the HTML body attached.
                                 continuation.resume(returning: (batch.count, []))
                             }
                         }
@@ -879,7 +879,7 @@ struct StatisticsView: View {
                                     r.routes.count
                                 ))
                             } catch {
-                                SentrySDK.capture(error: error)
+                                // API layer already captures with the HTML body attached.
                                 continuation.resume(returning: (0.0, 0.0, 0))
                             }
                         }

@@ -1197,15 +1197,12 @@ struct TravelMapView: View {
             ) { group in
                 for region in batch {
                     group.addTask {
-                        do {
-                            return try await TravelMappingAPI.shared.getRegionSegments(
-                                region: region,
-                                traveler: self.username
-                            )
-                        } catch {
-                            SentrySDK.capture(error: error)
-                            return nil
-                        }
+                        // API layer captures htmlResponseInsteadOfJSON with the HTML body attached;
+                        // re-capturing here would just duplicate the event.
+                        return try? await TravelMappingAPI.shared.getRegionSegments(
+                            region: region,
+                            traveler: self.username
+                        )
                     }
                 }
 

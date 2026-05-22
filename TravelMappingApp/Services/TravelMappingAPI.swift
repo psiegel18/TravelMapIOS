@@ -292,6 +292,9 @@ actor TravelMappingAPI {
         // Check cache (include dbName to distinguish road vs rail APIs)
         let cacheKey = "tm_\(dbName)_\(endpoint)_\(params.description)"
         if cacheTTL != nil, let cached = await CacheService.shared.get(key: cacheKey) {
+            if cached == Self.negativeCacheSentinel {
+                throw APIError.htmlResponseInsteadOfJSON
+            }
             return cached
         }
 
@@ -319,6 +322,9 @@ actor TravelMappingAPI {
         // NSCocoaErrorDomain 4864 ("Unexpected character '<'") from JSONDecoder downstream.
         if let firstByte = data.first, firstByte == 0x3C { // '<'
             Self.captureHTMLResponse(endpoint: endpoint, method: "POST", data: data)
+            if cacheTTL != nil {
+                await CacheService.shared.set(key: cacheKey, data: Self.negativeCacheSentinel, ttl: Self.negativeCacheTTL)
+            }
             throw APIError.htmlResponseInsteadOfJSON
         }
 
@@ -329,6 +335,12 @@ actor TravelMappingAPI {
 
         return data
     }
+
+    // Negative-cache marker: when the backend returns HTML for an endpoint, we stash this
+    // sentinel under the same cacheKey for a short window so subsequent identical requests
+    // fail fast without hitting the network or re-capturing to Sentry.
+    private static let negativeCacheSentinel = Data("__TM_NEGATIVE_CACHE__".utf8)
+    private static let negativeCacheTTL: TimeInterval = 300
 
     /// Capture a Sentry issue WITH the offending response body when the API gives us HTML.
     /// Callers swallow the throw with `try?`, so without an explicit capture we'd never see
@@ -363,6 +375,9 @@ actor TravelMappingAPI {
     private func get(endpoint: String, cacheTTL: TimeInterval? = nil) async throws -> Data {
         let cacheKey = "tm_\(dbName)_GET_\(endpoint)"
         if cacheTTL != nil, let cached = await CacheService.shared.get(key: cacheKey) {
+            if cached == Self.negativeCacheSentinel {
+                throw APIError.htmlResponseInsteadOfJSON
+            }
             return cached
         }
 
@@ -377,6 +392,9 @@ actor TravelMappingAPI {
         }
         if let firstByte = data.first, firstByte == 0x3C { // '<'
             Self.captureHTMLResponse(endpoint: endpoint, method: "GET", data: data)
+            if cacheTTL != nil {
+                await CacheService.shared.set(key: cacheKey, data: Self.negativeCacheSentinel, ttl: Self.negativeCacheTTL)
+            }
             throw APIError.htmlResponseInsteadOfJSON
         }
 
