@@ -9,6 +9,7 @@ struct GetStartedView: View {
     @State private var listContent = ""
     @State private var showMailComposer = false
     @State private var showMailUnavailable = false
+    @State private var showMailFailed = false
     @State private var showRegionPicker = false
     @State private var pickedRegion: String?  // nil = no picker, non-nil = show segment picker
 
@@ -173,8 +174,8 @@ struct GetStartedView: View {
                         let lineCount = listContent.components(separatedBy: .newlines)
                             .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty && !$0.hasPrefix("#") }
                             .count
-                        Text("\(lineCount) segment\(lineCount == 1 ? "" : "s")")
-                            .font(.caption2)
+                        Text("\(lineCount.formatted()) segment\(lineCount == 1 ? "" : "s")")
+                            .font(.subheadline.monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
 
@@ -250,7 +251,8 @@ struct GetStartedView: View {
             MailComposeView(
                 username: desiredUsername,
                 listContent: listContent,
-                isPresented: $showMailComposer
+                isPresented: $showMailComposer,
+                onFailed: { showMailFailed = true }
             )
             .ignoresSafeArea()
         }
@@ -258,6 +260,11 @@ struct GetStartedView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text("No mail account is configured on this device. Please email your .list file to travmap@teresco.org from another device.")
+        }
+        .alert("Email Not Sent", isPresented: $showMailFailed) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Your .list submission could not be sent. Please try again, or email travmap@teresco.org directly.")
         }
         .sheet(isPresented: $showRegionPicker) {
             regionPickerSheet
@@ -315,7 +322,7 @@ struct GetStartedView: View {
                 ZStack {
                     Circle()
                         .fill(color.opacity(0.15))
-                        .frame(width: 40, height: 40)
+                        .frame(width: 44, height: 44)
                     Text("\(number)")
                         .font(.headline.bold())
                         .foregroundStyle(color)
@@ -325,14 +332,17 @@ struct GetStartedView: View {
                     Image(systemName: icon)
                         .font(.caption)
                         .foregroundStyle(color)
+                        .accessibilityHidden(true)
                 }
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Step \(number): \(title)")
 
             VStack(alignment: .leading, spacing: 6) {
                 content()
             }
             .font(.subheadline)
-            .padding(.leading, 52)
+            .padding(.leading, 56)
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -345,7 +355,9 @@ struct GetStartedView: View {
                 .foregroundStyle(.secondary)
             Text(text)
         }
-        .font(.caption)
+        // 15pt floor (design audit §0): these bullets carry the actual instructions.
+        .font(.subheadline)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -596,6 +608,7 @@ private struct MailComposeView: UIViewControllerRepresentable {
     let username: String
     let listContent: String
     @Binding var isPresented: Bool
+    var onFailed: () -> Void = {}
 
     func makeUIViewController(context: Context) -> MFMailComposeViewController {
         let vc = MFMailComposeViewController()
@@ -638,6 +651,16 @@ private struct MailComposeView: UIViewControllerRepresentable {
         init(_ parent: MailComposeView) { self.parent = parent }
 
         func mailComposeController(_ controller: MFMailComposeViewController, didFinishWith result: MFMailComposeResult, error: Error?) {
+            if result == .failed {
+                if let error {
+                    SentrySDK.capture(error: error)
+                } else {
+                    SentrySDK.capture(message: "List submission email failed without an error") { scope in
+                        scope.setLevel(.warning)
+                    }
+                }
+                parent.onFailed()
+            }
             parent.isPresented = false
         }
     }
@@ -652,7 +675,7 @@ private struct SegmentPickerMapView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var segments: [TravelMappingAPI.MapSegment] = []
     @State private var routeMetadata: [TravelMappingAPI.RouteMetadata] = []
-    @State private var selectedIDs: Set<Int> = []
+    @State private var selectedIDs: Set<String> = []
     @State private var mapPosition: MapCameraPosition = .automatic
     @State private var visibleRegion: MKCoordinateRegion?
     @State private var isLoading = true
@@ -692,6 +715,9 @@ private struct SegmentPickerMapView: View {
             }
         }
         .task { await loadSegments() }
+        .onChange(of: selectedIDs) {
+            rebuildSelectedPolylines()
+        }
         .overlay {
             if isLoading {
                 ProgressView("Loading \(region)...")
@@ -750,8 +776,8 @@ private struct SegmentPickerMapView: View {
             }
 
             HStack {
-                Text("\(selectedIDs.count) segment\(selectedIDs.count == 1 ? "" : "s") selected")
-                    .font(.subheadline.bold())
+                Text("\(selectedIDs.count.formatted()) segment\(selectedIDs.count == 1 ? "" : "s") selected")
+                    .font(.subheadline.bold().monospacedDigit())
                 Spacer()
                 if !selectedIDs.isEmpty {
                     Button {
@@ -840,11 +866,40 @@ private struct SegmentPickerMapView: View {
         let root: String
     }
 
-    private var mergedPolylines: [MergedPolyline] { merge(segments) }
-    private var selectedPolylines: [MergedPolyline] { merge(segments.filter { selectedIDs.contains($0.id) }, startID: 100_000) }
+    /// Rebuilt off the main thread (see rebuild functions below) — the sort/merge over a
+    /// whole region's segments is too expensive to recompute synchronously in body on
+    /// every selection tap.
+    @State private var mergedPolylines: [MergedPolyline] = []
+    @State private var selectedPolylines: [MergedPolyline] = []
 
-    private func merge(_ segs: [TravelMappingAPI.MapSegment], startID: Int = 0) -> [MergedPolyline] {
-        let sorted = segs.sorted { $0.root < $1.root || ($0.root == $1.root && $0.id < $1.id) }
+    /// Rebuild both polyline sets — call after the region's segments load.
+    private func rebuildAllPolylines() {
+        let segs = segments
+        let ids = selectedIDs
+        Task.detached(priority: .userInitiated) {
+            let merged = Self.merge(segs)
+            let selected = Self.merge(segs.filter { ids.contains($0.id) }, startID: 100_000)
+            await MainActor.run {
+                mergedPolylines = merged
+                selectedPolylines = selected
+            }
+        }
+    }
+
+    /// Rebuild only the (much smaller) selected set — call on selection change.
+    private func rebuildSelectedPolylines() {
+        let segs = segments
+        let ids = selectedIDs
+        Task.detached(priority: .userInitiated) {
+            let selected = Self.merge(segs.filter { ids.contains($0.id) }, startID: 100_000)
+            await MainActor.run {
+                selectedPolylines = selected
+            }
+        }
+    }
+
+    private nonisolated static func merge(_ segs: [TravelMappingAPI.MapSegment], startID: Int = 0) -> [MergedPolyline] {
+        let sorted = segs.sorted { $0.root < $1.root || ($0.root == $1.root && $0.orderIndex < $1.orderIndex) }
         var result: [MergedPolyline] = []
         var coords: [CLLocationCoordinate2D] = []
         var root = ""
@@ -865,7 +920,7 @@ private struct SegmentPickerMapView: View {
         return result
     }
 
-    private func dist(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> Double {
+    private nonisolated static func dist(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> Double {
         let dLat = (a.latitude - b.latitude) * 111_320
         let dLng = (a.longitude - b.longitude) * 111_320 * cos(a.latitude * .pi / 180)
         return sqrt(dLat * dLat + dLng * dLng)
@@ -879,6 +934,7 @@ private struct SegmentPickerMapView: View {
             let result = try await TravelMappingAPI.shared.getRegionSegments(region: region, traveler: "null")
             segments = result.segments
             routeMetadata = result.routes
+            rebuildAllPolylines()
             let lats = result.segments.flatMap { [$0.start.latitude, $0.end.latitude] }
             let lngs = result.segments.flatMap { [$0.start.longitude, $0.end.longitude] }
             if let minLat = lats.min(), let maxLat = lats.max(),
@@ -893,4 +949,10 @@ private struct SegmentPickerMapView: View {
         }
         isLoading = false
     }
+}
+
+extension GetStartedView {
+    /// Full region name ("IL" → "Illinois") for other screens (Region/Route detail).
+    /// Forwards to the static catalog that lives in the file-private RegionPickerView.
+    static func regionName(for code: String) -> String? { RegionPickerView.regionName(for: code) }
 }

@@ -73,10 +73,12 @@ actor TMStatsService {
         await CacheService.shared.clearAll()
     }
 
-    /// Check if we have cached data that's still fresh
+    /// Check if we have cached data that's still fresh.
+    /// Uses the cache's metadata sidecar — the CSVs are multi-MB, so reading the
+    /// payload just to answer an existence/age question is wasteful.
     func hasFreshCache(filename: String) async -> Bool {
         let cacheKey = "stats_\(filename)"
-        return await CacheService.shared.get(key: cacheKey) != nil
+        return await CacheService.shared.hasFresh(key: cacheKey)
     }
 
     /// Get the last-fetched date of the region stats CSV
@@ -99,15 +101,43 @@ actor TMStatsService {
         let url = URL(string: "\(baseURL)/\(filename)")!
         let (data, response) = try await session.data(from: url)
 
-        if let http = response as? HTTPURLResponse, http.statusCode == 404 {
+        // Require a clean 200 — a 500/503 maintenance page cached for 12h would
+        // parse as an empty CSV and blank the leaderboard until the cache expires.
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+        if statusCode == 404 {
             throw URLError(.fileDoesNotExist)
         }
-
-        await CacheService.shared.set(key: cacheKey, data: data, ttl: cacheTTL)
+        guard statusCode == 200 else {
+            let error = URLError(.badServerResponse)
+            SentrySDK.capture(error: error) { scope in
+                scope.setTag(value: "stats_csv", key: "api_endpoint")
+                scope.setExtra(value: filename, key: "filename")
+                scope.setExtra(value: statusCode, key: "status_code")
+            }
+            throw error
+        }
 
         guard let content = String(data: data, encoding: .utf8) else {
             throw URLError(.cannotDecodeContentData)
         }
+
+        // Sanity-check the body looks like CSV before caching — servers sometimes
+        // return HTML error/maintenance pages with a 200 status.
+        let firstLine = content.prefix(while: { $0 != "\n" && $0 != "\r" })
+        guard !content.hasPrefix("<"), firstLine.contains(",") else {
+            let error = URLError(.cannotParseResponse)
+            SentrySDK.capture(error: error) { scope in
+                scope.setTag(value: "stats_csv", key: "api_endpoint")
+                scope.setExtra(value: filename, key: "filename")
+                scope.setExtra(value: String(content.prefix(2048)), key: "response_preview_2kb")
+                scope.setExtra(value: data.count, key: "response_bytes")
+            }
+            throw error
+        }
+
+        // Cache only after validation so garbage never becomes a 12h cache hit
+        await CacheService.shared.set(key: cacheKey, data: data, ttl: cacheTTL)
+
         SentrySDK.logger.debug("Stats CSV fetched", attributes: [
             "filename": filename,
             "bytes": data.count,

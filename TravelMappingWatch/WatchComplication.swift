@@ -1,3 +1,26 @@
+// =============================================================================
+// INERT / DEAD CODE — this complication never runs.
+//
+// `TravelMappingComplication` is compiled into the watch *app* target, but watchOS
+// complications must live in a watch *widget-extension* target with a `WidgetBundle`
+// `@main` entry point — no such target exists in this project, so this widget is
+// never registered and never appears in the complication picker.
+//
+// To make it functional you would need to:
+//   1. Add a new watchOS Widget Extension target to the Xcode project and move this
+//      file into it (target membership changes via pbxproj edits are unreliable here,
+//      so do it in Xcode).
+//   2. Add a `WidgetBundle` `@main` struct in that target that returns
+//      `TravelMappingComplication()`.
+//   3. Add the app group (`group.com.psiegel18.TravelMapping`) to the extension's
+//      entitlements and switch the `UserDefaults.standard` read below to
+//      `UserDefaults(suiteName:)` — the extension runs in its own sandbox, so
+//      `UserDefaults.standard` here would NOT see the watch app's "watchUsername".
+//
+// Kept in the repo (rather than deleted) because removing/adding target membership
+// is out of scope for automated edits.
+// =============================================================================
+
 import WidgetKit
 import SwiftUI
 

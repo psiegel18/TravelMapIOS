@@ -1,10 +1,39 @@
 import SwiftUI
 import Sentry
+import StoreKit
 import UIKit
+
+extension Notification.Name {
+    /// Posted (on the main actor) whenever the launch-scoped StoreKit listener finishes
+    /// a verified transaction — lets TipJarView update a "Purchase pending..." message
+    /// when a deferred purchase (e.g. Ask to Buy) completes later.
+    static let tipTransactionFinished = Notification.Name("tipTransactionFinished")
+}
 
 @main
 struct TravelMappingApp: App {
     private static let isTestFlight = Bundle.main.appStoreReceiptURL?.lastPathComponent == "sandboxReceipt"
+
+    /// App-lifetime StoreKit listener. Unfinished/pending transactions (Ask to Buy,
+    /// interrupted purchases) arrive on `Transaction.updates` at any point after launch,
+    /// so this must not live in a view's `.task` — it would only process while that
+    /// screen is visible. Started once from `init()`.
+    private static let transactionListener: Task<Void, Never> = Task.detached {
+        for await result in Transaction.updates {
+            switch result {
+            case .verified(let transaction):
+                await transaction.finish()
+                SentrySDK.logger.info("StoreKit transaction finished", attributes: [
+                    "productId": transaction.productID,
+                ])
+                await MainActor.run {
+                    NotificationCenter.default.post(name: .tipTransactionFinished, object: nil)
+                }
+            case .unverified(_, let error):
+                SentrySDK.capture(error: error)
+            }
+        }
+    }
 
     /// UIButton wired into Sentry's User Feedback widget via `customButton`.
     /// Tapping it (programmatically) triggers the Sentry feedback form. The button
@@ -226,6 +255,9 @@ struct TravelMappingApp: App {
                 return scope
             }
         })
+
+        // Kick off the app-lifetime StoreKit transaction listener.
+        _ = Self.transactionListener
 
         if let username = UserDefaults.standard.string(forKey: "primaryUser"), !username.isEmpty {
             SentrySDK.configureScope { scope in

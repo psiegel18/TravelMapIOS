@@ -10,6 +10,7 @@ struct SettingsView: View {
     @AppStorage("sendToWatch") private var sendToWatch = true
     @State private var versionTapCount = 0
     @State private var showSentryTestAlert = false
+    @State private var showTipJar = false
     @State private var isValidatingUser = false
     @State private var userValidationResult: Bool? = Self.cachedValidationResult
     @State private var lastValidatedUsername = Self.cachedValidatedUsername
@@ -35,85 +36,29 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            // 1. Get Started Guide
-            Section("Travel Mapping") {
-                NavigationLink {
-                    GetStartedView()
-                } label: {
-                    Label("Get Started Guide", systemImage: "questionmark.circle")
-                }
-            }
-
-            // 2. Primary User
+            // MARK: You
             Section {
-                HStack {
-                    Text("Primary User")
-                    Spacer()
-                    TextField("username", text: $settings.primaryUser)
-                        .multilineTextAlignment(.trailing)
-                        .textFieldStyle(.plain)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                        .onChange(of: settings.primaryUser) {
-                            userValidationResult = nil
-                            watchUsername = settings.primaryUser
-                            UserDefaults(suiteName: "group.com.psiegel18.TravelMapping")?
-                                .set(settings.primaryUser, forKey: "widgetUsername")
-                            WidgetCenter.shared.reloadAllTimelines()
-                            SentrySDK.configureScope { scope in
-                                let isSet = !settings.primaryUser.isEmpty
-                                scope.setTag(value: isSet ? "true" : "false", key: "primary_user_set")
-                                if isSet {
-                                    scope.setUser(User(userId: settings.primaryUser))
-                                    scope.setTag(value: settings.primaryUser, key: "tm.username")
-                                }
-                            }
-                        }
-                    if isValidatingUser {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else if let valid = userValidationResult {
-                        Image(systemName: valid ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                            .foregroundStyle(valid ? .green : .orange)
-                    }
-                }
-                .task(id: settings.primaryUser) {
-                    let username = settings.primaryUser.trimmingCharacters(in: .whitespaces)
-                    guard !username.isEmpty else {
-                        userValidationResult = nil
-                        lastValidatedUsername = ""
-                        Self.cachedValidatedUsername = ""
-                        Self.cachedValidationResult = nil
-                        return
-                    }
-                    guard username != lastValidatedUsername else { return }
-                    try? await Task.sleep(for: .milliseconds(600))
-                    guard !Task.isCancelled else { return }
-                    isValidatingUser = true
-                    let result = await validateUsername(username)
-                    if let result {
-                        // Only cache definitive results, not network failures
-                        userValidationResult = result
-                        lastValidatedUsername = username
-                        Self.cachedValidatedUsername = username
-                        Self.cachedValidationResult = result
-                    }
-                    // If result is nil (request failed), leave previous state unchanged
-                    isValidatingUser = false
-                }
+                identityCard
             } header: {
-                Text("Quick Access")
+                TMDesign.sectionHeader("You")
             } footer: {
                 if let valid = userValidationResult, !valid {
-                    Text("Username not found on Travel Mapping. Check your spelling or create an account from the Get Started guide above.")
+                    Text("Username not found on Travel Mapping. Check your spelling or create an account from the Get Started guide in Support below.")
                         .foregroundStyle(.orange)
                 } else {
                     Text("Set your username for one-tap access, widget stats, and Watch app.")
                 }
             }
 
-            // 3. Units
-            Section("Units") {
+            Section {
+                Toggle("iCloud Sync", isOn: $favorites.iCloudSyncEnabled)
+                Toggle("Show on Apple Watch", isOn: $sendToWatch)
+            } footer: {
+                Text("iCloud syncs favorites across devices. Apple Watch receives live trip status and route directions.")
+            }
+
+            // MARK: Appearance
+            Section {
                 Picker("Distance", selection: $settings.useMiles) {
                     Text("Miles").tag(true)
                     Text("Kilometers").tag(false)
@@ -123,10 +68,6 @@ struct SettingsView: View {
                         .set(settings.useMiles, forKey: "widgetUseMiles")
                     WidgetCenter.shared.reloadAllTimelines()
                 }
-            }
-
-            // 4. Map Line Styles
-            Section("Map Line Styles") {
                 Picker("Road Style", selection: $settings.roadLineStyle) {
                     ForEach(MapStyleService.LineStyle.allCases) { style in
                         HStack {
@@ -140,58 +81,73 @@ struct SettingsView: View {
                     Text("Road Width")
                     Slider(value: $settings.roadLineWidth, in: 1...6, step: 0.5)
                     Text("\(settings.roadLineWidth, specifier: "%.1f")")
-                        .font(.caption.monospacedDigit())
+                        .font(.subheadline.monospacedDigit())
                         .foregroundStyle(.secondary)
-                        .frame(width: 30)
+                        .frame(width: 32)
                 }
                 HStack {
                     Text("Rail Width")
                     Slider(value: $settings.railLineWidth, in: 1...6, step: 0.5)
                     Text("\(settings.railLineWidth, specifier: "%.1f")")
-                        .font(.caption.monospacedDigit())
+                        .font(.subheadline.monospacedDigit())
                         .foregroundStyle(.secondary)
-                        .frame(width: 30)
+                        .frame(width: 32)
                 }
+                HStack {
+                    Text("Untraveled Routes")
+                    Slider(value: $settings.untraveledVisibility, in: 0.25...1.0, step: 0.05)
+                    Text("\(Int((settings.untraveledVisibility * 100).rounded()))%")
+                        .font(.subheadline.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 44)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Untraveled route visibility, \(Int((settings.untraveledVisibility * 100).rounded())) percent")
+            } header: {
+                TMDesign.sectionHeader("Appearance")
+            } footer: {
+                Text("Untraveled routes appear in amber on the map — raise the visibility if they're hard to see against the base map.")
             }
 
-            // 5. Accent Color
             Section {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 48))], spacing: 12) {
-                    ForEach(ThemeService.availableColors, id: \.name) { item in
-                        Button {
-                            Haptics.selection()
-                            settings.accentColorName = item.name
-                        } label: {
-                            Circle()
-                                .fill(item.color)
-                                .frame(width: 40, height: 40)
-                                .overlay {
-                                    Circle()
-                                        .stroke(
-                                            settings.accentColorName == item.name ? Color.primary : Color.clear,
-                                            lineWidth: 3
-                                        )
-                                }
-                                .overlay {
-                                    if settings.accentColorName == item.name {
-                                        Image(systemName: "checkmark")
-                                            .font(.callout.bold())
-                                            .foregroundStyle(.white)
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Accent Color")
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 52))], spacing: 12) {
+                        ForEach(ThemeService.availableColors, id: \.name) { item in
+                            Button {
+                                Haptics.selection()
+                                settings.accentColorName = item.name
+                            } label: {
+                                Circle()
+                                    .fill(item.color)
+                                    .frame(width: 44, height: 44)
+                                    .overlay {
+                                        Circle()
+                                            .stroke(
+                                                settings.accentColorName == item.name ? Color.primary : Color.clear,
+                                                lineWidth: 3
+                                            )
                                     }
-                                }
+                                    .overlay {
+                                        if settings.accentColorName == item.name {
+                                            Image(systemName: "checkmark")
+                                                .font(.callout.bold())
+                                                .foregroundStyle(.white)
+                                        }
+                                    }
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(item.name)
+                            .accessibilityAddTraits(settings.accentColorName == item.name ? [.isSelected] : [])
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(item.name)
                     }
                 }
                 .padding(.vertical, 4)
-            } header: {
-                Text("Accent Color")
             } footer: {
                 Text("Controls tint for tab icons, buttons, links, and interactive elements throughout the app.")
             }
 
-            // 6. Cache
+            // MARK: Data
             Section {
                 CacheStatusView()
 
@@ -203,23 +159,18 @@ struct SettingsView: View {
                 }
                 .foregroundStyle(.red)
             } header: {
-                Text("Cache")
+                TMDesign.sectionHeader("Data")
             } footer: {
                 Text("Cached stats, user lists, and API responses (refreshes every 6\u{2013}24 hours). Pull down on any page to force-refresh.")
             }
 
-            // 7. Sync & Apple Watch
+            // MARK: Support
             Section {
-                Toggle("iCloud Sync", isOn: $favorites.iCloudSyncEnabled)
-                Toggle("Show on Apple Watch", isOn: $sendToWatch)
-            } header: {
-                Text("Sync & Apple Watch")
-            } footer: {
-                Text("iCloud syncs favorites across devices. Apple Watch receives live trip status and route directions.")
-            }
-
-            // 8. Support
-            Section("Support") {
+                NavigationLink {
+                    GetStartedView()
+                } label: {
+                    Label("Get Started Guide", systemImage: "questionmark.circle")
+                }
                 Link(destination: URL(string: "https://apps.apple.com/app/id6761671062?action=write-review")!) {
                     Label("Rate the App", systemImage: "star.fill")
                 }
@@ -247,19 +198,26 @@ struct SettingsView: View {
                 } label: {
                     Label("Report a Bug", systemImage: "ladybug")
                 }
-            }
 
-            // 9. Tip Jar
-            Section {
-                TipJarView()
+                // Tip jar lives behind a low-key row (not an in-your-face inline grid);
+                // the sheet is attached to the row itself, never chained with the
+                // Form's alert (chained presentations silently fail).
+                Button {
+                    showTipJar = true
+                } label: {
+                    Label("Leave a Tip", systemImage: "heart")
+                }
+                .sheet(isPresented: $showTipJar) {
+                    TipJarSheet()
+                        .presentationDetents([.medium, .large])
+                        .presentationDragIndicator(.visible)
+                }
             } header: {
-                Text("Tip Jar")
-            } footer: {
-                Text("Travel Mapping is free and open source. Tips help support continued iOS app development.")
+                TMDesign.sectionHeader("Support")
             }
 
-            // 10. About
-            Section("About") {
+            // MARK: About
+            Section {
                 LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0")
                     .onTapGesture {
                         versionTapCount += 1
@@ -275,10 +233,11 @@ struct SettingsView: View {
                 } label: {
                     Label("Privacy Policy", systemImage: "hand.raised")
                 }
+            } header: {
+                TMDesign.sectionHeader("About")
             }
 
-            // 11. Links
-            Section("Links") {
+            Section {
                 Link(destination: URL(string: "https://travelmapping.net")!) {
                     Label("Travel Mapping (Roads)", systemImage: "car.fill")
                 }
@@ -312,13 +271,94 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - Identity card (audit §14)
+    // Primary User pulled into a top identity card: monogram avatar + username field
+    // with the live validation check. Behavior (widget/watch/Sentry sync + debounced
+    // validation) is unchanged from the old mid-form text field.
+    private var identityCard: some View {
+        HStack(spacing: 12) {
+            TMMonogramAvatar(
+                name: settings.primaryUser.trimmingCharacters(in: .whitespaces).isEmpty
+                    ? "TM"
+                    : settings.primaryUser,
+                size: 44
+            )
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Primary User")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(TMDesign.tertiaryText)
+                TextField("username", text: $settings.primaryUser)
+                    .font(.system(size: 17, weight: .semibold))
+                    .textFieldStyle(.plain)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .accessibilityLabel("Primary User username")
+                    .onChange(of: settings.primaryUser) {
+                        userValidationResult = nil
+                        watchUsername = settings.primaryUser
+                        UserDefaults(suiteName: "group.com.psiegel18.TravelMapping")?
+                            .set(settings.primaryUser, forKey: "widgetUsername")
+                        WidgetCenter.shared.reloadAllTimelines()
+                        SentrySDK.configureScope { scope in
+                            let isSet = !settings.primaryUser.isEmpty
+                            scope.setTag(value: isSet ? "true" : "false", key: "primary_user_set")
+                            if isSet {
+                                scope.setUser(User(userId: settings.primaryUser))
+                                scope.setTag(value: settings.primaryUser, key: "tm.username")
+                            } else {
+                                scope.setUser(nil)
+                                scope.removeTag(key: "tm.username")
+                            }
+                        }
+                    }
+            }
+            Spacer()
+            if isValidatingUser {
+                ProgressView()
+                    .controlSize(.small)
+            } else if let valid = userValidationResult {
+                Image(systemName: valid ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .foregroundStyle(valid ? .green : .orange)
+                    .accessibilityLabel(valid ? "Username validated" : "Username not found")
+            }
+        }
+        .padding(.vertical, 6)
+        .task(id: settings.primaryUser) {
+            let username = settings.primaryUser.trimmingCharacters(in: .whitespaces)
+            guard !username.isEmpty else {
+                userValidationResult = nil
+                lastValidatedUsername = ""
+                Self.cachedValidatedUsername = ""
+                Self.cachedValidationResult = nil
+                return
+            }
+            guard username != lastValidatedUsername else { return }
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled else { return }
+            isValidatingUser = true
+            let result = await validateUsername(username)
+            if let result {
+                // Only cache definitive results, not network failures
+                userValidationResult = result
+                lastValidatedUsername = username
+                Self.cachedValidatedUsername = username
+                Self.cachedValidationResult = result
+            }
+            // If result is nil (request failed), leave previous state unchanged
+            isValidatingUser = false
+        }
+    }
+
     /// Returns true if found, false if confirmed not found, nil if the request failed (don't cache failures).
     private func validateUsername(_ username: String) async -> Bool? {
         let url = URL(string: "https://travelmapping.net/lib/getTravelerRoutes.php?dbname=TravelMapping")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        request.httpBody = "params={\"traveler\":\"\(username)\"}".data(using: .utf8)
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&+=")
+        let encoded = username.addingPercentEncoding(withAllowedCharacters: allowed) ?? username
+        request.httpBody = "params={\"traveler\":\"\(encoded)\"}".data(using: .utf8)
 
         guard let (data, _) = try? await URLSession.shared.data(for: request),
               !data.isEmpty,
@@ -368,7 +408,10 @@ struct CacheStatusView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             LabeledContent("Cache Size", value: cacheSize)
-            LabeledContent("Cached Items", value: "\(fileCount)")
+            LabeledContent("Cached Items") {
+                Text(fileCount.formatted())
+                    .monospacedDigit()
+            }
             LabeledContent("Oldest Cache", value: oldestCache)
             LabeledContent("Site Last Updated", value: lastMerge)
         }
@@ -482,9 +525,22 @@ struct CacheStatusView: View {
 // MARK: - Tip Jar
 
 struct TipJarView: View {
+    private enum PurchaseState {
+        case success, pending, failure
+
+        var color: Color {
+            switch self {
+            case .success: return .green
+            case .pending: return .orange
+            case .failure: return .secondary
+            }
+        }
+    }
+
     @State private var products: [Product] = []
     @State private var isLoading = true
     @State private var purchaseMessage: String?
+    @State private var purchaseState: PurchaseState = .success
 
 
     private static let tipIDs = [
@@ -500,10 +556,24 @@ struct TipJarView: View {
     ]
 
     private static let tipLabels: [String: String] = [
-        "com.psiegel18.TravelMapping.tip.small": "Coffee",
-        "com.psiegel18.TravelMapping.tip.medium": "Pizza",
-        "com.psiegel18.TravelMapping.tip.large": "Gas Tank"
+        "com.psiegel18.TravelMapping.tip.small": "Road Coffee",
+        "com.psiegel18.TravelMapping.tip.medium": "Rest-Stop Pizza",
+        "com.psiegel18.TravelMapping.tip.large": "Fill the Tank"
     ]
+
+    private static let tipSubtitles: [String: String] = [
+        "com.psiegel18.TravelMapping.tip.small": "Keeps the dev awake at the wheel",
+        "com.psiegel18.TravelMapping.tip.medium": "Fuel for late-night bug fixes",
+        "com.psiegel18.TravelMapping.tip.large": "You're basically a co-pilot now"
+    ]
+
+    private static let tipTints: [String: (bg: Color, fg: Color)] = [
+        "com.psiegel18.TravelMapping.tip.small": (TMDesign.amberChipBG, TMDesign.amberChipFG),
+        "com.psiegel18.TravelMapping.tip.medium": (TMDesign.redChipBG, TMDesign.redChipFG),
+        "com.psiegel18.TravelMapping.tip.large": (TMDesign.greenChipBG, TMDesign.greenChipFG)
+    ]
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Group {
@@ -518,37 +588,50 @@ struct TipJarView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                HStack(spacing: 10) {
-                    ForEach(products.sorted { $0.price < $1.price }) { product in
+                VStack(spacing: 12) {
+                    ForEach(Array(products.sorted { $0.price < $1.price }.enumerated()), id: \.element.id) { index, product in
+                        let tint = Self.tipTints[product.id] ?? (TMDesign.blueChipBG, TMDesign.blueChipFG)
                         Button {
                             Task { await purchase(product) }
                         } label: {
-                            VStack(spacing: 4) {
+                            HStack(spacing: 14) {
                                 Text(Self.tipEmojis[product.id] ?? "💰")
-                                    .font(.title2)
-                                Text(Self.tipLabels[product.id] ?? "Tip")
-                                    .font(.caption)
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.8)
+                                    .font(.system(size: 38))
+                                    .rotationEffect(.degrees(reduceMotion ? 0 : (index.isMultiple(of: 2) ? -6 : 6)))
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(Self.tipLabels[product.id] ?? "Tip")
+                                        .font(.system(size: 17, weight: .bold))
+                                        .foregroundStyle(.primary)
+                                    Text(Self.tipSubtitles[product.id] ?? "Every bit helps!")
+                                        .font(.system(size: 13))
+                                        .foregroundStyle(TMDesign.secondaryText)
+                                }
+                                Spacer()
                                 Text(product.displayPrice)
-                                    .font(.caption.bold())
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.8)
+                                    .font(.system(size: 15, weight: .heavy))
+                                    .monospacedDigit()
+                                    .foregroundStyle(tint.fg)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 7)
+                                    .background(tint.bg, in: Capsule())
                             }
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                            .padding(.horizontal, 8)
-                            .background(Color.blue.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+                            .padding(14)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                            .rotationEffect(.degrees(reduceMotion ? 0 : (index.isMultiple(of: 2) ? -0.7 : 0.7)))
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(TipSpringButtonStyle())
+                        .accessibilityLabel("\(Self.tipLabels[product.id] ?? "Tip"), \(product.displayPrice)")
                     }
                 }
 
                 if let message = purchaseMessage {
                     Text(message)
-                        .font(.caption)
-                        .foregroundStyle(.green)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(purchaseState.color)
+                        .multilineTextAlignment(.center)
                         .frame(maxWidth: .infinity)
+                        .padding(.top, 4)
                 }
             }
         }
@@ -560,11 +643,14 @@ struct TipJarView: View {
             }
             isLoading = false
         }
-        .task {
-            for await result in Transaction.updates {
-                if case .verified(let transaction) = result {
-                    await transaction.finish()
-                }
+        // Pending purchases (e.g. Ask to Buy) are finished by the app-launch
+        // Transaction.updates listener in TravelMappingApp; reflect the completion here
+        // if the user is still looking at the "pending" message.
+        .onReceive(NotificationCenter.default.publisher(for: .tipTransactionFinished)) { _ in
+            if purchaseState == .pending {
+                purchaseState = .success
+                purchaseMessage = "Thank you for your support! 🎉"
+                Haptics.success()
             }
         }
     }
@@ -578,19 +664,22 @@ struct TipJarView: View {
                 case .verified(let transaction):
                     await transaction.finish()
                     Haptics.success()
+                    purchaseState = .success
                     purchaseMessage = "Thank you for your support! 🎉"
                     SentrySDK.logger.info("Tip purchased", attributes: [
                         "productId": product.id,
                         "price": product.displayPrice,
                     ])
                 case .unverified:
-                    purchaseMessage = "Purchase could not be verified."
+                    purchaseState = .failure
+                    purchaseMessage = "Purchase could not be verified. You have not been charged."
                     SentrySDK.logger.warn("Tip purchase unverified", attributes: ["productId": product.id])
                 }
             case .userCancelled:
                 break
             case .pending:
-                purchaseMessage = "Purchase pending..."
+                purchaseState = .pending
+                purchaseMessage = "Purchase pending approval — it will complete automatically once approved."
                 SentrySDK.logger.info("Tip purchase pending", attributes: ["productId": product.id])
             @unknown default:
                 break
@@ -806,5 +895,72 @@ struct PrivacyPolicyView: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+}
+
+// MARK: - Tip Jar Sheet
+
+/// Whimsical modal home for the tip jar — reached from a low-key Settings row so
+/// tipping is opt-in rather than staring at everyone from the middle of Settings.
+struct TipJarSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 18) {
+                Text("🫙")
+                    .font(.system(size: 64))
+                    .padding(.top, 26)
+                    .accessibilityHidden(true)
+
+                VStack(spacing: 6) {
+                    Text("The Tip Jar")
+                        .font(.system(size: 28, weight: .heavy))
+                    Text("Travel Mapping is free and open source. Tips keep the wheels turning — every mile of development is fan-funded.")
+                        .font(.system(size: 15))
+                        .foregroundStyle(TMDesign.secondaryText)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                TipJarView()
+                    .padding(.horizontal, 20)
+
+                Text("No subscriptions, no unlocks — just gratitude. 💙")
+                    .font(.system(size: 13))
+                    .foregroundStyle(TMDesign.tertiaryText)
+                    .padding(.bottom, 20)
+            }
+            .frame(maxWidth: 560)
+            .frame(maxWidth: .infinity)
+        }
+        .background(TMDesign.secondarySurface)
+        .overlay(alignment: .topTrailing) {
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 26))
+                    .foregroundStyle(TMDesign.tertiaryText)
+                    .frame(width: 44, height: 44)
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 6)
+            .padding(.trailing, 10)
+            .accessibilityLabel("Close tip jar")
+        }
+    }
+}
+
+/// Springy press effect for the tip cards — playful without being noisy.
+/// Under Reduce Motion the scale change is skipped.
+struct TipSpringButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.95 : 1)
+            .animation(.spring(response: 0.28, dampingFraction: 0.5), value: configuration.isPressed)
     }
 }

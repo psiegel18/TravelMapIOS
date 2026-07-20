@@ -11,6 +11,9 @@ struct RegionDetailView: View {
     private var unit: String { useMiles ? "mi" : "km" }
     private func convert(_ miles: Double) -> Double { useMiles ? miles : miles * 1.60934 }
 
+    /// Full region name ("Illinois" for "IL") when the static catalog knows it.
+    private var regionFullName: String? { GetStartedView.regionName(for: region) }
+
     private var numFormatter: NumberFormatter {
         let f = NumberFormatter()
         f.numberStyle = .decimal
@@ -25,16 +28,17 @@ struct RegionDetailView: View {
     var body: some View {
         Group {
             if isLoading {
-                ProgressView("Loading \(region) routes...")
+                loadingState
             } else if let error = errorMessage {
                 ErrorView(message: error) {
                     await load()
                 }
             } else {
                 ScrollView {
-                    VStack(spacing: 20) {
+                    VStack(alignment: .leading, spacing: 16) {
+                        headerView
                         overviewCard
-                        closestCard
+                        almostThereCard
                         longestClinchedCard
                         allRoutesCard
                     }
@@ -42,7 +46,7 @@ struct RegionDetailView: View {
                 }
             }
         }
-        .navigationTitle(region)
+        .navigationTitle(regionFullName ?? region)
         .navigationBarTitleDisplayMode(.inline)
         .task {
             await load()
@@ -52,131 +56,281 @@ struct RegionDetailView: View {
         }
     }
 
+    // MARK: Header — full region name + code (audit §7)
+
+    private var headerView: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(regionFullName ?? region)
+                .font(.system(size: 30, weight: .heavy))
+            if regionFullName != nil {
+                Text(region)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(TMDesign.tertiaryText)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    // MARK: Loading — skeleton rows so layout doesn't jump (audit §11)
+
+    private var loadingState: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Loading \(regionFullName ?? region) routes…")
+                    .font(.system(size: 13))
+                    .foregroundStyle(TMDesign.tertiaryText)
+                VStack(spacing: 0) {
+                    ForEach(0..<6, id: \.self) { _ in
+                        TMSkeletonRow()
+                    }
+                }
+                .padding(16)
+                .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            }
+            .padding()
+        }
+        .accessibilityLabel("Loading \(regionFullName ?? region) routes")
+    }
+
+    // MARK: Overview — completion ring card (audit §7)
+
     private var overviewCard: some View {
         let total = routes.reduce(0.0) { $0 + $1.mileage }
         let clinched = routes.reduce(0.0) { $0 + $1.clinchedMileage }
-        let percentage = total > 0 ? clinched / total * 100 : 0
+        let fraction = total > 0 ? clinched / total : 0
         let clinchedCount = routes.filter(\.isClinched).count
 
-        return VStack(spacing: 12) {
-            Text("\(region) Overview")
-                .font(.title3.bold())
-            HStack(spacing: 24) {
-                VStack {
-                    Text(formatNumber(convert(clinched)))
-                        .font(.title2.bold())
-                    Text("\(unit) traveled")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                VStack {
-                    Text(routes.count.formatted())
-                        .font(.title2.bold())
-                    Text("routes")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                VStack {
-                    Text(clinchedCount.formatted())
-                        .font(.title2.bold())
-                    Text("clinched")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+        return HStack(spacing: 20) {
+            TMCompletionRing(
+                fraction: fraction,
+                diameter: 100,
+                lineWidth: 13,
+                percentFont: 24
+            )
+
+            VStack(spacing: 0) {
+                overviewRow(label: "Traveled", value: "\(formatNumber(convert(clinched))) \(unit)")
+                Rectangle().fill(TMDesign.hairline).frame(height: 1)
+                overviewRow(label: "Routes", value: routes.count.formatted())
+                Rectangle().fill(TMDesign.hairline).frame(height: 1)
+                overviewRow(label: "Clinched", value: clinchedCount.formatted(), valueColor: TMDesign.clinched)
             }
-            ProgressView(value: clinched, total: max(total, 1))
-                .tint(.blue)
-            Text(String(format: "%.1f%% complete (%.0f / %.0f %@)", percentage, convert(clinched), convert(total), unit))
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
-        .padding()
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .padding(20)
+        .frame(maxWidth: .infinity)
+        .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
 
-    private var closestCard: some View {
-        let inProgress = routes
+    private func overviewRow(label: String, value: String, valueColor: Color = .primary) -> some View {
+        HStack {
+            Text(label)
+                .font(.system(size: 15))
+                .foregroundStyle(TMDesign.secondaryText)
+            Spacer(minLength: 12)
+            Text(value)
+                .font(.system(size: 15, weight: .bold))
+                .monospacedDigit()
+                .foregroundStyle(valueColor)
+        }
+        .padding(.vertical, 8)
+        .accessibilityElement(children: .combine)
+    }
+
+    // MARK: "Almost there" amber callout (audit §7)
+
+    @ViewBuilder
+    private var almostThereCard: some View {
+        let almost = routes
             .filter { $0.clinchedMileage > 0 && !$0.isClinched }
             .sorted { $0.remainingMileage < $1.remainingMileage }
-            .prefix(10)
+            .prefix(3)
 
-        return VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Image(systemName: "target").foregroundStyle(.orange)
-                Text("Closest to Clinched").font(.title3.bold())
-            }
-            if inProgress.isEmpty {
-                Text("No routes in progress").font(.caption).foregroundStyle(.secondary)
-            } else {
-                ForEach(Array(inProgress)) { route in
-                    VStack(alignment: .leading, spacing: 4) {
+        if !almost.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 6) {
+                    Image(systemName: "target")
+                        .font(.system(size: 15, weight: .bold))
+                    Text("Almost there — \(almost.count.formatted()) to clinch")
+                        .font(.system(size: 15, weight: .heavy))
+                        .monospacedDigit()
+                }
+                .foregroundStyle(TMDesign.amberChipFG)
+                .accessibilityAddTraits(.isHeader)
+
+                ForEach(Array(almost)) { route in
+                    VStack(alignment: .leading, spacing: 6) {
                         HStack {
-                            Text(route.listName).font(.subheadline.bold())
-                            Spacer()
+                            Text(route.listName)
+                                .font(.system(size: 15, weight: .bold))
+                                .lineLimit(1)
+                            Spacer(minLength: 8)
                             Text("\(formatNumber(convert(route.remainingMileage))) \(unit) left")
-                                .font(.caption.bold()).foregroundStyle(.orange)
+                                .font(.system(size: 13, weight: .bold))
+                                .monospacedDigit()
+                                .foregroundStyle(TMDesign.amberChipFG)
                         }
-                        ProgressView(value: route.clinchedMileage, total: route.mileage).tint(.orange)
+                        MiniBar(
+                            fraction: route.mileage > 0 ? route.clinchedMileage / route.mileage : 0,
+                            height: 6,
+                            track: Color(tmLight: 0xF1E2CB, dark: 0x4A3617),
+                            fill: TMDesign.frontier
+                        )
                     }
-                    .padding(.vertical, 2)
+                    .padding(10)
+                    .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    .accessibilityElement(children: .combine)
                 }
             }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(TMDesign.amberChipBG, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
-        .padding()
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
     }
 
+    // MARK: Longest clinched
+
+    @ViewBuilder
     private var longestClinchedCard: some View {
         let clinched = routes.filter(\.isClinched).sorted { $0.mileage > $1.mileage }.prefix(5)
 
-        return VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
-                Text("Longest Clinched").font(.title3.bold())
-            }
-            if clinched.isEmpty {
-                Text("No clinched routes yet").font(.caption).foregroundStyle(.secondary)
-            } else {
+        if !clinched.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(TMDesign.clinched)
+                    Text("Longest clinched")
+                        .font(.system(size: 16, weight: .bold))
+                }
+                .accessibilityAddTraits(.isHeader)
+
                 ForEach(Array(clinched)) { route in
                     HStack {
-                        Text(route.listName).font(.subheadline.bold())
-                        Spacer()
+                        Text(route.listName)
+                            .font(.system(size: 15, weight: .semibold))
+                            .lineLimit(1)
+                        Spacer(minLength: 8)
                         Text("\(formatNumber(convert(route.mileage))) \(unit)")
-                            .font(.caption.bold()).foregroundStyle(.green)
+                            .font(.system(size: 15, weight: .bold))
+                            .monospacedDigit()
+                            .foregroundStyle(TMDesign.clinched)
                     }
-                    .padding(.vertical, 2)
+                    .padding(.vertical, 4)
+                    .accessibilityElement(children: .combine)
                 }
             }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
-        .padding()
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
     }
+
+    // MARK: All routes — status by shape, not just color (audit §7)
 
     private var allRoutesCard: some View {
         let sorted = routes.sorted { $0.clinchedMileage > $1.clinchedMileage }
 
-        return VStack(alignment: .leading, spacing: 12) {
-            Text("All Routes (\(routes.count))").font(.title3.bold())
-            ForEach(sorted) { route in
-                HStack {
-                    Image(systemName: route.isClinched ? "checkmark.circle.fill" : "circle")
-                        .foregroundStyle(route.isClinched ? .green : .secondary)
-                        .font(.caption)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(route.listName).font(.subheadline)
-                        Text(String(format: "%.1f%%", route.percentage))
-                            .font(.caption2).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Text("\(formatNumber(convert(route.clinchedMileage)))/\(formatNumber(convert(route.mileage))) \(unit)")
-                        .font(.caption).foregroundStyle(.secondary)
+        return VStack(alignment: .leading, spacing: 0) {
+            TMDesign.sectionHeader("All routes · \(routes.count.formatted())")
+                .padding(.bottom, 8)
+                .accessibilityAddTraits(.isHeader)
+
+            ForEach(Array(sorted.enumerated()), id: \.element.id) { index, route in
+                routeRow(route)
+                if index < sorted.count - 1 {
+                    Rectangle().fill(TMDesign.hairline).frame(height: 1)
                 }
-                .padding(.vertical, 4)
-                Divider()
             }
         }
-        .padding()
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func routeRow(_ route: StatisticsView.RouteInfo) -> some View {
+        HStack(spacing: 12) {
+            if route.isClinched {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 17))
+                    .foregroundStyle(TMDesign.clinched)
+                    .accessibilityHidden(true)
+            } else {
+                Circle()
+                    .strokeBorder(
+                        route.percentage > 50 ? TMDesign.frontier : TMDesign.chevron,
+                        lineWidth: 2
+                    )
+                    .frame(width: 17, height: 17)
+                    .accessibilityHidden(true)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(route.listName)
+                    .font(.system(size: 16, weight: .bold))
+                    .lineLimit(1)
+                if route.isClinched {
+                    Text("\(formatNumber(convert(route.mileage))) \(unit)")
+                        .font(.system(size: 13))
+                        .monospacedDigit()
+                        .foregroundStyle(TMDesign.tertiaryText)
+                } else {
+                    MiniBar(
+                        fraction: route.mileage > 0 ? route.clinchedMileage / route.mileage : 0,
+                        height: 5,
+                        track: TMDesign.progressTrack,
+                        fill: route.percentage > 50 ? TMDesign.frontier : TMDesign.accent
+                    )
+                    .frame(maxWidth: 120)
+                    Text("\(formatNumber(convert(route.clinchedMileage))) of \(formatNumber(convert(route.mileage))) \(unit)")
+                        .font(.system(size: 13))
+                        .monospacedDigit()
+                        .foregroundStyle(TMDesign.tertiaryText)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            if route.isClinched {
+                Text("Clinched")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(TMDesign.clinched)
+            } else {
+                Text("\(Int(route.percentage.rounded()))%")
+                    .font(.system(size: 14, weight: .bold))
+                    .monospacedDigit()
+                    .foregroundStyle(TMDesign.secondaryText)
+            }
+        }
+        .padding(.vertical, 10)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            route.isClinched
+                ? "\(route.listName), clinched, \(formatNumber(convert(route.mileage))) \(unit)"
+                : "\(route.listName), \(Int(route.percentage.rounded())) percent clinched, \(formatNumber(convert(route.clinchedMileage))) of \(formatNumber(convert(route.mileage))) \(unit)"
+        )
+    }
+
+    // MARK: Small capsule progress bar
+
+    private struct MiniBar: View {
+        let fraction: Double
+        var height: CGFloat = 6
+        var track: Color = TMDesign.progressTrack
+        var fill: Color = TMDesign.accent
+
+        var body: some View {
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(track)
+                    Capsule()
+                        .fill(fill)
+                        .frame(width: geo.size.width * min(max(fraction, 0), 1))
+                }
+            }
+            .frame(height: height)
+            .accessibilityHidden(true)
+        }
     }
 
     private func load() async {

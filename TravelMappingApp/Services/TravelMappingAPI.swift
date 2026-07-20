@@ -71,7 +71,13 @@ actor TravelMappingAPI {
     // MARK: - Processed Types for the App
 
     struct MapSegment: Identifiable {
-        let id: Int
+        /// Stable content-based identity ("root|startName|endName"). Must NOT be a
+        /// response array index — indices collide across regions and between the road
+        /// and rail APIs, which corrupts selection sets built from multiple responses.
+        let id: String
+        /// Position within the API response — preserves along-route ordering for
+        /// polyline merging. Only meaningful relative to other segments of the same root.
+        let orderIndex: Int
         let start: CLLocationCoordinate2D
         let end: CLLocationCoordinate2D
         let isClinched: Bool
@@ -117,40 +123,64 @@ actor TravelMappingAPI {
 
         let data = try await post(endpoint: "/lib/getVisibleSegments.php", params: params, cacheTTL: 6 * 3600)
         let response = try JSONDecoder().decode(VisibleSegmentsResponse.self, from: data)
+        return Self.parseSegmentsResponse(response)
+    }
+
+    /// Parse the parallel arrays of a VisibleSegmentsResponse into segments + route metadata.
+    /// All sibling-array accesses use the safe subscript: the loop count comes from one
+    /// array, and a server hiccup that returns a shorter sibling array must degrade to
+    /// the default value, not crash with index-out-of-range (optional chaining does NOT
+    /// bounds-check).
+    private static func parseSegmentsResponse(_ response: VisibleSegmentsResponse) -> (segments: [MapSegment], routes: [RouteMetadata]) {
+        let w1lat = response.w1lat ?? []
+        let w1lng = response.w1lng ?? []
+        let w2lat = response.w2lat ?? []
+        let w2lng = response.w2lng ?? []
+        let roots = response.roots ?? []
+        let w1name = response.w1name ?? []
+        let w2name = response.w2name ?? []
+        let clinched = response.clinched ?? []
 
         var segments: [MapSegment] = []
-        let count = response.w1lat?.count ?? 0
+        for i in 0..<w1lat.count {
+            guard let lat1 = Double(w1lat[safe: i] ?? ""),
+                  let lng1 = Double(w1lng[safe: i] ?? ""),
+                  let lat2 = Double(w2lat[safe: i] ?? ""),
+                  let lng2 = Double(w2lng[safe: i] ?? "") else { continue }
 
-        for i in 0..<count {
-            guard let lat1 = Double(response.w1lat?[i] ?? ""),
-                  let lng1 = Double(response.w1lng?[i] ?? ""),
-                  let lat2 = Double(response.w2lat?[i] ?? ""),
-                  let lng2 = Double(response.w2lng?[i] ?? "") else { continue }
-
+            let root = roots[safe: i] ?? ""
+            let startName = w1name[safe: i] ?? ""
+            let endName = w2name[safe: i] ?? ""
             segments.append(MapSegment(
-                id: i,
+                id: "\(root)|\(startName)|\(endName)",
+                orderIndex: i,
                 start: CLLocationCoordinate2D(latitude: lat1, longitude: lng1),
                 end: CLLocationCoordinate2D(latitude: lat2, longitude: lng2),
-                isClinched: response.clinched?[i] == "1",
-                root: response.roots?[i] ?? "",
-                startName: response.w1name?[i] ?? "",
-                endName: response.w2name?[i] ?? ""
+                isClinched: clinched[safe: i] == "1",
+                root: root,
+                startName: startName,
+                endName: endName
             ))
         }
 
-        var routes: [RouteMetadata] = []
-        let routeCount = response.routeroots?.count ?? 0
+        let routeroots = response.routeroots ?? []
+        let routelistnames = response.routelistnames ?? []
+        let routemileages = response.routemileages ?? []
+        let routeclinchedmileages = response.routeclinchedmileages ?? []
+        let routecolors = response.routecolors ?? []
+        let routetiers = response.routetiers ?? []
 
-        for i in 0..<routeCount {
-            let root = response.routeroots?[i] ?? ""
+        var routes: [RouteMetadata] = []
+        for i in 0..<routeroots.count {
+            let root = routeroots[i]
             routes.append(RouteMetadata(
                 id: root,
                 root: root,
-                listName: response.routelistnames?[i] ?? "",
-                mileage: Double(response.routemileages?[i] ?? "0") ?? 0,
-                clinchedMileage: Double(response.routeclinchedmileages?[i] ?? "0") ?? 0,
-                color: response.routecolors?[i] ?? "TMblue",
-                tier: Int(response.routetiers?[i] ?? "1") ?? 1
+                listName: routelistnames[safe: i] ?? "",
+                mileage: Double(routemileages[safe: i] ?? "0") ?? 0,
+                clinchedMileage: Double(routeclinchedmileages[safe: i] ?? "0") ?? 0,
+                color: routecolors[safe: i] ?? "TMblue",
+                tier: Int(routetiers[safe: i] ?? "1") ?? 1
             ))
         }
 
@@ -169,22 +199,20 @@ actor TravelMappingAPI {
             "traveler": traveler
         ]
 
-        var data = try await post(endpoint: "/lib/getRouteData.php", params: params)
-
-        // The PHP endpoint may prepend HTML warnings before the JSON — strip them
-        if let jsonStart = String(data: data, encoding: .utf8)?.firstIndex(of: "{"),
-           let cleanData = String(data: data, encoding: .utf8)?[jsonStart...].data(using: .utf8) {
-            data = cleanData
-        }
+        // post() strips any HTML warnings prepended before the JSON (see salvageJSON)
+        let data = try await post(endpoint: "/lib/getRouteData.php", params: params)
 
         let response = try JSONDecoder().decode(RouteDataResponse.self, from: data)
 
-        var details: [RouteDetail] = []
-        let routeCount = response.latitudes?.count ?? 0
+        let latitudes = response.latitudes ?? []
+        let longitudes = response.longitudes ?? []
+        let clinchedArrays = response.clinched ?? []
+        let listNames = response.listNames ?? []
 
-        for i in 0..<routeCount {
-            guard let lats = response.latitudes?[i],
-                  let lngs = response.longitudes?[i] else { continue }
+        var details: [RouteDetail] = []
+        for i in 0..<latitudes.count {
+            let lats = latitudes[i]
+            guard let lngs = longitudes[safe: i] else { continue }
 
             let coords = zip(lats, lngs).compactMap { latStr, lngStr -> CLLocationCoordinate2D? in
                 guard let latStr, let lngStr,
@@ -192,11 +220,11 @@ actor TravelMappingAPI {
                 return CLLocationCoordinate2D(latitude: lat, longitude: lng)
             }
 
-            let clinchStatus = response.clinched?[i].map { $0 == "1" } ?? []
+            let clinchStatus = clinchedArrays[safe: i]?.map { $0 == "1" } ?? []
 
             details.append(RouteDetail(
-                id: response.listNames?[i] ?? "route-\(i)",
-                listName: response.listNames?[i] ?? "",
+                id: listNames[safe: i] ?? "route-\(i)",
+                listName: listNames[safe: i] ?? "",
                 coordinates: coords,
                 clinched: clinchStatus
             ))
@@ -216,20 +244,21 @@ actor TravelMappingAPI {
         var clauseParts: [String] = []
 
         if let roots, !roots.isEmpty {
-            let rootConditions = roots.map { "routes.root='\($0)'" }.joined(separator: " or ")
+            let rootConditions = roots.map { "routes.root='\(Self.sqlQuoteEscaped($0))'" }.joined(separator: " or ")
             clauseParts.append("(\(rootConditions))")
         }
         if let regions, !regions.isEmpty {
-            let regionConditions = regions.map { "routes.region='\($0)'" }.joined(separator: " or ")
+            let regionConditions = regions.map { "routes.region='\(Self.sqlQuoteEscaped($0))'" }.joined(separator: " or ")
             clauseParts.append("(\(regionConditions))")
         } else if let region {
-            clauseParts.append("(routes.region='\(region)')")
+            clauseParts.append("(routes.region='\(Self.sqlQuoteEscaped(region))')")
         }
         if let system {
-            clauseParts.append("(routes.systemName='\(system)')")
+            clauseParts.append("(routes.systemName='\(Self.sqlQuoteEscaped(system))')")
         }
 
-        let clause = "where " + clauseParts.joined(separator: " and ")
+        // No filters → no clause at all; a bare "where " is invalid SQL server-side
+        let clause = clauseParts.isEmpty ? "" : "where " + clauseParts.joined(separator: " and ")
 
         let params: [String: Any] = [
             "clause": clause,
@@ -238,45 +267,13 @@ actor TravelMappingAPI {
 
         let data = try await post(endpoint: "/lib/getRegionSystemSegments.php", params: params, cacheTTL: 6 * 3600) // cache 6 hours
         let response = try JSONDecoder().decode(VisibleSegmentsResponse.self, from: data)
+        return Self.parseSegmentsResponse(response)
+    }
 
-        // Same parsing as getVisibleSegments
-        var segments: [MapSegment] = []
-        let count = response.w1lat?.count ?? 0
-
-        for i in 0..<count {
-            guard let lat1 = Double(response.w1lat?[i] ?? ""),
-                  let lng1 = Double(response.w1lng?[i] ?? ""),
-                  let lat2 = Double(response.w2lat?[i] ?? ""),
-                  let lng2 = Double(response.w2lng?[i] ?? "") else { continue }
-
-            segments.append(MapSegment(
-                id: i,
-                start: CLLocationCoordinate2D(latitude: lat1, longitude: lng1),
-                end: CLLocationCoordinate2D(latitude: lat2, longitude: lng2),
-                isClinched: response.clinched?[i] == "1",
-                root: response.roots?[i] ?? "",
-                startName: response.w1name?[i] ?? "",
-                endName: response.w2name?[i] ?? ""
-            ))
-        }
-
-        var routes: [RouteMetadata] = []
-        let routeCount = response.routeroots?.count ?? 0
-
-        for i in 0..<routeCount {
-            let root = response.routeroots?[i] ?? ""
-            routes.append(RouteMetadata(
-                id: root,
-                root: root,
-                listName: response.routelistnames?[i] ?? "",
-                mileage: Double(response.routemileages?[i] ?? "0") ?? 0,
-                clinchedMileage: Double(response.routeclinchedmileages?[i] ?? "0") ?? 0,
-                color: response.routecolors?[i] ?? "TMblue",
-                tier: Int(response.routetiers?[i] ?? "1") ?? 1
-            ))
-        }
-
-        return (segments, routes)
+    /// Escape a value for interpolation into the server-side SQL-ish clause:
+    /// single quotes are doubled (' → '') so quoted values can't break the statement.
+    private static func sqlQuoteEscaped(_ value: String) -> String {
+        value.replacingOccurrences(of: "'", with: "''")
     }
 
     /// Get the full route catalog (cacheable). The TM site only updates once a day,
@@ -288,10 +285,39 @@ actor TravelMappingAPI {
 
     // MARK: - Networking
 
+    /// Build a deterministic cache-key fragment from POST params.
+    /// `[String: Any].description` randomizes key order per launch, which made the
+    /// disk cache never hit across launches. Keys are sorted; array values are joined
+    /// in their existing order (order is meaningful for e.g. `roots`).
+    private static func stableParamsKey(_ params: [String: Any]) -> String {
+        params.keys.sorted().map { key in
+            let value = params[key]
+            let str: String
+            if let arr = value as? [Any] {
+                str = arr.map { "\($0)" }.joined(separator: ",")
+            } else {
+                str = value.map { "\($0)" } ?? ""
+            }
+            return "\(key)=\(str)"
+        }.joined(separator: "&")
+    }
+
+    /// Allowed characters for the percent-encoded form value. `.urlQueryAllowed` minus
+    /// the characters that are structural in application/x-www-form-urlencoded bodies —
+    /// unencoded '&' splits the value, '+' decodes as a space, '=' splits key/value.
+    private static let formValueAllowed: CharacterSet = {
+        var set = CharacterSet.urlQueryAllowed
+        set.remove(charactersIn: "&+=?")
+        return set
+    }()
+
     private func post(endpoint: String, params: [String: Any], cacheTTL: TimeInterval? = nil) async throws -> Data {
         // Check cache (include dbName to distinguish road vs rail APIs)
-        let cacheKey = "tm_\(dbName)_\(endpoint)_\(params.description)"
+        let cacheKey = "tm_\(dbName)_\(endpoint)_\(Self.stableParamsKey(params))"
         if cacheTTL != nil, let cached = await CacheService.shared.get(key: cacheKey) {
+            if cached == Self.negativeCacheSentinel {
+                throw APIError.htmlResponseInsteadOfJSON
+            }
             return cached
         }
 
@@ -304,7 +330,8 @@ actor TravelMappingAPI {
 
         let jsonData = try JSONSerialization.data(withJSONObject: params)
         let jsonString = String(data: jsonData, encoding: .utf8) ?? "{}"
-        request.httpBody = "params=\(jsonString)".data(using: .utf8)
+        let encoded = jsonString.addingPercentEncoding(withAllowedCharacters: Self.formValueAllowed) ?? jsonString
+        request.httpBody = "params=\(encoded)".data(using: .utf8)
 
         let (data, response) = try await session.data(for: request)
 
@@ -318,7 +345,18 @@ actor TravelMappingAPI {
         // fail fast with a meaningful error instead of producing the cryptic
         // NSCocoaErrorDomain 4864 ("Unexpected character '<'") from JSONDecoder downstream.
         if let firstByte = data.first, firstByte == 0x3C { // '<'
+            // Some endpoints prepend HTML warnings before valid JSON
+            // (e.g. "<br /><b>Warning</b>…{json}") — salvage the JSON when it's there.
+            if let salvaged = Self.salvageJSON(from: data) {
+                if let ttl = cacheTTL {
+                    await CacheService.shared.set(key: cacheKey, data: salvaged, ttl: ttl)
+                }
+                return salvaged
+            }
             Self.captureHTMLResponse(endpoint: endpoint, method: "POST", data: data)
+            if cacheTTL != nil {
+                await CacheService.shared.set(key: cacheKey, data: Self.negativeCacheSentinel, ttl: Self.negativeCacheTTL)
+            }
             throw APIError.htmlResponseInsteadOfJSON
         }
 
@@ -329,6 +367,21 @@ actor TravelMappingAPI {
 
         return data
     }
+
+    /// If an HTML-prefixed body contains a JSON object after the noise, return just the
+    /// JSON portion (validated via JSONSerialization); nil if nothing salvageable.
+    private static func salvageJSON(from data: Data) -> Data? {
+        guard let braceIndex = data.firstIndex(of: 0x7B) else { return nil } // '{'
+        let candidate = Data(data[braceIndex...])
+        guard (try? JSONSerialization.jsonObject(with: candidate)) != nil else { return nil }
+        return candidate
+    }
+
+    // Negative-cache marker: when the backend returns HTML for an endpoint, we stash this
+    // sentinel under the same cacheKey for a short window so subsequent identical requests
+    // fail fast without hitting the network or re-capturing to Sentry.
+    private static let negativeCacheSentinel = Data("__TM_NEGATIVE_CACHE__".utf8)
+    private static let negativeCacheTTL: TimeInterval = 300
 
     /// Capture a Sentry issue WITH the offending response body when the API gives us HTML.
     /// Callers swallow the throw with `try?`, so without an explicit capture we'd never see
@@ -363,6 +416,9 @@ actor TravelMappingAPI {
     private func get(endpoint: String, cacheTTL: TimeInterval? = nil) async throws -> Data {
         let cacheKey = "tm_\(dbName)_GET_\(endpoint)"
         if cacheTTL != nil, let cached = await CacheService.shared.get(key: cacheKey) {
+            if cached == Self.negativeCacheSentinel {
+                throw APIError.htmlResponseInsteadOfJSON
+            }
             return cached
         }
 
@@ -377,6 +433,9 @@ actor TravelMappingAPI {
         }
         if let firstByte = data.first, firstByte == 0x3C { // '<'
             Self.captureHTMLResponse(endpoint: endpoint, method: "GET", data: data)
+            if cacheTTL != nil {
+                await CacheService.shared.set(key: cacheKey, data: Self.negativeCacheSentinel, ttl: Self.negativeCacheTTL)
+            }
             throw APIError.htmlResponseInsteadOfJSON
         }
 
@@ -430,6 +489,17 @@ final class CatalogService: ObservableObject {
         if loadTask == nil { loadIfNeeded() }
         await loadTask?.value
         return regionCountryMap
+    }
+}
+
+// MARK: - Safe Array Access
+
+/// Bounds-checked subscript for the parallel-array API responses. The loop count is
+/// taken from ONE array, so a sibling array that came back shorter must yield nil
+/// (→ caller default) instead of crashing — optional chaining alone does not bounds-check.
+private extension Array {
+    subscript(safe index: Int) -> Element? {
+        indices.contains(index) ? self[index] : nil
     }
 }
 

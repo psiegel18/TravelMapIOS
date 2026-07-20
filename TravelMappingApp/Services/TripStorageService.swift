@@ -41,7 +41,8 @@ actor TripStorageService {
         let dir = await tripsDirectory()
         let data = try JSONEncoder().encode(trip)
         let fileURL = dir.appendingPathComponent("\(trip.id.uuidString).json")
-        try data.write(to: fileURL)
+        // Atomic — a crash mid-write must never leave a truncated/corrupt trip file
+        try data.write(to: fileURL, options: .atomic)
     }
 
     func load(id: UUID) async throws -> RoadTrip {
@@ -63,7 +64,14 @@ actor TripStorageService {
 
         return files.compactMap { url in
             guard let data = try? Data(contentsOf: url) else { return nil }
-            return try? JSONDecoder().decode(RoadTrip.self, from: data)
+            do {
+                return try JSONDecoder().decode(RoadTrip.self, from: data)
+            } catch {
+                // Skip the corrupt file but don't lose visibility — a silently
+                // dropped trip looks like data loss to the user.
+                SentrySDK.capture(error: error)
+                return nil
+            }
         }
     }
 

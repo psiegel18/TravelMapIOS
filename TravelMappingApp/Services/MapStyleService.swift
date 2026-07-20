@@ -35,6 +35,7 @@ enum MapStyleService {
         StrokeStyle(
             lineWidth: baseWidth * style.widthMultiplier,
             lineCap: .round,
+            lineJoin: .round,
             dash: style.dashPattern
         )
     }

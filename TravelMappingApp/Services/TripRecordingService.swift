@@ -32,6 +32,15 @@ class TripRecordingService: NSObject, ObservableObject {
     private var lastFetchLocation: CLLocationCoordinate2D?
     private var liveActivity: Activity<RoadTripAttributes>?
 
+    // Active-time accounting: paused time (and dead time before an orphan resume)
+    // must not count as recording time, so elapsed can't be derived from startDate.
+    private var activeElapsedBase: TimeInterval = 0   // banked active seconds up to the last pause/resume boundary
+    private var activeSegmentStart: Date?             // start of the current running stretch; nil while paused
+
+    private var currentActiveElapsed: TimeInterval {
+        activeElapsedBase + (activeSegmentStart.map { Date().timeIntervalSince($0) } ?? 0)
+    }
+
     // MARK: - Init
 
     @Published var orphanedTrip: RoadTrip?
@@ -53,6 +62,9 @@ class TripRecordingService: NSObject, ObservableObject {
 
     private func checkForOrphanedTrip() async {
         guard let trips = try? await TripStorageService.shared.listTrips() else { return }
+        // A trip started while we were reading disk owns the recording state —
+        // never surface (or auto-resume) a stale orphan over a live recording.
+        guard !isRecording else { return }
         guard let orphan = trips.first(where: { $0.status == .recording }) else { return }
 
         let age = Date().timeIntervalSince(orphan.startDate)
@@ -73,13 +85,23 @@ class TripRecordingService: NSObject, ObservableObject {
     /// Rebinds in-memory state to what was already on disk, restarts location updates and timers,
     /// re-seeds the segment matcher, and reattaches the still-running Live Activity.
     private func resumeFromOrphan(_ trip: RoadTrip) {
+        guard !isRecording else { return }
         currentTripType = trip.tripType
         currentTrip = trip
         isRecording = true
         isPaused = false
         pointCount = trip.rawPoints.count
         matchedCount = trip.matchedSegments.count
-        elapsedTime = Date().timeIntervalSince(trip.startDate)
+        // Resume the active-time clock from the last persisted value — the dead time
+        // between the kill and this relaunch is not recording time. Trips saved before
+        // activeDuration existed fall back to the span covered by their GPS points.
+        var banked = trip.activeDuration
+        if banked <= 0, let lastPoint = trip.rawPoints.last {
+            banked = lastPoint.timestamp.timeIntervalSince(trip.startDate)
+        }
+        activeElapsedBase = max(0, banked)
+        activeSegmentStart = Date()
+        elapsedTime = activeElapsedBase
         currentSegmentName = nil
         currentAccuracy = -1
         currentSpeed = 0
@@ -93,7 +115,7 @@ class TripRecordingService: NSObject, ObservableObject {
 
         rebindOrStartLiveActivity(tripName: trip.name, startDate: trip.startDate)
 
-        startTimers(tripStartDate: trip.startDate)
+        startTimers()
 
         SentrySDK.logger.info("Trip resumed from orphan", attributes: [
             "tripType": trip.tripType == .rail ? "rail" : "road",
@@ -185,6 +207,12 @@ class TripRecordingService: NSObject, ObservableObject {
         currentAccuracy = -1
         currentSpeed = 0
         totalDistance = 0
+        activeElapsedBase = 0
+        activeSegmentStart = trip.startDate
+        // Clear all per-trip matcher state — without this, the previous trip's
+        // matched segments leak into this trip's saved data and .list export.
+        segmentMatcher.reset()
+        matchedCoordinates = []
 
         locationManager.startUpdatingLocation()
         startLiveActivity(tripName: trip.name, startDate: trip.startDate)
@@ -199,7 +227,7 @@ class TripRecordingService: NSObject, ObservableObject {
         )
         updateTripContext(isRecording: true, isPaused: false, tripType: tripType)
 
-        startTimers(tripStartDate: trip.startDate)
+        startTimers()
     }
 
     private func configureLocationManager(for tripType: TripType) {
@@ -207,11 +235,13 @@ class TripRecordingService: NSObject, ObservableObject {
         locationManager.distanceFilter = 50
         locationManager.activityType = tripType == .rail ? .otherNavigation : .automotiveNavigation
         locationManager.allowsBackgroundLocationUpdates = true
-        locationManager.pausesLocationUpdatesAutomatically = true
+        // Never let CL auto-pause: after an auto-pause while the app is suspended,
+        // updates don't resume on their own and the recording silently dies.
+        locationManager.pausesLocationUpdatesAutomatically = false
         locationManager.showsBackgroundLocationIndicator = true
     }
 
-    private func startTimers(tripStartDate: Date) {
+    private func startTimers() {
         timer?.invalidate()
         saveTimer?.invalidate()
 
@@ -219,7 +249,7 @@ class TripRecordingService: NSObject, ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, let trip = self.currentTrip else { return }
-                self.elapsedTime = Date().timeIntervalSince(tripStartDate)
+                self.elapsedTime = self.currentActiveElapsed
                 WatchSyncService.shared.sendTripUpdate(
                     tripName: trip.name,
                     elapsedTime: self.elapsedTime,
@@ -250,8 +280,14 @@ class TripRecordingService: NSObject, ObservableObject {
     func pauseTrip() {
         guard isRecording, !isPaused else { return }
         locationManager.stopUpdatingLocation()
+        // Bank active time so the paused stretch doesn't count as recording time
+        activeElapsedBase = currentActiveElapsed
+        activeSegmentStart = nil
+        elapsedTime = activeElapsedBase
+        currentTrip?.activeDuration = activeElapsedBase
         isPaused = true
         currentSegmentName = "Paused"
+        updateLiveActivity()
         Haptics.light()
         SentrySDK.logger.info("Trip paused", attributes: ["elapsedTime": elapsedTime])
         Self.tripBreadcrumb("Trip paused", data: ["elapsedTime": elapsedTime])
@@ -261,7 +297,10 @@ class TripRecordingService: NSObject, ObservableObject {
     func resumeTrip() {
         guard isRecording, isPaused else { return }
         locationManager.startUpdatingLocation()
+        activeSegmentStart = Date()
         isPaused = false
+        currentSegmentName = nil
+        updateLiveActivity()
         Haptics.light()
         SentrySDK.logger.info("Trip resumed", attributes: ["elapsedTime": elapsedTime])
         Self.tripBreadcrumb("Trip resumed", data: ["elapsedTime": elapsedTime])
@@ -293,10 +332,16 @@ class TripRecordingService: NSObject, ObservableObject {
         saveTimer = nil
         WatchSyncService.shared.clearTripStatus()
 
+        // Freeze the active-time clock before finalizing
+        elapsedTime = currentActiveElapsed
+        activeElapsedBase = elapsedTime
+        activeSegmentStart = nil
+
         // Finalize matching
         trip.matchedSegments = segmentMatcher.finalizeTrip()
         trip.endDate = Date()
         trip.status = .completed
+        trip.activeDuration = elapsedTime
         trip.rawPoints = currentTrip?.rawPoints ?? []
 
         currentTrip = trip
@@ -327,10 +372,16 @@ class TripRecordingService: NSObject, ObservableObject {
             scope.setTag(value: "false", key: "trip_active")
         }
 
-        // Save final state
-        Task {
-            try? await TripStorageService.shared.save(trip)
-            _ = try? await TripStorageService.shared.exportListFile(for: trip)
+        // Save final state. In-memory state is already .completed above; if this save
+        // is lost (app killed first), the on-disk trip stays .recording and resurrects
+        // as an orphan on next launch — capture failures so that's visible in Sentry.
+        Task(priority: .userInitiated) {
+            do {
+                try await TripStorageService.shared.save(trip)
+                _ = try await TripStorageService.shared.exportListFile(for: trip)
+            } catch {
+                SentrySDK.capture(error: error)
+            }
         }
     }
 
@@ -350,11 +401,17 @@ class TripRecordingService: NSObject, ObservableObject {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
 
         let attributes = RoadTripAttributes(tripName: tripName, startDate: startDate)
+        // Use current published values rather than literal zeros so the orphan-resume
+        // path (which restores totalDistance before re-starting the activity) doesn't
+        // briefly show 0 mi on the Lock Screen.
         let state = RoadTripAttributes.ContentState(
-            elapsedTime: 0,
+            elapsedTime: elapsedTime,
             currentRoad: "",
-            matchedSegments: 0,
-            gpsPoints: 0
+            matchedSegments: matchedCount,
+            gpsPoints: pointCount,
+            isPaused: false,
+            distanceMeters: totalDistance,
+            speedMps: max(0, currentSpeed)
         )
 
         do {
@@ -389,9 +446,12 @@ class TripRecordingService: NSObject, ObservableObject {
 
         let state = RoadTripAttributes.ContentState(
             elapsedTime: elapsedTime,
-            currentRoad: currentSegmentName ?? "",
+            currentRoad: isPaused ? "" : (currentSegmentName ?? ""),
             matchedSegments: matchedCount,
-            gpsPoints: pointCount
+            gpsPoints: pointCount,
+            isPaused: isPaused,
+            distanceMeters: totalDistance,
+            speedMps: isPaused ? 0 : max(0, currentSpeed)
         )
 
         Task {
@@ -406,7 +466,10 @@ class TripRecordingService: NSObject, ObservableObject {
             elapsedTime: elapsedTime,
             currentRoad: "Trip ended",
             matchedSegments: matchedCount,
-            gpsPoints: pointCount
+            gpsPoints: pointCount,
+            isPaused: false,
+            distanceMeters: totalDistance,
+            speedMps: 0
         )
 
         Task {
@@ -418,9 +481,14 @@ class TripRecordingService: NSObject, ObservableObject {
     // MARK: - Private
 
     private func saveCurrentTrip() {
+        currentTrip?.activeDuration = currentActiveElapsed
         guard let trip = currentTrip else { return }
         Task {
-            try? await TripStorageService.shared.save(trip)
+            do {
+                try await TripStorageService.shared.save(trip)
+            } catch {
+                SentrySDK.capture(error: error)
+            }
         }
     }
 
@@ -447,7 +515,7 @@ class TripRecordingService: NSObject, ObservableObject {
                     minLng: bbox.minLng,
                     maxLng: bbox.maxLng
                 )
-                segmentMatcher.updateCache(segments: result.segments, bbox: bbox)
+                segmentMatcher.updateCache(segments: result.segments, routes: result.routes, bbox: bbox)
             } catch {
                 SentrySDK.capture(error: error)
             }
@@ -461,7 +529,10 @@ extension TripRecordingService: CLLocationManagerDelegate {
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         Task { @MainActor in
             for location in locations {
-                guard location.horizontalAccuracy < 200 else { continue }
+                // Negative horizontalAccuracy means the fix is invalid, not "very accurate"
+                guard location.horizontalAccuracy >= 0, location.horizontalAccuracy < 200 else { continue }
+                // CL can replay stale cached fixes (e.g. right after a resume) — skip them
+                guard abs(location.timestamp.timeIntervalSinceNow) <= 10 else { continue }
                 guard !isPaused else { continue }
 
                 // Update live stats

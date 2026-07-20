@@ -1,19 +1,77 @@
 import SwiftUI
 import Sentry
 
+// MARK: - Brand palette (design audit §12)
+// The watch target can't see TMDesign (app target). Watch surfaces are always
+// dark, so the dark-surface brand hexes are fixed here.
+
+enum WatchPalette {
+    static let blue = Color(watchHex: 0x5B8CFF)      // Trailblazer Blue (bright)
+    static let green = Color(watchHex: 0x4FD69C)     // Clinched Green / current route
+    static let amber = Color(watchHex: 0xF6B45A)     // Frontier Amber / paused
+    static let gold = Color(watchHex: 0xFFD84D)      // rank
+    static let red = Color(watchHex: 0xF08079)       // recording (matches phone rail red, dark variant)
+}
+
+extension Color {
+    /// Fixed hex color for watch surfaces.
+    init(watchHex hex: UInt32) {
+        self.init(
+            .sRGB,
+            red: Double((hex >> 16) & 0xFF) / 255,
+            green: Double((hex >> 8) & 0xFF) / 255,
+            blue: Double(hex & 0xFF) / 255,
+            opacity: 1
+        )
+    }
+}
+
+/// Pulsing status dot for the recording state (static under Reduce Motion).
+struct WatchPulsingDot: View {
+    var color: Color = WatchPalette.red
+    var size: CGFloat = 8
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var dimmed = false
+
+    var body: some View {
+        Circle()
+            .fill(color)
+            .frame(width: size, height: size)
+            .opacity(dimmed ? 0.3 : 1)
+            .onAppear {
+                guard !reduceMotion else { return }
+                withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) {
+                    dimmed = true
+                }
+            }
+            .accessibilityHidden(true)
+    }
+}
+
 @main
 struct TravelMappingWatchApp: App {
     @StateObject private var sessionManager = WatchSessionManager.shared
 
+    /// Mirrors the iOS channel detection in TravelMappingApp.swift: a sandbox receipt
+    /// means TestFlight, otherwise App Store. Keeps watch events in the same Sentry
+    /// environments (development/testflight/appstore) as the iPhone app.
+    private static let isTestFlight = Bundle.main.appStoreReceiptURL?.lastPathComponent == "sandboxReceipt"
+
     init() {
+        let buildChannel: String
+        #if DEBUG
+        buildChannel = "development"
+        #else
+        buildChannel = Self.isTestFlight ? "testflight" : "appstore"
+        #endif
+
         SentrySDK.start(configureOptions: { options in
             options.dsn = "https://4d5e26ddfb95aaaef4721256a35176e5@o4510452629700608.ingest.us.sentry.io/4511177068183552"
             #if DEBUG
             options.debug = true
-            options.environment = "development"
-            #else
-            options.environment = "production"
             #endif
+            options.environment = buildChannel
             options.sampleRate = 1.0
             options.tracesSampleRate = 0.5
             options.enableCrashHandler = true
@@ -24,6 +82,7 @@ struct TravelMappingWatchApp: App {
 
             options.initialScope = { scope in
                 scope.setTag(value: "watchos", key: "app.platform")
+                scope.setTag(value: buildChannel, key: "app.channel")
                 scope.setTag(value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown", key: "app.version")
                 return scope
             }
@@ -65,7 +124,7 @@ struct WatchDashboardView: View {
             HStack(spacing: 4) {
                 Image(systemName: "road.lanes")
                     .font(.caption)
-                    .foregroundStyle(.blue)
+                    .foregroundStyle(WatchPalette.blue)
                 Text("Travel Mapping")
                     .font(.caption2.bold())
             }
@@ -74,7 +133,8 @@ struct WatchDashboardView: View {
                 ProgressView()
             } else {
                 Text(formatMiles(milesTraveled))
-                    .font(.system(.title2, design: .rounded).bold())
+                    .font(.system(size: 30, weight: .heavy, design: .rounded))
+                    .monospacedDigit()
                 Text("Miles Traveled")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
@@ -83,24 +143,28 @@ struct WatchDashboardView: View {
 
                 HStack(spacing: 16) {
                     VStack(spacing: 1) {
-                        Text("\(regionCount)")
+                        Text("\(regionCount.formatted())")
                             .font(.system(.subheadline, design: .rounded).bold())
+                            .monospacedDigit()
                         Text("Regions")
                             .font(.system(size: 9))
                             .foregroundStyle(.secondary)
                     }
                     VStack(spacing: 1) {
-                        Text("\(routeCount)")
+                        Text("\(routeCount.formatted())")
                             .font(.system(.subheadline, design: .rounded).bold())
+                            .monospacedDigit()
                         Text("Routes")
                             .font(.system(size: 9))
                             .foregroundStyle(.secondary)
                     }
                     if let rank, let total = totalUsers {
                         VStack(spacing: 1) {
-                            Text("#\(rank)")
+                            Text("#\(rank.formatted())")
                                 .font(.system(.subheadline, design: .rounded).bold())
-                            Text("of \(total)")
+                                .monospacedDigit()
+                                .foregroundStyle(WatchPalette.gold)
+                            Text("of \(total.formatted())")
                                 .font(.system(size: 9))
                                 .foregroundStyle(.secondary)
                         }
@@ -139,7 +203,7 @@ struct WatchDashboardView: View {
                 routeCount = routes.count
             }
         } catch {
-            print("Watch routes error: \(error)")
+            SentrySDK.capture(error: error)
         }
 
         do {
@@ -149,7 +213,7 @@ struct WatchDashboardView: View {
                 parseCSVStats(csv)
             }
         } catch {
-            print("Watch stats error: \(error)")
+            SentrySDK.capture(error: error)
         }
 
         isLoading = false
@@ -195,45 +259,63 @@ struct WatchTripView: View {
             if let trip = sessionManager.tripState {
                 ScrollView {
                     VStack(spacing: 8) {
-                        // Status
+                        // Status — recording red matches the phone's rail red (dark
+                        // variant); dot pulses while recording, static when paused.
                         HStack(spacing: 4) {
-                            Circle()
-                                .fill(trip.isPaused ? .orange : .red)
-                                .frame(width: 8, height: 8)
+                            if trip.isPaused {
+                                Circle()
+                                    .fill(WatchPalette.amber)
+                                    .frame(width: 8, height: 8)
+                            } else {
+                                WatchPulsingDot()
+                            }
                             Text(trip.isPaused ? "Paused" : "Recording")
                                 .font(.caption2.bold())
-                                .foregroundStyle(trip.isPaused ? .orange : .red)
+                                .foregroundStyle(trip.isPaused ? WatchPalette.amber : WatchPalette.red)
                         }
 
-                        // Timer
-                        Text(trip.formattedTime)
-                            .font(.system(.title, design: .rounded).bold())
-                            .monospacedDigit()
+                        // Timer — tick locally off startDate when the phone provides it
+                        // (applicationContext pushes are coalesced, so the pushed
+                        // elapsedTime alone freezes between updates).
+                        if let start = trip.startDate, !trip.isPaused {
+                            TimelineView(.periodic(from: .now, by: 1.0)) { timeline in
+                                Text(WatchSessionManager.TripState.format(max(timeline.date.timeIntervalSince(start), 0)))
+                                    .font(.system(size: 26, weight: .heavy, design: .rounded))
+                                    .monospacedDigit()
+                            }
+                        } else {
+                            Text(trip.formattedTime)
+                                .font(.system(size: 26, weight: .heavy, design: .rounded))
+                                .monospacedDigit()
+                        }
 
                         // Speed + Distance
                         HStack(spacing: 12) {
                             VStack(spacing: 1) {
                                 Text(String(format: "%.0f", trip.speedMPH))
-                                    .font(.system(.headline, design: .rounded).bold())
+                                    .font(.system(size: 18, weight: .heavy, design: .rounded))
+                                    .monospacedDigit()
                                 Text("mph")
                                     .font(.system(size: 9))
                                     .foregroundStyle(.secondary)
                             }
                             VStack(spacing: 1) {
                                 Text(String(format: "%.1f", trip.distanceMiles))
-                                    .font(.system(.headline, design: .rounded).bold())
+                                    .font(.system(size: 18, weight: .heavy, design: .rounded))
+                                    .monospacedDigit()
                                 Text("mi")
                                     .font(.system(size: 9))
                                     .foregroundStyle(.secondary)
                             }
                         }
 
-                        // Current segment
+                        // Current segment — clinched green, matching the phone's
+                        // "now matching" accent.
                         if !trip.currentSegment.isEmpty {
                             Divider()
                             Text(trip.currentSegment)
-                                .font(.caption2)
-                                .foregroundStyle(.blue)
+                                .font(.caption2.bold())
+                                .foregroundStyle(WatchPalette.green)
                                 .multilineTextAlignment(.center)
                         }
 
@@ -241,10 +323,10 @@ struct WatchTripView: View {
 
                         // Counts
                         HStack(spacing: 12) {
-                            Label("\(trip.matchedCount)", systemImage: "checkmark.circle")
+                            Label("\(trip.matchedCount.formatted())", systemImage: "checkmark.circle")
                                 .font(.caption2)
-                                .foregroundStyle(.green)
-                            Label("\(trip.pointCount)", systemImage: "location")
+                                .foregroundStyle(WatchPalette.green)
+                            Label("\(trip.pointCount.formatted())", systemImage: "location")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
@@ -307,7 +389,7 @@ struct WatchDirectionsView: View {
                             if let notice = step.notice {
                                 Text(notice)
                                     .font(.system(size: 10))
-                                    .foregroundStyle(.orange)
+                                    .foregroundStyle(WatchPalette.amber)
                             }
                         }
                     }

@@ -41,7 +41,8 @@ struct ListFileParser {
 
             if dataLine.isEmpty { continue }
 
-            let fields = dataLine.split(separator: " ", omittingEmptySubsequences: true)
+            // Real-world .list files mix spaces and tabs — split on any whitespace
+            let fields = dataLine.split(whereSeparator: { $0 == " " || $0 == "\t" })
                 .map(String.init)
 
             guard fields.count >= 4 else { continue }

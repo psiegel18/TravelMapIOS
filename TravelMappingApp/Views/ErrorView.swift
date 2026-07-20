@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Friendly error display with retry button
+/// Friendly error display with retry button (design audit §11 — warmer card).
 struct ErrorView: View {
     let title: String
     let message: String
@@ -9,25 +9,37 @@ struct ErrorView: View {
     @State private var isRetrying = false
 
     init(title: String = "Couldn't Load Data", message: String, retryAction: (() async -> Void)? = nil) {
-        self.title = title
-        self.message = Self.friendly(message)
+        let friendly = Self.friendly(message)
+        self.message = friendly
+        // Give the offline case its audit copy when the caller used the default title.
+        if title == "Couldn't Load Data", friendly.lowercased().contains("offline") {
+            self.title = "You're offline"
+        } else {
+            self.title = title
+        }
         self.retryAction = retryAction
     }
 
     var body: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "wifi.exclamationmark")
-                .font(.system(size: 48))
-                .foregroundStyle(.secondary)
+        VStack(spacing: 14) {
+            ZStack {
+                Circle()
+                    .fill(TMDesign.redChipBG)
+                    .frame(width: 72, height: 72)
+                Image(systemName: "wifi.exclamationmark")
+                    .font(.system(size: 30, weight: .semibold))
+                    .foregroundStyle(TMDesign.redChipFG)
+            }
+            .accessibilityHidden(true)
 
             Text(title)
-                .font(.headline)
+                .font(.system(size: 18, weight: .heavy))
+                .multilineTextAlignment(.center)
 
             Text(message)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .font(.system(size: 15))
+                .foregroundStyle(TMDesign.secondaryText)
                 .multilineTextAlignment(.center)
-                .padding(.horizontal, 40)
 
             if let retry = retryAction {
                 Button {
@@ -38,18 +50,26 @@ struct ErrorView: View {
                         isRetrying = false
                     }
                 } label: {
-                    Label("Try Again", systemImage: "arrow.clockwise")
-                        .font(.subheadline.bold())
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 10)
-                        .background(.blue, in: Capsule())
-                        .foregroundStyle(.white)
+                    Label("Try again", systemImage: "arrow.clockwise")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(TMDesign.accent)
+                        .padding(.horizontal, 22)
+                        .frame(minHeight: 44)
+                        .background(
+                            Capsule().strokeBorder(TMDesign.accent, lineWidth: 1.5)
+                        )
+                        .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
                 .disabled(isRetrying)
                 .opacity(isRetrying ? 0.5 : 1)
+                .padding(.top, 4)
             }
         }
+        .padding(24)
+        .frame(maxWidth: 340)
+        .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .shadow(color: .black.opacity(0.06), radius: 12, y: 4)
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

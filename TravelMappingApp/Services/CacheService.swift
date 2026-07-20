@@ -1,4 +1,6 @@
 import Foundation
+import CryptoKit
+import Sentry
 
 /// Simple file-based cache for API responses.
 /// Stores JSON data in the app's caches directory with TTL-based expiry.
@@ -19,10 +21,23 @@ actor CacheService {
         try? FileManager.default.removeItem(at: oldDir)
     }
 
+    /// Convert a cache key to a filesystem-safe filename.
+    /// Keys can exceed the 255-byte APFS filename limit (large POST param sets), which
+    /// makes raw-key filenames silently fail to write for exactly the biggest requests —
+    /// and naive character stripping can collapse distinct keys into the same name.
+    /// A SHA256 digest is stable across launches, unique, and always short; a sanitized
+    /// prefix of the key is kept for debuggability when browsing the cache directory.
+    private func fileName(for key: String) -> String {
+        let digest = SHA256.hash(data: Data(key.utf8))
+        let hash = digest.map { String(format: "%02x", $0) }.joined().prefix(32)
+        let hint = String(key.prefix(24).map { $0.isLetter || $0.isNumber ? $0 : "_" })
+        return "\(hint)-\(hash)"
+    }
+
     /// Get cached data if not expired.
     func get(key: String) -> Data? {
-        let fileURL = cacheDir.appendingPathComponent(key.safeFilename)
-        let metaURL = cacheDir.appendingPathComponent(key.safeFilename + ".meta")
+        let fileURL = cacheDir.appendingPathComponent(fileName(for: key))
+        let metaURL = cacheDir.appendingPathComponent(fileName(for: key) + ".meta")
 
         guard FileManager.default.fileExists(atPath: fileURL.path),
               FileManager.default.fileExists(atPath: metaURL.path),
@@ -43,26 +58,49 @@ actor CacheService {
 
     /// Store data with optional custom TTL.
     func set(key: String, data: Data, ttl: TimeInterval? = nil) {
-        let fileURL = cacheDir.appendingPathComponent(key.safeFilename)
-        let metaURL = cacheDir.appendingPathComponent(key.safeFilename + ".meta")
+        let fileURL = cacheDir.appendingPathComponent(fileName(for: key))
+        let metaURL = cacheDir.appendingPathComponent(fileName(for: key) + ".meta")
 
         let meta = CacheMeta(
             createdAt: Date(),
             expiresAt: Date().addingTimeInterval(ttl ?? defaultTTL)
         )
 
-        try? data.write(to: fileURL)
-        try? JSONEncoder().encode(meta).write(to: metaURL)
+        // A failed cache write is survivable (we just refetch), but it shouldn't be
+        // silent — disk-full or sandbox issues here would otherwise be invisible.
+        do {
+            try data.write(to: fileURL)
+            try JSONEncoder().encode(meta).write(to: metaURL)
+        } catch {
+            SentrySDK.capture(error: error) { scope in
+                scope.setTag(value: "cache_write", key: "cache_operation")
+                scope.setExtra(value: key, key: "cache_key")
+                scope.setExtra(value: data.count, key: "data_bytes")
+            }
+        }
     }
 
     /// Get the age of cached data (when it was stored)
     func getAge(key: String) -> Date? {
-        let metaURL = cacheDir.appendingPathComponent(key.safeFilename + ".meta")
+        let metaURL = cacheDir.appendingPathComponent(fileName(for: key) + ".meta")
         guard let metaData = try? Data(contentsOf: metaURL),
               let meta = try? JSONDecoder().decode(CacheMeta.self, from: metaData) else {
             return nil
         }
         return meta.createdAt
+    }
+
+    /// Whether an unexpired entry exists for this key, without reading the payload.
+    /// Cheap freshness probe for multi-MB entries (e.g. stats CSVs) — only the tiny
+    /// .meta sidecar is read.
+    func hasFresh(key: String) -> Bool {
+        let metaURL = cacheDir.appendingPathComponent(fileName(for: key) + ".meta")
+        guard FileManager.default.fileExists(atPath: cacheDir.appendingPathComponent(fileName(for: key)).path),
+              let metaData = try? Data(contentsOf: metaURL),
+              let meta = try? JSONDecoder().decode(CacheMeta.self, from: metaData) else {
+            return false
+        }
+        return Date() <= meta.expiresAt
     }
 
     /// Clear all cached data.
@@ -93,15 +131,5 @@ actor CacheService {
     private struct CacheMeta: Codable {
         let createdAt: Date
         let expiresAt: Date
-    }
-}
-
-private extension String {
-    /// Convert a cache key to a safe filename.
-    var safeFilename: String {
-        self.replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: ":", with: "_")
-            .replacingOccurrences(of: " ", with: "_")
-            .replacingOccurrences(of: "'", with: "")
     }
 }

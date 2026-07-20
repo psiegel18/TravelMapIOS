@@ -1,6 +1,40 @@
 import WidgetKit
 import SwiftUI
 
+// MARK: - Brand palette (design audit §12)
+// The widget target can't see TMDesign (app target). Widget surfaces are fixed
+// dark gradients, so fixed brand hexes are correct here (dark-surface variants).
+
+extension Color {
+    /// Fixed hex color for widget / Live Activity surfaces.
+    init(tmwHex hex: UInt32) {
+        self.init(
+            .sRGB,
+            red: Double((hex >> 16) & 0xFF) / 255,
+            green: Double((hex >> 8) & 0xFF) / 255,
+            blue: Double(hex & 0xFF) / 255,
+            opacity: 1
+        )
+    }
+}
+
+private enum WidgetPalette {
+    static let blue = Color(tmwHex: 0x5B8CFF)        // Trailblazer Blue (bright variant)
+    static let blueDeep = Color(tmwHex: 0x2F6BF0)    // Trailblazer Blue (base)
+    static let green = Color(tmwHex: 0x4FD69C)       // Clinched Green
+    static let amber = Color(tmwHex: 0xF6B45A)       // Frontier Amber
+    static let gold = Color(tmwHex: 0xFFD84D)        // rank trophy
+    static let gradientTop = Color(tmwHex: 0x0F1A3D)
+    static let gradientBottom = Color(tmwHex: 0x221450)
+
+    /// Shared progress-bar gradient (replaces the old cyan/purple).
+    static let barGradient = LinearGradient(
+        colors: [blue, blueDeep],
+        startPoint: .leading,
+        endPoint: .trailing
+    )
+}
+
 // MARK: - Entry
 
 struct TravelStatsEntry: TimelineEntry, Codable {
@@ -14,6 +48,35 @@ struct TravelStatsEntry: TimelineEntry, Codable {
     let topRegion: String
     let topRegionMiles: Double
     let regionCount: Int
+    /// Whether to display distances in miles (false = kilometers). Mirrors the app's
+    /// units preference, written to the app group as "widgetUseMiles" and encoded
+    /// into "cachedWidgetEntry" by ContentView. Distances are always *stored* in miles.
+    let useMiles: Bool
+}
+
+// Custom decoding lives in an extension so the memberwise initializer is preserved.
+// `useMiles` uses decodeIfPresent so cached entries written before the field existed
+// still decode (backward-compatible Codable convention).
+extension TravelStatsEntry {
+    enum CodingKeys: String, CodingKey {
+        case date, username, routes, totalMiles, rank, userCount
+        case percentile, topRegion, topRegionMiles, regionCount, useMiles
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        date = try container.decode(Date.self, forKey: .date)
+        username = try container.decode(String.self, forKey: .username)
+        routes = try container.decode(Int.self, forKey: .routes)
+        totalMiles = try container.decode(Double.self, forKey: .totalMiles)
+        rank = try container.decode(Int.self, forKey: .rank)
+        userCount = try container.decode(Int.self, forKey: .userCount)
+        percentile = try container.decode(Double.self, forKey: .percentile)
+        topRegion = try container.decode(String.self, forKey: .topRegion)
+        topRegionMiles = try container.decode(Double.self, forKey: .topRegionMiles)
+        regionCount = try container.decode(Int.self, forKey: .regionCount)
+        useMiles = try container.decodeIfPresent(Bool.self, forKey: .useMiles) ?? true
+    }
 }
 
 // MARK: - Timeline Provider
@@ -32,7 +95,8 @@ struct TravelStatsProvider: TimelineProvider {
             percentile: 91.8,
             topRegion: "IL",
             topRegionMiles: 1711.8,
-            regionCount: 31
+            regionCount: 31,
+            useMiles: true
         )
     }
 
@@ -42,36 +106,72 @@ struct TravelStatsProvider: TimelineProvider {
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<TravelStatsEntry>) -> Void) {
         Task {
-            let entry = await fetchEntry()
-            let nextUpdate = Calendar.current.date(byAdding: .hour, value: 6, to: Date())!
-            completion(Timeline(entries: [entry], policy: .after(nextUpdate)))
+            if let entry = await fetchEntry() {
+                // Only successful fetches are cached — a failure must never
+                // clobber the last good entry with zeros.
+                cacheEntry(entry)
+                let nextUpdate = Calendar.current.date(byAdding: .hour, value: 6, to: Date())!
+                completion(Timeline(entries: [entry], policy: .after(nextUpdate)))
+            } else {
+                // Network failure: show the last good (possibly stale) entry and
+                // retry sooner. Zeros only when there's no cache at all.
+                let fallback = loadCachedEntry() ?? emptyEntry()
+                let nextUpdate = Calendar.current.date(byAdding: .hour, value: 1, to: Date())!
+                completion(Timeline(entries: [fallback], policy: .after(nextUpdate)))
+            }
         }
     }
 
-    private func fetchEntry() async -> TravelStatsEntry {
-        let username = UserDefaults(suiteName: Self.suiteName)?.string(forKey: "widgetUsername") ?? "psiegel18"
+    /// Returns nil when the stats fetch fails so getTimeline can fall back to cache.
+    private func fetchEntry() async -> TravelStatsEntry? {
+        let defaults = UserDefaults(suiteName: Self.suiteName)
+        let username = defaults?.string(forKey: "widgetUsername") ?? "psiegel18"
 
-        // Get route count from TM API
-        let routes = (try? await fetchRouteCount(username: username)) ?? 0
+        // Get mileage + rank from stats CSV — the core of the widget. No stats, no entry.
+        guard let statsData = await fetchStatsFromCSV(username: username) else {
+            return nil
+        }
 
-        // Get mileage + rank from stats CSV
-        let statsData = await fetchStatsFromCSV(username: username)
+        // Get route count from TM API; fall back to the cached count on failure so a
+        // partial outage doesn't zero the routes stat.
+        let routes = (try? await fetchRouteCount(username: username)) ?? loadCachedEntry()?.routes ?? 0
 
-        let entry = TravelStatsEntry(
+        return TravelStatsEntry(
             date: Date(),
             username: username,
             routes: routes,
-            totalMiles: statsData?.totalMiles ?? 0,
-            rank: statsData?.rank ?? 0,
-            userCount: statsData?.userCount ?? 0,
-            percentile: statsData?.percentile ?? 0,
-            topRegion: statsData?.topRegion ?? "",
-            topRegionMiles: statsData?.topRegionMiles ?? 0,
-            regionCount: statsData?.regionCount ?? 0
+            totalMiles: statsData.totalMiles,
+            rank: statsData.rank,
+            userCount: statsData.userCount,
+            percentile: statsData.percentile,
+            topRegion: statsData.topRegion,
+            topRegionMiles: statsData.topRegionMiles,
+            regionCount: statsData.regionCount,
+            useMiles: preferredUseMiles()
         )
+    }
 
-        cacheEntry(entry)
-        return entry
+    private func emptyEntry() -> TravelStatsEntry {
+        let username = UserDefaults(suiteName: Self.suiteName)?.string(forKey: "widgetUsername") ?? "psiegel18"
+        return TravelStatsEntry(
+            date: Date(),
+            username: username,
+            routes: 0,
+            totalMiles: 0,
+            rank: 0,
+            userCount: 0,
+            percentile: 0,
+            topRegion: "",
+            topRegionMiles: 0,
+            regionCount: 0,
+            useMiles: preferredUseMiles()
+        )
+    }
+
+    /// Units preference written by the app (ContentView) to the app group.
+    /// Absent key (widget added before the app ever wrote it) defaults to miles.
+    private func preferredUseMiles() -> Bool {
+        (UserDefaults(suiteName: Self.suiteName)?.object(forKey: "widgetUseMiles") as? Bool) ?? true
     }
 
     private func fetchRouteCount(username: String) async throws -> Int {
@@ -121,6 +221,9 @@ struct TravelStatsProvider: TimelineProvider {
             let fields = line.components(separatedBy: ",")
             guard fields.count == headers.count else { continue }
             let name = fields[0]
+            // Skip the summary row (same pattern as TMStatsService) — counting it
+            // shifts every rank by one and inflates userCount.
+            if name.uppercased() == "TOTAL" { continue }
             let total = Double(fields[1]) ?? 0
             allUsers.append((username: name, miles: total))
             if name.lowercased() == username.lowercased() {
@@ -212,7 +315,7 @@ struct TravelMappingWidgetEntryView: View {
                     .frame(width: 18, height: 18)
                     .clipShape(RoundedRectangle(cornerRadius: 4))
                 Text(entry.username)
-                    .font(.caption.bold())
+                    .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(.white.opacity(0.8))
                     .lineLimit(1)
             }
@@ -220,11 +323,12 @@ struct TravelMappingWidgetEntryView: View {
             Spacer()
 
             Text(formatMiles(entry.totalMiles))
-                .font(.system(size: 36, weight: .bold, design: .rounded))
+                .font(.system(size: 38, weight: .heavy, design: .rounded))
+                .monospacedDigit()
                 .foregroundStyle(.white)
                 .minimumScaleFactor(0.6)
                 .lineLimit(1)
-            Text("miles traveled")
+            Text(distanceCaption)
                 .font(.caption2)
                 .foregroundStyle(.white.opacity(0.5))
 
@@ -235,9 +339,10 @@ struct TravelMappingWidgetEntryView: View {
                     HStack(spacing: 4) {
                         Image(systemName: "trophy.fill")
                             .font(.caption2)
-                            .foregroundStyle(.yellow)
+                            .foregroundStyle(WidgetPalette.gold)
                         Text("#\(entry.rank.formatted())")
                             .font(.caption.bold())
+                            .monospacedDigit()
                             .foregroundStyle(.white)
                         Text("· \(entry.routes.formatted()) routes")
                             .font(.caption2)
@@ -250,7 +355,7 @@ struct TravelMappingWidgetEntryView: View {
                                 .fill(.white.opacity(0.15))
                                 .frame(height: 4)
                             Capsule()
-                                .fill(LinearGradient(colors: [.cyan, .blue], startPoint: .leading, endPoint: .trailing))
+                                .fill(WidgetPalette.barGradient)
                                 .frame(width: max(geo.size.width * entry.percentile / 100, 4), height: 4)
                         }
                     }
@@ -284,11 +389,12 @@ struct TravelMappingWidgetEntryView: View {
                 Spacer()
 
                 Text(formatMiles(entry.totalMiles))
-                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                    .font(.system(size: 32, weight: .heavy, design: .rounded))
+                    .monospacedDigit()
                     .foregroundStyle(.white)
                     .minimumScaleFactor(0.6)
                     .lineLimit(1)
-                Text("miles traveled")
+                Text(distanceCaption)
                     .font(.caption2)
                     .foregroundStyle(.white.opacity(0.5))
 
@@ -298,13 +404,13 @@ struct TravelMappingWidgetEntryView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Top \(String(format: "%.1f%%", entry.percentile))")
                             .font(.caption2.bold())
-                            .foregroundStyle(.cyan)
+                            .foregroundStyle(WidgetPalette.blue)
                         GeometryReader { geo in
                             ZStack(alignment: .leading) {
                                 Capsule()
                                     .fill(.white.opacity(0.15))
                                 Capsule()
-                                    .fill(LinearGradient(colors: [.cyan, .blue], startPoint: .leading, endPoint: .trailing))
+                                    .fill(WidgetPalette.barGradient)
                                     .frame(width: max(geo.size.width * entry.percentile / 100, 4))
                             }
                         }
@@ -326,9 +432,10 @@ struct TravelMappingWidgetEntryView: View {
                     HStack(spacing: 4) {
                         Image(systemName: "trophy.fill")
                             .font(.caption)
-                            .foregroundStyle(.yellow)
+                            .foregroundStyle(WidgetPalette.gold)
                         Text("#\(entry.rank.formatted())")
                             .font(.title3.bold())
+                            .monospacedDigit()
                             .foregroundStyle(.white)
                     }
                 }
@@ -337,7 +444,8 @@ struct TravelMappingWidgetEntryView: View {
                     VStack(spacing: 2) {
                         Text("\(entry.routes.formatted())")
                             .font(.headline.bold())
-                            .foregroundStyle(.cyan)
+                            .monospacedDigit()
+                            .foregroundStyle(WidgetPalette.blue)
                         Text("routes")
                             .font(.caption2)
                             .foregroundStyle(.white.opacity(0.5))
@@ -345,7 +453,8 @@ struct TravelMappingWidgetEntryView: View {
                     VStack(spacing: 2) {
                         Text("\(entry.regionCount.formatted())")
                             .font(.headline.bold())
-                            .foregroundStyle(.green)
+                            .monospacedDigit()
+                            .foregroundStyle(WidgetPalette.green)
                         Text("regions")
                             .font(.caption2)
                             .foregroundStyle(.white.opacity(0.5))
@@ -356,8 +465,8 @@ struct TravelMappingWidgetEntryView: View {
                     VStack(spacing: 2) {
                         Text(entry.topRegion)
                             .font(.headline.bold())
-                            .foregroundStyle(.orange)
-                        Text("\(formatMiles(entry.topRegionMiles)) mi")
+                            .foregroundStyle(WidgetPalette.amber)
+                        Text("\(formatMiles(entry.topRegionMiles)) \(unitAbbreviation)")
                             .font(.caption2)
                             .foregroundStyle(.white.opacity(0.5))
                     }
@@ -392,11 +501,12 @@ struct TravelMappingWidgetEntryView: View {
             // Hero: Miles
             VStack(alignment: .leading, spacing: 2) {
                 Text(formatMiles(entry.totalMiles))
-                    .font(.system(size: 48, weight: .bold, design: .rounded))
+                    .font(.system(size: 48, weight: .heavy, design: .rounded))
+                    .monospacedDigit()
                     .foregroundStyle(.white)
                     .minimumScaleFactor(0.5)
                     .lineLimit(1)
-                Text("miles traveled")
+                Text(distanceCaption)
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.5))
             }
@@ -405,9 +515,10 @@ struct TravelMappingWidgetEntryView: View {
             if entry.rank > 0 {
                 HStack(spacing: 8) {
                     Image(systemName: "trophy.fill")
-                        .foregroundStyle(.yellow)
+                        .foregroundStyle(WidgetPalette.gold)
                     Text("#\(entry.rank.formatted())")
                         .font(.title3.bold())
+                        .monospacedDigit()
                         .foregroundStyle(.white)
                     Text("of \(entry.userCount.formatted())")
                         .font(.caption)
@@ -415,7 +526,7 @@ struct TravelMappingWidgetEntryView: View {
                     Spacer()
                     Text("Top \(String(format: "%.1f%%", entry.percentile))")
                         .font(.caption.bold())
-                        .foregroundStyle(.cyan)
+                        .foregroundStyle(WidgetPalette.blue)
                 }
 
                 GeometryReader { geo in
@@ -423,7 +534,7 @@ struct TravelMappingWidgetEntryView: View {
                         Capsule()
                             .fill(.white.opacity(0.12))
                         Capsule()
-                            .fill(LinearGradient(colors: [.cyan, .blue, .purple], startPoint: .leading, endPoint: .trailing))
+                            .fill(WidgetPalette.barGradient)
                             .frame(width: max(geo.size.width * entry.percentile / 100, 6))
                     }
                 }
@@ -432,10 +543,10 @@ struct TravelMappingWidgetEntryView: View {
 
             // Stats cards
             HStack(spacing: 8) {
-                statCard(value: "\(entry.routes.formatted())", label: "Routes", icon: "road.lanes", color: .cyan)
-                statCard(value: "\(entry.regionCount.formatted())", label: "Regions", icon: "map", color: .green)
+                statCard(value: "\(entry.routes.formatted())", label: "Routes", icon: "road.lanes", color: WidgetPalette.blue)
+                statCard(value: "\(entry.regionCount.formatted())", label: "Regions", icon: "map", color: WidgetPalette.green)
                 if !entry.topRegion.isEmpty {
-                    statCard(value: entry.topRegion, label: "Top Region", icon: "star.fill", color: .orange, subtext: "\(formatMiles(entry.topRegionMiles)) mi")
+                    statCard(value: entry.topRegion, label: "Top Region", icon: "star.fill", color: WidgetPalette.amber, subtext: "\(formatMiles(entry.topRegionMiles)) \(unitAbbreviation)")
                 }
             }
 
@@ -474,18 +585,37 @@ struct TravelMappingWidgetEntryView: View {
 
     // MARK: - Accessory (Lock Screen)
 
+    /// Completion fraction for the lock-screen ring. The entry carries no
+    /// traveled/available mileage pair, so the ring mirrors the percentile that
+    /// already drives the home-widget progress bars (Top X% → X% of the ring).
+    private var ringFraction: Double {
+        guard entry.rank > 0 else { return 0 }
+        return min(max(entry.percentile / 100, 0), 1)
+    }
+
     private var accessoryCircular: some View {
         ZStack {
             AccessoryWidgetBackground()
+            Circle()
+                .stroke(.white.opacity(0.25), lineWidth: 5)
+                .padding(3)
+            Circle()
+                .trim(from: 0, to: ringFraction)
+                .stroke(.white, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+                .padding(3)
             VStack(spacing: 0) {
                 Text(formatMilesShort(entry.totalMiles))
-                    .font(.system(.headline, design: .rounded).bold())
+                    .font(.system(.subheadline, design: .rounded).bold())
+                    .monospacedDigit()
                     .minimumScaleFactor(0.5)
                     .lineLimit(1)
-                Text("mi")
+                Text(unitAbbreviation)
                     .font(.caption2)
             }
+            .padding(.horizontal, 10)
         }
+        .accessibilityLabel("\(formatMiles(entry.totalMiles)) \(distanceCaption), top \(Int(entry.percentile.rounded())) percent")
     }
 
     private var accessoryRectangular: some View {
@@ -497,10 +627,10 @@ struct TravelMappingWidgetEntryView: View {
             }
             .font(.caption.bold())
 
-            Text("\(formatMiles(entry.totalMiles)) mi")
+            Text("\(formatMiles(entry.totalMiles)) \(unitAbbreviation)")
                 .font(.headline)
             if entry.rank > 0 {
-                Text("#\(entry.rank) · \(entry.routes) routes")
+                Text("#\(entry.rank.formatted()) · \(entry.routes.formatted()) routes")
                     .font(.caption2)
             }
         }
@@ -508,26 +638,40 @@ struct TravelMappingWidgetEntryView: View {
 
     private var accessoryInline: some View {
         if entry.rank > 0 {
-            Text("\(formatMiles(entry.totalMiles)) mi · #\(entry.rank)")
+            Text("\(formatMiles(entry.totalMiles)) \(unitAbbreviation) · #\(entry.rank.formatted())")
         } else {
-            Text("\(formatMiles(entry.totalMiles)) mi")
+            Text("\(formatMiles(entry.totalMiles)) \(unitAbbreviation)")
         }
     }
 
     // MARK: - Formatting
 
+    /// All stored distances are miles; convert for display when the user prefers km.
+    private func displayDistance(_ miles: Double) -> Double {
+        entry.useMiles ? miles : miles * 1.609344
+    }
+
+    private var unitAbbreviation: String {
+        entry.useMiles ? "mi" : "km"
+    }
+
+    private var distanceCaption: String {
+        entry.useMiles ? "miles traveled" : "km traveled"
+    }
+
     private func formatMiles(_ miles: Double) -> String {
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
         formatter.maximumFractionDigits = 0
-        return formatter.string(from: NSNumber(value: miles)) ?? "0"
+        return formatter.string(from: NSNumber(value: displayDistance(miles))) ?? "0"
     }
 
     private func formatMilesShort(_ miles: Double) -> String {
-        if miles >= 10000 {
-            return String(format: "%.0fk", miles / 1000)
+        let value = displayDistance(miles)
+        if value >= 10000 {
+            return String(format: "%.0fk", value / 1000)
         }
-        return String(format: "%.0f", miles)
+        return String(format: "%.0f", value)
     }
 }
 
@@ -540,11 +684,9 @@ struct TravelMappingWidget: Widget {
         StaticConfiguration(kind: kind, provider: TravelStatsProvider()) { entry in
             TravelMappingWidgetEntryView(entry: entry)
                 .containerBackground(for: .widget) {
+                    // Brand indigo gradient (audit §12): #0F1A3D → #221450, 135°.
                     LinearGradient(
-                        colors: [
-                            Color(red: 0.06, green: 0.10, blue: 0.24),
-                            Color(red: 0.13, green: 0.08, blue: 0.30)
-                        ],
+                        colors: [WidgetPalette.gradientTop, WidgetPalette.gradientBottom],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     )
