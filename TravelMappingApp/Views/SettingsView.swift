@@ -35,88 +35,29 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            // 1. Get Started Guide
-            Section("Travel Mapping") {
-                NavigationLink {
-                    GetStartedView()
-                } label: {
-                    Label("Get Started Guide", systemImage: "questionmark.circle")
-                }
-            }
-
-            // 2. Primary User
+            // MARK: You
             Section {
-                HStack {
-                    Text("Primary User")
-                    Spacer()
-                    TextField("username", text: $settings.primaryUser)
-                        .multilineTextAlignment(.trailing)
-                        .textFieldStyle(.plain)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                        .onChange(of: settings.primaryUser) {
-                            userValidationResult = nil
-                            watchUsername = settings.primaryUser
-                            UserDefaults(suiteName: "group.com.psiegel18.TravelMapping")?
-                                .set(settings.primaryUser, forKey: "widgetUsername")
-                            WidgetCenter.shared.reloadAllTimelines()
-                            SentrySDK.configureScope { scope in
-                                let isSet = !settings.primaryUser.isEmpty
-                                scope.setTag(value: isSet ? "true" : "false", key: "primary_user_set")
-                                if isSet {
-                                    scope.setUser(User(userId: settings.primaryUser))
-                                    scope.setTag(value: settings.primaryUser, key: "tm.username")
-                                } else {
-                                    scope.setUser(nil)
-                                    scope.removeTag(key: "tm.username")
-                                }
-                            }
-                        }
-                    if isValidatingUser {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else if let valid = userValidationResult {
-                        Image(systemName: valid ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                            .foregroundStyle(valid ? .green : .orange)
-                    }
-                }
-                .task(id: settings.primaryUser) {
-                    let username = settings.primaryUser.trimmingCharacters(in: .whitespaces)
-                    guard !username.isEmpty else {
-                        userValidationResult = nil
-                        lastValidatedUsername = ""
-                        Self.cachedValidatedUsername = ""
-                        Self.cachedValidationResult = nil
-                        return
-                    }
-                    guard username != lastValidatedUsername else { return }
-                    try? await Task.sleep(for: .milliseconds(600))
-                    guard !Task.isCancelled else { return }
-                    isValidatingUser = true
-                    let result = await validateUsername(username)
-                    if let result {
-                        // Only cache definitive results, not network failures
-                        userValidationResult = result
-                        lastValidatedUsername = username
-                        Self.cachedValidatedUsername = username
-                        Self.cachedValidationResult = result
-                    }
-                    // If result is nil (request failed), leave previous state unchanged
-                    isValidatingUser = false
-                }
+                identityCard
             } header: {
-                Text("Quick Access")
+                TMDesign.sectionHeader("You")
             } footer: {
                 if let valid = userValidationResult, !valid {
-                    Text("Username not found on Travel Mapping. Check your spelling or create an account from the Get Started guide above.")
+                    Text("Username not found on Travel Mapping. Check your spelling or create an account from the Get Started guide in Support below.")
                         .foregroundStyle(.orange)
                 } else {
                     Text("Set your username for one-tap access, widget stats, and Watch app.")
                 }
             }
 
-            // 3. Units
-            Section("Units") {
+            Section {
+                Toggle("iCloud Sync", isOn: $favorites.iCloudSyncEnabled)
+                Toggle("Show on Apple Watch", isOn: $sendToWatch)
+            } footer: {
+                Text("iCloud syncs favorites across devices. Apple Watch receives live trip status and route directions.")
+            }
+
+            // MARK: Appearance
+            Section {
                 Picker("Distance", selection: $settings.useMiles) {
                     Text("Miles").tag(true)
                     Text("Kilometers").tag(false)
@@ -126,10 +67,6 @@ struct SettingsView: View {
                         .set(settings.useMiles, forKey: "widgetUseMiles")
                     WidgetCenter.shared.reloadAllTimelines()
                 }
-            }
-
-            // 4. Map Line Styles
-            Section("Map Line Styles") {
                 Picker("Road Style", selection: $settings.roadLineStyle) {
                     ForEach(MapStyleService.LineStyle.allCases) { style in
                         HStack {
@@ -143,58 +80,61 @@ struct SettingsView: View {
                     Text("Road Width")
                     Slider(value: $settings.roadLineWidth, in: 1...6, step: 0.5)
                     Text("\(settings.roadLineWidth, specifier: "%.1f")")
-                        .font(.caption.monospacedDigit())
+                        .font(.subheadline.monospacedDigit())
                         .foregroundStyle(.secondary)
-                        .frame(width: 30)
+                        .frame(width: 32)
                 }
                 HStack {
                     Text("Rail Width")
                     Slider(value: $settings.railLineWidth, in: 1...6, step: 0.5)
                     Text("\(settings.railLineWidth, specifier: "%.1f")")
-                        .font(.caption.monospacedDigit())
+                        .font(.subheadline.monospacedDigit())
                         .foregroundStyle(.secondary)
-                        .frame(width: 30)
+                        .frame(width: 32)
                 }
+            } header: {
+                TMDesign.sectionHeader("Appearance")
             }
 
-            // 5. Accent Color
             Section {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 48))], spacing: 12) {
-                    ForEach(ThemeService.availableColors, id: \.name) { item in
-                        Button {
-                            Haptics.selection()
-                            settings.accentColorName = item.name
-                        } label: {
-                            Circle()
-                                .fill(item.color)
-                                .frame(width: 40, height: 40)
-                                .overlay {
-                                    Circle()
-                                        .stroke(
-                                            settings.accentColorName == item.name ? Color.primary : Color.clear,
-                                            lineWidth: 3
-                                        )
-                                }
-                                .overlay {
-                                    if settings.accentColorName == item.name {
-                                        Image(systemName: "checkmark")
-                                            .font(.callout.bold())
-                                            .foregroundStyle(.white)
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Accent Color")
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 52))], spacing: 12) {
+                        ForEach(ThemeService.availableColors, id: \.name) { item in
+                            Button {
+                                Haptics.selection()
+                                settings.accentColorName = item.name
+                            } label: {
+                                Circle()
+                                    .fill(item.color)
+                                    .frame(width: 44, height: 44)
+                                    .overlay {
+                                        Circle()
+                                            .stroke(
+                                                settings.accentColorName == item.name ? Color.primary : Color.clear,
+                                                lineWidth: 3
+                                            )
                                     }
-                                }
+                                    .overlay {
+                                        if settings.accentColorName == item.name {
+                                            Image(systemName: "checkmark")
+                                                .font(.callout.bold())
+                                                .foregroundStyle(.white)
+                                        }
+                                    }
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(item.name)
+                            .accessibilityAddTraits(settings.accentColorName == item.name ? [.isSelected] : [])
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(item.name)
                     }
                 }
                 .padding(.vertical, 4)
-            } header: {
-                Text("Accent Color")
             } footer: {
                 Text("Controls tint for tab icons, buttons, links, and interactive elements throughout the app.")
             }
 
-            // 6. Cache
+            // MARK: Data
             Section {
                 CacheStatusView()
 
@@ -206,23 +146,18 @@ struct SettingsView: View {
                 }
                 .foregroundStyle(.red)
             } header: {
-                Text("Cache")
+                TMDesign.sectionHeader("Data")
             } footer: {
                 Text("Cached stats, user lists, and API responses (refreshes every 6\u{2013}24 hours). Pull down on any page to force-refresh.")
             }
 
-            // 7. Sync & Apple Watch
+            // MARK: Support
             Section {
-                Toggle("iCloud Sync", isOn: $favorites.iCloudSyncEnabled)
-                Toggle("Show on Apple Watch", isOn: $sendToWatch)
-            } header: {
-                Text("Sync & Apple Watch")
-            } footer: {
-                Text("iCloud syncs favorites across devices. Apple Watch receives live trip status and route directions.")
-            }
-
-            // 8. Support
-            Section("Support") {
+                NavigationLink {
+                    GetStartedView()
+                } label: {
+                    Label("Get Started Guide", systemImage: "questionmark.circle")
+                }
                 Link(destination: URL(string: "https://apps.apple.com/app/id6761671062?action=write-review")!) {
                     Label("Rate the App", systemImage: "star.fill")
                 }
@@ -250,19 +185,18 @@ struct SettingsView: View {
                 } label: {
                     Label("Report a Bug", systemImage: "ladybug")
                 }
+            } header: {
+                TMDesign.sectionHeader("Support")
             }
 
-            // 9. Tip Jar
             Section {
                 TipJarView()
-            } header: {
-                Text("Tip Jar")
             } footer: {
                 Text("Travel Mapping is free and open source. Tips help support continued iOS app development.")
             }
 
-            // 10. About
-            Section("About") {
+            // MARK: About
+            Section {
                 LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0")
                     .onTapGesture {
                         versionTapCount += 1
@@ -278,10 +212,11 @@ struct SettingsView: View {
                 } label: {
                     Label("Privacy Policy", systemImage: "hand.raised")
                 }
+            } header: {
+                TMDesign.sectionHeader("About")
             }
 
-            // 11. Links
-            Section("Links") {
+            Section {
                 Link(destination: URL(string: "https://travelmapping.net")!) {
                     Label("Travel Mapping (Roads)", systemImage: "car.fill")
                 }
@@ -312,6 +247,84 @@ struct SettingsView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This will send a test error event to Sentry to verify the integration is working. Continue?")
+        }
+    }
+
+    // MARK: - Identity card (audit §14)
+    // Primary User pulled into a top identity card: monogram avatar + username field
+    // with the live validation check. Behavior (widget/watch/Sentry sync + debounced
+    // validation) is unchanged from the old mid-form text field.
+    private var identityCard: some View {
+        HStack(spacing: 12) {
+            TMMonogramAvatar(
+                name: settings.primaryUser.trimmingCharacters(in: .whitespaces).isEmpty
+                    ? "TM"
+                    : settings.primaryUser,
+                size: 44
+            )
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Primary User")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(TMDesign.tertiaryText)
+                TextField("username", text: $settings.primaryUser)
+                    .font(.system(size: 17, weight: .semibold))
+                    .textFieldStyle(.plain)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .accessibilityLabel("Primary User username")
+                    .onChange(of: settings.primaryUser) {
+                        userValidationResult = nil
+                        watchUsername = settings.primaryUser
+                        UserDefaults(suiteName: "group.com.psiegel18.TravelMapping")?
+                            .set(settings.primaryUser, forKey: "widgetUsername")
+                        WidgetCenter.shared.reloadAllTimelines()
+                        SentrySDK.configureScope { scope in
+                            let isSet = !settings.primaryUser.isEmpty
+                            scope.setTag(value: isSet ? "true" : "false", key: "primary_user_set")
+                            if isSet {
+                                scope.setUser(User(userId: settings.primaryUser))
+                                scope.setTag(value: settings.primaryUser, key: "tm.username")
+                            } else {
+                                scope.setUser(nil)
+                                scope.removeTag(key: "tm.username")
+                            }
+                        }
+                    }
+            }
+            Spacer()
+            if isValidatingUser {
+                ProgressView()
+                    .controlSize(.small)
+            } else if let valid = userValidationResult {
+                Image(systemName: valid ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .foregroundStyle(valid ? .green : .orange)
+                    .accessibilityLabel(valid ? "Username validated" : "Username not found")
+            }
+        }
+        .padding(.vertical, 6)
+        .task(id: settings.primaryUser) {
+            let username = settings.primaryUser.trimmingCharacters(in: .whitespaces)
+            guard !username.isEmpty else {
+                userValidationResult = nil
+                lastValidatedUsername = ""
+                Self.cachedValidatedUsername = ""
+                Self.cachedValidationResult = nil
+                return
+            }
+            guard username != lastValidatedUsername else { return }
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled else { return }
+            isValidatingUser = true
+            let result = await validateUsername(username)
+            if let result {
+                // Only cache definitive results, not network failures
+                userValidationResult = result
+                lastValidatedUsername = username
+                Self.cachedValidatedUsername = username
+                Self.cachedValidationResult = result
+            }
+            // If result is nil (request failed), leave previous state unchanged
+            isValidatingUser = false
         }
     }
 
@@ -374,7 +387,10 @@ struct CacheStatusView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             LabeledContent("Cache Size", value: cacheSize)
-            LabeledContent("Cached Items", value: "\(fileCount)")
+            LabeledContent("Cached Items") {
+                Text(fileCount.formatted())
+                    .monospacedDigit()
+            }
             LabeledContent("Oldest Cache", value: oldestCache)
             LabeledContent("Site Last Updated", value: lastMerge)
         }

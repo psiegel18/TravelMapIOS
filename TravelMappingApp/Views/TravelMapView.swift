@@ -35,7 +35,7 @@ struct TravelMapView: View {
     @State private var currentSpanLng: Double = 5.0
     @State private var visibleRegion: MKCoordinateRegion?
     @StateObject private var locationManager = LocationManager()
-    @State private var showLegend = false
+    @State private var showLayersSheet = false
     @State private var zoomToUserOnNextFix = false
     @State private var isSelectMode = false
     @State private var selectedSegmentIDs: Set<String> = []
@@ -193,34 +193,24 @@ struct TravelMapView: View {
         ZStack(alignment: .bottom) {
             mapLayer
 
-            // Right-side controls — padded below compass/nav bar to avoid overlap
+            // Right-side controls — zoom, locate, and one accented Layers button
+            // (map style, show/hide toggles, legend and select mode live in the
+            // Layers sheet). Padded below compass/nav bar to avoid overlap.
             VStack {
                 HStack {
                     Spacer()
-                    VStack(spacing: 8) {
+                    VStack(spacing: 10) {
                         zoomControls
-                        mapStyleButton
                         locationButton
-                        selectModeButton
-                        legendButton
+                        if isSelectMode {
+                            exitSelectButton
+                        }
+                        layersButton
                     }
                     .padding(.trailing, 12)
                     .padding(.top, 70)
                 }
                 Spacer()
-            }
-
-            // Legend overlay
-            if showLegend {
-                VStack {
-                    Spacer()
-                    HStack {
-                        mapLegend
-                            .padding(.leading, 12)
-                            .padding(.bottom, 80)
-                        Spacer()
-                    }
-                }
             }
 
             VStack(spacing: 8) {
@@ -235,16 +225,32 @@ struct TravelMapView: View {
 
                 if let error = errorMessage {
                     Text(error)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .padding(8)
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(TMDesign.redChipFG)
+                        .padding(10)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                         .accessibilityLabel("Error: \(error)")
                 }
 
-                controlBar
-                    .padding(.bottom, 8)
+                // Mileage chip, bottom-left (audit §6)
+                HStack {
+                    if !routeMetadata.isEmpty {
+                        MileageLabel(routeMetadata: routeMetadata)
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+
+                // Select mode swaps the filter pills for the selection/export UI
+                if isSelectMode {
+                    if selectedSegmentIDs.isEmpty {
+                        selectModeHint
+                    }
+                } else {
+                    filterPills
+                }
             }
+            .padding(.bottom, 8)
         }
         .navigationTitle("\(username)'s Map")
         .navigationBarTitleDisplayMode(.inline)
@@ -285,6 +291,11 @@ struct TravelMapView: View {
                 }
             )
             .presentationDetents([.medium])
+            .presentationCornerRadius(26)
+            .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $showLayersSheet) {
+            layersSheet
         }
         .sheet(isPresented: $showRegionPicker, onDismiss: {
             // Commit pending selection when sheet closes
@@ -526,47 +537,27 @@ struct TravelMapView: View {
                 zoomIn()
             } label: {
                 Image(systemName: "plus")
-                    .font(.title3)
-                    .frame(width: 44, height: 44)
+                    .font(.system(size: 17, weight: .semibold))
+                    .frame(width: 46, height: 46)
             }
             .accessibilityLabel("Zoom in")
 
             Divider()
-                .frame(width: 44)
+                .frame(width: 46)
 
             Button {
                 Haptics.light()
                 zoomOut()
             } label: {
                 Image(systemName: "minus")
-                    .font(.title3)
-                    .frame(width: 44, height: 44)
+                    .font(.system(size: 17, weight: .semibold))
+                    .frame(width: 46, height: 46)
             }
             .accessibilityLabel("Zoom out")
         }
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .shadow(color: .black.opacity(0.12), radius: 7, y: 2)
         .buttonStyle(.plain)
-    }
-
-    private var mapStyleButton: some View {
-        Menu {
-            ForEach(MapStyleOption.allCases, id: \.self) { option in
-                Button {
-                    Haptics.light()
-                    mapStyle = option
-                } label: {
-                    Label(option.rawValue, systemImage: option.icon)
-                }
-            }
-        } label: {
-            Image(systemName: mapStyle.icon)
-                .font(.title3)
-                .frame(width: 44, height: 44)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Map style: \(mapStyle.rawValue)")
-        .accessibilityHint("Double tap to change map style")
     }
 
     private var locationButton: some View {
@@ -582,9 +573,10 @@ struct TravelMapView: View {
             }
         } label: {
             Image(systemName: locationManager.lastLocation != nil ? "location.fill" : "location")
-                .font(.title3)
-                .frame(width: 44, height: 44)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+                .font(.system(size: 17, weight: .semibold))
+                .frame(width: 46, height: 46)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                .shadow(color: .black.opacity(0.12), radius: 7, y: 2)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Show my location")
@@ -599,79 +591,257 @@ struct TravelMapView: View {
         }
     }
 
-    private var legendButton: some View {
+    /// The one accented control: opens the Layers sheet (audit §6).
+    private var layersButton: some View {
         Button {
-            Haptics.selection()
-            withAnimation { showLegend.toggle() }
+            Haptics.light()
+            showLayersSheet = true
         } label: {
-            Image(systemName: showLegend ? "info.circle.fill" : "info.circle")
-                .font(.title3)
-                .frame(width: 44, height: 44)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+            Image(systemName: "square.3.layers.3d")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 46, height: 46)
+                .background(TMDesign.accent, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                .shadow(color: Color(tmHex: 0x2F6BF0, opacity: 0.4), radius: 8, y: 3)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(showLegend ? "Hide legend" : "Show legend")
+        .accessibilityLabel("Map layers")
+        .accessibilityHint("Show or hide lines, change the base map, and start select mode")
     }
 
-    private var mapLegend: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Legend").font(.caption.bold())
-            Divider()
-            legendRow(color: .blue, style: MapStyleService.parse(settings.roadLineStyle), label: "Traveled road")
-            legendRow(color: .gray.opacity(0.5), style: .solid, label: "Remaining road")
-            railLegendRow(label: "Traveled rail")
-            legendRow(color: .yellow, style: .thick, label: "Selected")
-        }
-        .font(.caption2)
-        .padding(10)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-    }
-
-    private func railLegendRow(label: String) -> some View {
-        HStack(spacing: 6) {
-            Canvas { ctx, size in
-                let y = size.height / 2
-                var path = Path()
-                path.move(to: CGPoint(x: 0, y: y))
-                path.addLine(to: CGPoint(x: size.width, y: y))
-                ctx.stroke(path, with: .color(.red), lineWidth: 3)
-                ctx.stroke(path, with: .color(.white.opacity(0.5)), lineWidth: 1.2)
-            }
-            .frame(width: 28, height: 8)
-            Text(label)
-        }
-    }
-
-    private func legendRow(color: Color, style: MapStyleService.LineStyle, label: String) -> some View {
-        HStack(spacing: 6) {
-            Canvas { ctx, size in
-                var path = Path()
-                path.move(to: CGPoint(x: 0, y: size.height / 2))
-                path.addLine(to: CGPoint(x: size.width, y: size.height / 2))
-                ctx.stroke(path, with: .color(color), style: MapStyleService.strokeStyle(for: style, baseWidth: 2))
-            }
-            .frame(width: 28, height: 8)
-            Text(label)
-        }
-    }
-
-    private var selectModeButton: some View {
+    /// Visible only in select mode — dedicated exit that mirrors the old pencil toggle.
+    private var exitSelectButton: some View {
         Button {
             Haptics.selection()
-            isSelectMode.toggle()
-            if !isSelectMode {
-                selectedSegmentIDs.removeAll()
-            }
+            isSelectMode = false
+            selectedSegmentIDs.removeAll()
         } label: {
-            Image(systemName: isSelectMode ? "pencil.circle.fill" : "pencil.circle")
-                .font(.title3)
-                .foregroundStyle(isSelectMode ? .yellow : .primary)
-                .frame(width: 44, height: 44)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+            Image(systemName: "pencil.circle.fill")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.yellow)
+                .frame(width: 46, height: 46)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                .shadow(color: .black.opacity(0.12), radius: 7, y: 2)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(isSelectMode ? "Exit select mode" : "Enter select mode")
-        .accessibilityHint("Tap segments on the map to select them for export")
+        .accessibilityLabel("Exit select mode")
+        .accessibilityHint("Clears the current selection")
+    }
+
+    /// Shown while select mode is on but nothing is selected yet.
+    private var selectModeHint: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "hand.tap")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.yellow)
+            Text("Select mode — tap segments to add them")
+                .font(.system(size: 15, weight: .semibold))
+        }
+        .padding(.horizontal, 14)
+        .frame(minHeight: 44)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(Capsule().stroke(.yellow.opacity(0.6), lineWidth: 1))
+        .accessibilityElement(children: .combine)
+    }
+
+    // MARK: - Layers Sheet
+
+    /// Bottom sheet consolidating show/hide toggles (the real legend), base-map
+    /// picker, and the select-mode toggle (audit §6).
+    private var layersSheet: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                Text("Map layers")
+                    .font(.system(size: 22, weight: .heavy))
+                    .padding(.top, 20)
+                    .accessibilityAddTraits(.isHeader)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    TMDesign.sectionHeader("Show")
+                    VStack(spacing: 0) {
+                        layerToggleRow(
+                            icon: "checkmark.circle.fill",
+                            iconBG: TMDesign.blueChipBG,
+                            iconFG: TMDesign.blueChipFG,
+                            title: "Traveled",
+                            subtitle: "\(clinchedCount.formatted()) segments",
+                            swatch: AnyView(
+                                lineSwatch(
+                                    color: TMDesign.accent,
+                                    style: MapStyleService.parse(settings.roadLineStyle),
+                                    width: min(settings.roadLineWidth, 5)
+                                )
+                            ),
+                            isOn: $showClinched
+                        )
+                        Divider().padding(.leading, 57)
+                        layerToggleRow(
+                            icon: "road.lanes",
+                            iconBG: TMDesign.neutralChipBG,
+                            iconFG: TMDesign.neutralChipFG,
+                            title: "Remaining",
+                            subtitle: "\((totalCount - clinchedCount).formatted()) segments",
+                            swatch: AnyView(lineSwatch(color: .gray.opacity(0.7), style: .solid, width: 1.5)),
+                            isOn: $showUnclinched
+                        )
+                        Divider().padding(.leading, 57)
+                        layerToggleRow(
+                            icon: "tram.fill",
+                            iconBG: TMDesign.redChipBG,
+                            iconFG: TMDesign.redChipFG,
+                            title: "Rail & transit",
+                            subtitle: "\(railSegments.count.formatted()) segments",
+                            swatch: AnyView(railSwatch),
+                            isOn: $showRail
+                        )
+                    }
+                    .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    TMDesign.sectionHeader("Base map")
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                        ForEach(MapStyleOption.allCases, id: \.self) { option in
+                            baseMapTile(option)
+                        }
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    TMDesign.sectionHeader("Tools")
+                    HStack(spacing: 12) {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(TMDesign.amberChipFG)
+                            .frame(width: 32, height: 32)
+                            .background(TMDesign.amberChipBG, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                            .accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Select & export")
+                                .font(.system(size: 16, weight: .semibold))
+                            Text("Tap segments on the map to build a .list export")
+                                .font(.system(size: 13))
+                                .foregroundStyle(TMDesign.tertiaryText)
+                        }
+                        Spacer()
+                        Toggle("Select and export segments", isOn: selectModeBinding)
+                            .labelsHidden()
+                            .tint(TMDesign.clinched)
+                    }
+                    .padding(13)
+                    .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .accessibilityElement(children: .combine)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 24)
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .presentationCornerRadius(26)
+        .presentationBackground(TMDesign.secondarySurface)
+    }
+
+    private var selectModeBinding: Binding<Bool> {
+        Binding(
+            get: { isSelectMode },
+            set: { on in
+                Haptics.selection()
+                isSelectMode = on
+                if !on {
+                    selectedSegmentIDs.removeAll()
+                }
+            }
+        )
+    }
+
+    private func layerToggleRow(
+        icon: String,
+        iconBG: Color,
+        iconFG: Color,
+        title: String,
+        subtitle: String,
+        swatch: AnyView,
+        isOn: Binding<Bool>
+    ) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(iconFG)
+                .frame(width: 32, height: 32)
+                .background(iconBG, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 16, weight: .semibold))
+                HStack(spacing: 6) {
+                    swatch
+                    Text(subtitle)
+                        .font(.system(size: 13, weight: .medium))
+                        .monospacedDigit()
+                        .foregroundStyle(TMDesign.tertiaryText)
+                }
+            }
+            Spacer()
+            Toggle(title, isOn: isOn)
+                .labelsHidden()
+                .tint(TMDesign.clinched)
+        }
+        .padding(.horizontal, 13)
+        .padding(.vertical, 11)
+        .accessibilityElement(children: .combine)
+    }
+
+    /// Line swatch honoring the user's Map Line Style settings (audit §15).
+    private func lineSwatch(color: Color, style: MapStyleService.LineStyle, width: Double) -> some View {
+        Canvas { ctx, size in
+            var path = Path()
+            path.move(to: CGPoint(x: 0, y: size.height / 2))
+            path.addLine(to: CGPoint(x: size.width, y: size.height / 2))
+            ctx.stroke(path, with: .color(color), style: MapStyleService.strokeStyle(for: style, baseWidth: width))
+        }
+        .frame(width: 36, height: 10)
+        .accessibilityHidden(true)
+    }
+
+    /// Double-stroke rail swatch matching the map's "railroad" rendering.
+    private var railSwatch: some View {
+        Canvas { ctx, size in
+            let y = size.height / 2
+            var path = Path()
+            path.move(to: CGPoint(x: 0, y: y))
+            path.addLine(to: CGPoint(x: size.width, y: y))
+            let width = max(3, settings.railLineWidth)
+            ctx.stroke(path, with: .color(.red), lineWidth: width)
+            ctx.stroke(path, with: .color(.white.opacity(0.5)), lineWidth: width * 0.4)
+        }
+        .frame(width: 36, height: 10)
+        .accessibilityHidden(true)
+    }
+
+    private func baseMapTile(_ option: MapStyleOption) -> some View {
+        let isSelected = option == mapStyle
+        return Button {
+            Haptics.light()
+            mapStyle = option
+        } label: {
+            VStack(spacing: 6) {
+                Image(systemName: option.icon)
+                    .font(.system(size: 20, weight: .semibold))
+                Text(option.rawValue)
+                    .font(.system(size: 13, weight: .semibold))
+            }
+            .foregroundStyle(isSelected ? TMDesign.accent : TMDesign.secondaryText)
+            .frame(maxWidth: .infinity, minHeight: 64)
+            .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(isSelected ? TMDesign.accent : Color.clear, lineWidth: 2)
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Base map: \(option.rawValue)")
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 
     /// A merged selection line with a stable identity derived from its segment IDs —
@@ -738,11 +908,13 @@ struct TravelMapView: View {
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: showSelectionDetail ? "chevron.down" : "chevron.right")
-                            .font(.caption2.bold())
-                        Text("\(selectedSegmentIDs.count) selected")
-                            .font(.caption.bold())
+                            .font(.system(size: 12, weight: .bold))
+                        Text("\(selectedSegmentIDs.count.formatted()) selected")
+                            .font(.system(size: 15, weight: .bold))
+                            .monospacedDigit()
                     }
                     .foregroundStyle(.primary)
+                    .frame(minHeight: 44)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -754,14 +926,18 @@ struct TravelMapView: View {
                     UIPasteboard.general.string = generateSelectionText()
                 } label: {
                     Image(systemName: "doc.on.doc")
-                        .font(.caption)
+                        .font(.system(size: 15, weight: .medium))
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Copy .list text to clipboard")
 
                 ShareLink(item: generateSelectionText()) {
                     Image(systemName: "square.and.arrow.up")
-                        .font(.caption)
+                        .font(.system(size: 15, weight: .medium))
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Share .list file")
@@ -772,13 +948,14 @@ struct TravelMapView: View {
                     showSelectionDetail = false
                 } label: {
                     Image(systemName: "xmark.circle")
-                        .font(.caption)
+                        .font(.system(size: 15, weight: .medium))
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Clear selection")
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            .padding(.horizontal, 8)
 
             // Expandable detail panel
             if showSelectionDetail {
@@ -790,7 +967,7 @@ struct TravelMapView: View {
                         ForEach(selectionLines) { line in
                             HStack {
                                 Text(line.text)
-                                    .font(.system(.caption2, design: .monospaced))
+                                    .font(.system(size: 13, design: .monospaced))
                                     .foregroundStyle(.primary)
                                 Spacer()
                                 Button {
@@ -798,13 +975,17 @@ struct TravelMapView: View {
                                     selectedSegmentIDs.subtract(line.ids)
                                 } label: {
                                     Image(systemName: "xmark")
-                                        .font(.caption2)
+                                        .font(.system(size: 12, weight: .semibold))
                                         .foregroundStyle(.secondary)
+                                        .frame(width: 40, height: 34)
+                                        .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
+                                .accessibilityLabel("Remove \(line.text) from selection")
                             }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
+                            .padding(.leading, 12)
+                            .padding(.trailing, 4)
+                            .padding(.vertical, 2)
                             Divider()
                         }
                     }
@@ -924,71 +1105,85 @@ struct TravelMapView: View {
         HStack(spacing: 8) {
             ProgressView()
             Text(loadingProgress ?? "Loading routes...")
-                .font(.caption)
+                .font(.system(size: 13, weight: .semibold))
+                .monospacedDigit()
         }
         .padding(10)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .accessibilityElement(children: .combine)
     }
 
-    private var controlBar: some View {
-        HStack(spacing: 12) {
-            Button {
-                Haptics.selection()
-                showClinched.toggle()
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: showClinched ? "checkmark.circle.fill" : "circle")
-                        .foregroundStyle(.blue)
-                    Text("Traveled (\(clinchedCount.formatted()))")
-                        .font(.caption2)
-                }
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Show traveled segments: \(showClinched ? "on" : "off"), \(clinchedCount) segments")
-            .accessibilityAddTraits(.isToggle)
+    /// Bottom filter pills with live counts — filled = on (audit §6). These drive
+    /// the same showClinched/showUnclinched/showRail state as the Layers sheet.
+    private var filterPills: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                filterPill(
+                    "Traveled \(clinchedCount.formatted())",
+                    isOn: showClinched,
+                    onBG: TMDesign.accent,
+                    offFG: TMDesign.accent,
+                    accessibilityLabel: "Show traveled segments: \(showClinched ? "on" : "off"), \(clinchedCount) segments"
+                ) { showClinched.toggle() }
 
-            Button {
-                Haptics.selection()
-                showUnclinched.toggle()
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: showUnclinched ? "checkmark.circle.fill" : "circle")
-                        .foregroundStyle(.gray)
-                    Text("Remaining (\((totalCount - clinchedCount).formatted()))")
-                        .font(.caption2)
-                }
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Show remaining segments: \(showUnclinched ? "on" : "off"), \(totalCount - clinchedCount) segments")
-            .accessibilityAddTraits(.isToggle)
+                filterPill(
+                    "Remaining \((totalCount - clinchedCount).formatted())",
+                    isOn: showUnclinched,
+                    onBG: Color(tmLight: 0x57575E, dark: 0x4A4A50),
+                    offFG: TMDesign.secondaryText,
+                    accessibilityLabel: "Show remaining segments: \(showUnclinched ? "on" : "off"), \(totalCount - clinchedCount) segments"
+                ) { showUnclinched.toggle() }
 
-            // Rail toggle
-            Button {
-                Haptics.selection()
-                showRail.toggle()
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: showRail ? "tram.fill" : "tram")
-                        .foregroundStyle(showRail ? .red : .gray)
-                    Text("Rail")
-                        .font(.caption2)
-                }
+                filterPill(
+                    "Rail \(railSegments.count.formatted())",
+                    icon: "tram.fill",
+                    isOn: showRail,
+                    onBG: TMDesign.rail,
+                    offFG: TMDesign.redChipFG,
+                    accessibilityLabel: "Show rail: \(showRail ? "on" : "off"), \(railSegments.count) segments"
+                ) { showRail.toggle() }
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Show rail: \(showRail ? "on" : "off")")
-            .accessibilityAddTraits(.isToggle)
-
-            Spacer()
-
-            if !routeMetadata.isEmpty {
-                MileageLabel(routeMetadata: routeMetadata)
-            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 2)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .padding(.horizontal)
+    }
+
+    private func filterPill(
+        _ label: String,
+        icon: String? = nil,
+        isOn: Bool,
+        onBG: Color,
+        offFG: Color,
+        accessibilityLabel: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button {
+            Haptics.selection()
+            action()
+        } label: {
+            HStack(spacing: 6) {
+                if let icon {
+                    Image(systemName: icon)
+                        .font(.system(size: 12, weight: .bold))
+                } else {
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(isOn ? Color.white : offFG)
+                        .frame(width: 10, height: 10)
+                }
+                Text(label)
+                    .font(.system(size: 13, weight: .bold))
+                    .monospacedDigit()
+            }
+            .foregroundStyle(isOn ? Color.white : offFG)
+            .padding(.horizontal, 14)
+            .frame(minHeight: 44)
+            .background(isOn ? onBG : TMDesign.cardBG, in: Capsule())
+            .overlay(Capsule().stroke(isOn ? Color.clear : TMDesign.hairline, lineWidth: 1))
+            .shadow(color: .black.opacity(0.1), radius: 5, y: 2)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityAddTraits(.isToggle)
     }
 
     private var regionLabel: String {
@@ -1001,10 +1196,21 @@ struct TravelMapView: View {
         Button {
             showRegionPicker = true
         } label: {
-            Label(regionLabel, systemImage: "globe")
-                .font(.caption)
+            HStack(spacing: 5) {
+                Image(systemName: "globe")
+                    .font(.system(size: 13, weight: .semibold))
+                Text(regionLabel)
+                    .font(.system(size: 14, weight: .semibold))
+                    .monospacedDigit()
+            }
+            .foregroundStyle(TMDesign.blueChipFG)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 7)
+            .background(TMDesign.blueChipBG, in: Capsule())
         }
+        .buttonStyle(.plain)
         .accessibilityLabel("Region filter: \(regionLabel)")
+        .accessibilityHint("Choose which regions to load on the map")
     }
 
     /// Traveled regions grouped by country, favorites first within each country
@@ -1434,15 +1640,25 @@ struct MileageLabel: View {
             Haptics.selection()
             useMiles.toggle()
         } label: {
-            VStack(alignment: .trailing, spacing: 1) {
-                Text(String(format: "%.1f / %.1f %@", displayClinched, displayTotal, unit))
-                    .font(.caption2.bold())
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text(Int(displayClinched.rounded()).formatted())
+                        .font(.system(size: 19, weight: .heavy))
+                        .monospacedDigit()
+                    Text("\(unit) traveled")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(TMDesign.tertiaryText)
+                }
                 if displayTotal > 0 {
-                    Text(String(format: "%.1f%%", displayClinched / displayTotal * 100))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    Text("of \(Int(displayTotal.rounded()).formatted()) \(unit) · \(String(format: "%.1f", displayClinched / displayTotal * 100))%")
+                        .font(.system(size: 13, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(TMDesign.tertiaryText)
                 }
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(String(format: "%.1f of %.1f %@ traveled, %.1f percent", displayClinched, displayTotal, unit, displayTotal > 0 ? displayClinched / displayTotal * 100 : 0))
@@ -1460,80 +1676,142 @@ struct SegmentDetailSheet: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 20) {
-                // Route info
-                VStack(spacing: 8) {
-                    Text(detail.listName)
-                        .font(.title2.bold())
+            VStack(alignment: .leading, spacing: 14) {
+                // Header: icon tile + route title + Traveled badge (audit §6)
+                HStack(spacing: 12) {
+                    Image(systemName: detail.isRail ? "tram.fill" : "car.fill")
+                        .font(.system(size: 19, weight: .semibold))
+                        .foregroundStyle(detail.isRail ? TMDesign.redChipFG : TMDesign.blueChipFG)
+                        .frame(width: 44, height: 44)
+                        .background(
+                            detail.isRail ? TMDesign.redChipBG : TMDesign.blueChipBG,
+                            in: RoundedRectangle(cornerRadius: 13, style: .continuous)
+                        )
+                        .accessibilityHidden(true)
 
-                    HStack(spacing: 16) {
-                        Label(detail.startName, systemImage: "mappin")
-                        Image(systemName: "arrow.right")
-                            .foregroundStyle(.secondary)
-                        Label(detail.endName, systemImage: "mappin")
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(detail.listName)
+                            .font(.system(size: 20, weight: .heavy))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                        Text(detail.isRail ? "Rail & transit route" : "Road route")
+                            .font(.system(size: 14))
+                            .foregroundStyle(TMDesign.tertiaryText)
                     }
-                    .font(.subheadline)
 
-                    HStack {
-                        Image(systemName: detail.isClinched ? "checkmark.circle.fill" : "circle")
-                            .foregroundStyle(detail.isClinched ? .green : .gray)
-                        Text(detail.isClinched ? "Traveled" : "Not yet traveled")
-                            .font(.subheadline)
-                    }
-                }
-                .padding()
-                .frame(maxWidth: .infinity)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+                    Spacer()
 
-                // Route detail link
-                NavigationLink {
-                    RouteDetailView(
-                        root: detail.root,
-                        listName: detail.listName,
-                        username: username,
-                        isRail: detail.isRail
+                    TMChip(
+                        text: detail.isClinched ? "Traveled" : "Not yet",
+                        icon: detail.isClinched ? "checkmark" : "circle.dashed",
+                        bg: detail.isClinched ? TMDesign.greenChipBG : TMDesign.neutralChipBG,
+                        fg: detail.isClinched ? TMDesign.greenChipFG : TMDesign.neutralChipFG,
+                        fontSize: 13
                     )
-                } label: {
-                    Label("View Full Route", systemImage: "map")
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(.blue.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
                 }
-                .buttonStyle(.plain)
+                .accessibilityElement(children: .combine)
 
-                // Route-level selection actions
-                if onSelectAll != nil || onSelectClinched != nil {
-                    VStack(spacing: 10) {
-                        if let onSelectAll {
-                            Button {
-                                onSelectAll(detail.root)
-                            } label: {
-                                Label("Select All Segments on Route", systemImage: "checkmark.circle")
-                                    .frame(maxWidth: .infinity)
-                                    .padding()
-                                    .background(.yellow.opacity(0.15), in: RoundedRectangle(cornerRadius: 12))
-                            }
-                            .buttonStyle(.plain)
-                        }
-
-                        if let onSelectClinched {
-                            Button {
-                                onSelectClinched(detail.root)
-                            } label: {
-                                Label("Select Traveled Segments on Route", systemImage: "checkmark.circle.fill")
-                                    .frame(maxWidth: .infinity)
-                                    .padding()
-                                    .background(.green.opacity(0.15), in: RoundedRectangle(cornerRadius: 12))
-                            }
-                            .buttonStyle(.plain)
-                        }
+                // Endpoints card: green dot → connector → red pin
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 10) {
+                        Circle()
+                            .fill(TMDesign.clinched)
+                            .frame(width: 10, height: 10)
+                        Text(detail.startName)
+                            .font(.system(size: 15, weight: .semibold))
                     }
+                    Rectangle()
+                        .fill(TMDesign.hairline)
+                        .frame(width: 2, height: 16)
+                        .padding(.leading, 4)
+                    HStack(spacing: 10) {
+                        Image(systemName: "mappin")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(TMDesign.rail)
+                            .frame(width: 10)
+                        Text(detail.endName)
+                            .font(.system(size: 15, weight: .semibold))
+                    }
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Segment from \(detail.startName) to \(detail.endName)")
+
+                // Actions — primary Select whole route + square View-full-route
+                if let onSelectAll {
+                    HStack(spacing: 10) {
+                        Button {
+                            onSelectAll(detail.root)
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.system(size: 16, weight: .semibold))
+                                Text("Select whole route")
+                                    .font(.system(size: 15, weight: .bold))
+                            }
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity, minHeight: 50)
+                            .background(TMDesign.accent, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityHint("Enters select mode with every segment on this route selected, ready to export")
+
+                        NavigationLink {
+                            RouteDetailView(
+                                root: detail.root,
+                                listName: detail.listName,
+                                username: username,
+                                isRail: detail.isRail
+                            )
+                        } label: {
+                            Image(systemName: "arrow.up.right.square")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundStyle(TMDesign.accent)
+                                .frame(width: 50, height: 50)
+                                .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("View full route")
+                    }
+                } else {
+                    NavigationLink {
+                        RouteDetailView(
+                            root: detail.root,
+                            listName: detail.listName,
+                            username: username,
+                            isRail: detail.isRail
+                        )
+                    } label: {
+                        Label("View full route", systemImage: "map")
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity, minHeight: 50)
+                            .background(TMDesign.accent, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                if let onSelectClinched {
+                    Button {
+                        onSelectClinched(detail.root)
+                    } label: {
+                        Label("Select traveled segments only", systemImage: "checkmark.circle")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(TMDesign.greenChipFG)
+                            .frame(maxWidth: .infinity, minHeight: 46)
+                            .background(TMDesign.greenChipBG, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
                 }
 
                 Spacer()
             }
-            .padding()
-            .navigationTitle("Segment Detail")
+            .padding(16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .background(TMDesign.secondarySurface)
+            .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
         }
     }

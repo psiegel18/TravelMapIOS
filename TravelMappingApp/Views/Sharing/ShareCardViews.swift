@@ -1,5 +1,41 @@
 import SwiftUI
 
+// Share cards render to an image via renderShareImage (forced light mode), so
+// they use fixed light-mode brand hexes rather than adaptive TMDesign tokens —
+// adaptive UIColor-backed colors may not resolve predictably inside ImageRenderer.
+
+// MARK: - Static completion ring
+// TMCompletionRing animates 0 → value onAppear; ImageRenderer can snapshot before
+// that animation runs, which would render an empty ring. Share cards need a static
+// ring drawn at its final value.
+
+private struct ShareCompletionRing: View {
+    let fraction: Double
+    var diameter: CGFloat = 88
+    var lineWidth: CGFloat = 10
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(.white.opacity(0.25), lineWidth: lineWidth)
+            Circle()
+                .trim(from: 0, to: min(max(fraction, 0), 1))
+                .stroke(.white, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            VStack(spacing: 0) {
+                Text("\(Int((fraction * 100).rounded()))%")
+                    .font(.system(size: 22, weight: .heavy))
+                    .monospacedDigit()
+                    .foregroundStyle(.white)
+                Text("clinched")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.8))
+            }
+        }
+        .frame(width: diameter, height: diameter)
+    }
+}
+
 // MARK: - Profile Stats Card
 
 struct ProfileShareCard: View {
@@ -9,92 +45,105 @@ struct ProfileShareCard: View {
     let clinchedMiles: Double
     let useMiles: Bool
     let rank: (rank: Int, total: Int)?
+    /// Overall completion (0...1) for the header ring. The card's current data
+    /// sources don't carry an available-mileage total, so this is optional; the
+    /// ring is omitted when nil rather than showing a fabricated value.
+    var completionFraction: Double? = nil
 
     private var distanceText: String {
         let value = useMiles ? clinchedMiles : clinchedMiles * 1.60934
         let unit = useMiles ? "mi" : "km"
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
-        formatter.maximumFractionDigits = 1
+        formatter.maximumFractionDigits = 0
         return "\(formatter.string(from: NSNumber(value: value)) ?? "\(Int(value))") \(unit)"
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Gradient header
-            VStack(spacing: 8) {
-                Image(systemName: "road.lanes")
-                    .font(.system(size: 28))
-                    .foregroundStyle(.white.opacity(0.9))
-                Text("Travel Mapping")
-                    .font(.caption.bold())
-                    .foregroundStyle(.white.opacity(0.7))
-                Text(username)
-                    .font(.title2.bold())
-                    .foregroundStyle(.white)
+            // Header band — brand gradient (audit §12)
+            VStack(spacing: 12) {
+                HStack(spacing: 5) {
+                    Image(systemName: "road.lanes")
+                        .font(.system(size: 12, weight: .bold))
+                    Text("TRAVEL MAPPING")
+                        .font(.system(size: 13, weight: .bold))
+                        .kerning(1.2)
+                }
+                .foregroundStyle(.white.opacity(0.8))
+
+                if let completionFraction {
+                    ShareCompletionRing(fraction: completionFraction)
+                }
+
+                VStack(spacing: 3) {
+                    Text(username)
+                        .font(.system(size: 26, weight: .heavy))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                    Text("clinched across \(regions.formatted()) regions")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.white.opacity(0.85))
+                }
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 20)
+            .padding(.vertical, 22)
+            .padding(.horizontal, 16)
             .background(
                 LinearGradient(
-                    colors: [.blue, .indigo],
+                    colors: [Color(tmHex: 0x2F6BF0), Color(tmHex: 0x1E3FA8)],
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
                 )
             )
 
-            // Stats grid
-            VStack(spacing: 16) {
-                HStack(spacing: 0) {
-                    statColumn(value: regions.formatted(), label: "Regions", icon: "globe")
-                    Divider().frame(height: 40)
-                    statColumn(value: routes.formatted(), label: "Routes", icon: "road.lanes")
-                    Divider().frame(height: 40)
-                    statColumn(value: distanceText, label: "Traveled", icon: "point.topleft.down.to.point.bottomright.curvepath")
-                }
-
+            // Footer 3-up: miles / routes / rank (rank in amber)
+            HStack(spacing: 0) {
+                statColumn(value: distanceText, label: useMiles ? "miles" : "km")
+                Divider().frame(height: 44)
+                statColumn(value: routes.formatted(), label: "routes")
+                Divider().frame(height: 44)
                 if let rank {
-                    HStack(spacing: 4) {
-                        Image(systemName: "trophy.fill")
-                            .foregroundStyle(.yellow)
-                            .font(.caption2)
-                        Text("Ranked #\(rank.rank.formatted()) of \(rank.total.formatted())")
-                            .font(.caption.bold())
-                            .foregroundStyle(.secondary)
-                    }
+                    statColumn(
+                        value: "#\(rank.rank.formatted())",
+                        label: "of \(rank.total.formatted())",
+                        valueColor: Color(tmHex: 0xB4700F)
+                    )
+                } else {
+                    statColumn(value: regions.formatted(), label: "regions")
                 }
             }
-            .padding(.vertical, 16)
+            .padding(.vertical, 18)
             .padding(.horizontal, 12)
 
-            // Footer
+            // Footer link
             Divider()
-            Text("travelmapping.net/user/?u=\(username)")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .padding(.vertical, 8)
+            Text("travelmapping.net")
+                .font(.system(size: 12))
+                .foregroundStyle(Color(tmHex: 0xB4B4BA))
+                .padding(.vertical, 9)
         }
         .frame(width: 360)
-        .background(Color(.systemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .background(.white)
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(Color(.separator), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(Color(tmHex: 0xE6E6EC), lineWidth: 0.5)
         )
     }
 
-    private func statColumn(value: String, label: String, icon: String) -> some View {
-        VStack(spacing: 4) {
-            Image(systemName: icon)
-                .font(.caption)
-                .foregroundStyle(.blue)
+    private func statColumn(value: String, label: String, valueColor: Color = .primary) -> some View {
+        VStack(spacing: 3) {
             Text(value)
-                .font(.title3.bold())
-                .minimumScaleFactor(0.7)
+                .font(.system(size: 22, weight: .heavy))
+                .monospacedDigit()
+                .foregroundStyle(valueColor)
+                .minimumScaleFactor(0.6)
                 .lineLimit(1)
             Text(label)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                .font(.system(size: 12))
+                .foregroundStyle(Color(tmHex: 0x8A8A90))
         }
         .frame(maxWidth: .infinity)
     }
@@ -146,21 +195,21 @@ struct MapShareCard: View {
                     Text("Tap to explore the interactive map")
                         .font(.caption)
                 }
-                .foregroundStyle(.blue)
+                .foregroundStyle(Color(tmHex: 0x2F6BF0))
 
                 Text("travelmapping.net")
                     .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(Color(tmHex: 0xB4B4BA))
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 10)
-            .background(Color(.systemBackground))
+            .background(.white)
         }
         .frame(width: 360)
-        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(Color(.separator), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(Color(tmHex: 0xE6E6EC), lineWidth: 0.5)
         )
     }
 }

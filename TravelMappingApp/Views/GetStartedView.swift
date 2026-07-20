@@ -174,8 +174,8 @@ struct GetStartedView: View {
                         let lineCount = listContent.components(separatedBy: .newlines)
                             .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty && !$0.hasPrefix("#") }
                             .count
-                        Text("\(lineCount) segment\(lineCount == 1 ? "" : "s")")
-                            .font(.caption2)
+                        Text("\(lineCount.formatted()) segment\(lineCount == 1 ? "" : "s")")
+                            .font(.subheadline.monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
 
@@ -322,7 +322,7 @@ struct GetStartedView: View {
                 ZStack {
                     Circle()
                         .fill(color.opacity(0.15))
-                        .frame(width: 40, height: 40)
+                        .frame(width: 44, height: 44)
                     Text("\(number)")
                         .font(.headline.bold())
                         .foregroundStyle(color)
@@ -332,14 +332,17 @@ struct GetStartedView: View {
                     Image(systemName: icon)
                         .font(.caption)
                         .foregroundStyle(color)
+                        .accessibilityHidden(true)
                 }
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Step \(number): \(title)")
 
             VStack(alignment: .leading, spacing: 6) {
                 content()
             }
             .font(.subheadline)
-            .padding(.leading, 52)
+            .padding(.leading, 56)
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -352,7 +355,9 @@ struct GetStartedView: View {
                 .foregroundStyle(.secondary)
             Text(text)
         }
-        .font(.caption)
+        // 15pt floor (design audit §0): these bullets carry the actual instructions.
+        .font(.subheadline)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -771,8 +776,8 @@ private struct SegmentPickerMapView: View {
             }
 
             HStack {
-                Text("\(selectedIDs.count) segment\(selectedIDs.count == 1 ? "" : "s") selected")
-                    .font(.subheadline.bold())
+                Text("\(selectedIDs.count.formatted()) segment\(selectedIDs.count == 1 ? "" : "s") selected")
+                    .font(.subheadline.bold().monospacedDigit())
                 Spacer()
                 if !selectedIDs.isEmpty {
                     Button {
@@ -944,4 +949,10 @@ private struct SegmentPickerMapView: View {
         }
         isLoading = false
     }
+}
+
+extension GetStartedView {
+    /// Full region name ("IL" → "Illinois") for other screens (Region/Route detail).
+    /// Forwards to the static catalog that lives in the file-private RegionPickerView.
+    static func regionName(for code: String) -> String? { RegionPickerView.regionName(for: code) }
 }

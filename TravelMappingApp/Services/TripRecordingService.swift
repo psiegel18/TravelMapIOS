@@ -401,12 +401,17 @@ class TripRecordingService: NSObject, ObservableObject {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
 
         let attributes = RoadTripAttributes(tripName: tripName, startDate: startDate)
+        // Use current published values rather than literal zeros so the orphan-resume
+        // path (which restores totalDistance before re-starting the activity) doesn't
+        // briefly show 0 mi on the Lock Screen.
         let state = RoadTripAttributes.ContentState(
-            elapsedTime: 0,
+            elapsedTime: elapsedTime,
             currentRoad: "",
-            matchedSegments: 0,
-            gpsPoints: 0,
-            isPaused: false
+            matchedSegments: matchedCount,
+            gpsPoints: pointCount,
+            isPaused: false,
+            distanceMeters: totalDistance,
+            speedMps: max(0, currentSpeed)
         )
 
         do {
@@ -444,7 +449,9 @@ class TripRecordingService: NSObject, ObservableObject {
             currentRoad: isPaused ? "" : (currentSegmentName ?? ""),
             matchedSegments: matchedCount,
             gpsPoints: pointCount,
-            isPaused: isPaused
+            isPaused: isPaused,
+            distanceMeters: totalDistance,
+            speedMps: isPaused ? 0 : max(0, currentSpeed)
         )
 
         Task {
@@ -460,7 +467,9 @@ class TripRecordingService: NSObject, ObservableObject {
             currentRoad: "Trip ended",
             matchedSegments: matchedCount,
             gpsPoints: pointCount,
-            isPaused: false
+            isPaused: false,
+            distanceMeters: totalDistance,
+            speedMps: 0
         )
 
         Task {

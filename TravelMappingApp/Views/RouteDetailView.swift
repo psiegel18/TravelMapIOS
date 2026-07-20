@@ -79,16 +79,51 @@ struct RouteDetailView: View {
     }
 
     private var loadedContent: some View {
-        VStack(spacing: 0) {
-            mapView
-                .frame(maxHeight: .infinity)
-
-            statsBar
-
-            if regionBreakdown.count > 1 {
-                regionBreakdownView
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                headerView
+                mapView
+                    .frame(height: 260)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                statusCard
+                if regionBreakdown.count > 1 {
+                    byRegionCard
+                }
             }
+            .padding()
         }
+    }
+
+    // MARK: Header — 30pt/800 title + region count (audit §7)
+
+    private var headerView: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(listName)
+                .font(.system(size: 30, weight: .heavy))
+                .lineLimit(2)
+            Text(headerSubtitle)
+                .font(.system(size: 14))
+                .monospacedDigit()
+                .foregroundStyle(TMDesign.tertiaryText)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var headerSubtitle: String {
+        if allRegionDetails.count > 1 {
+            return "Crosses \(allRegionDetails.count.formatted()) regions"
+        }
+        // Single region: show the full region name when the catalog knows it.
+        if let code = allRegionDetails.first.map({ Self.regionCode(from: $0.listName) }),
+           let name = GetStartedView.regionName(for: code) {
+            return name
+        }
+        return "1 region"
+    }
+
+    /// "IL I-90" → "IL". List names lead with the region code.
+    nonisolated static func regionCode(from listName: String) -> String {
+        String(listName.prefix(while: { $0 != " " }))
     }
 
     struct MergedDetailPolyline: Identifiable {
@@ -199,81 +234,156 @@ struct RouteDetailView: View {
         }
     }
 
-    private var statsBar: some View {
+    // MARK: Status card — clinched mileage + segmented per-region bar (audit §7)
+
+    private var isFullyClinched: Bool {
+        routeStats.totalMileage > 0 &&
+            routeStats.clinchedMileage >= routeStats.totalMileage - 0.001
+    }
+
+    private var statusCard: some View {
         let total = routeStats.totalMileage
         let clinched = routeStats.clinchedMileage
         let pct = total > 0 ? clinched / total * 100 : 0
 
-        return VStack(spacing: 8) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(String(format: "%.1f / %.1f %@", convert(clinched), convert(total), unit))
-                        .font(.headline.bold())
-                        .monospacedDigit()
-                    Text(String(format: "%.1f%% clinched", pct))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text("\(routeStats.clinchedSegments.formatted()) / \(routeStats.totalSegments.formatted())")
-                        .font(.headline.bold())
-                        .monospacedDigit()
-                    Text("segments")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 7) {
+                Image(systemName: isFullyClinched ? "checkmark.seal.fill" : "checkmark.seal")
+                    .font(.system(size: 16, weight: .bold))
+                    .accessibilityHidden(true)
+                Text(isFullyClinched
+                     ? "Fully clinched · \(String(format: "%.1f", convert(total))) \(unit)"
+                     : "\(String(format: "%.1f", convert(clinched))) of \(String(format: "%.1f", convert(total))) \(unit) · \(Int(pct.rounded()))% clinched")
+                    .font(.system(size: 16, weight: .heavy))
+                    .monospacedDigit()
             }
-            ProgressView(value: clinched, total: max(total, 1))
-                .tint(pct >= 100 ? .green : .blue)
+            .foregroundStyle(isFullyClinched ? TMDesign.clinched : TMDesign.accent)
 
-            // Legend
-            HStack(spacing: 16) {
+            segmentedProgressBar
+
+            HStack {
+                Text("\(routeStats.clinchedSegments.formatted()) of \(routeStats.totalSegments.formatted()) segments")
+                    .font(.system(size: 13))
+                    .monospacedDigit()
+                    .foregroundStyle(TMDesign.tertiaryText)
+                Spacer()
                 legendItem(color: .blue, label: "Traveled")
                 legendItem(color: .gray.opacity(0.7), label: "Remaining")
-                Spacer()
             }
-            .font(.caption2)
-            .padding(.top, 4)
         }
-        .padding()
-        .background(.ultraThinMaterial)
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .accessibilityElement(children: .combine)
+    }
+
+    /// One segment per region, width proportional to that region's mileage, each
+    /// green-filled to the region's own clinched fraction (1px gaps between regions).
+    /// Interpretation: the audit mock shows solid green per-region segments for a
+    /// fully clinched route; partially clinched regions render a partial green fill
+    /// over the neutral track so the bar stays honest for in-progress routes.
+    private var segmentedProgressBar: some View {
+        let segments: [(weight: Double, fraction: Double)] = regionBreakdown.count > 1
+            ? regionBreakdown.map { (
+                weight: $0.totalMileage,
+                fraction: $0.totalMileage > 0 ? $0.clinchedMileage / $0.totalMileage : 0
+            ) }
+            : [(
+                weight: 1,
+                fraction: routeStats.totalMileage > 0
+                    ? routeStats.clinchedMileage / routeStats.totalMileage : 0
+            )]
+        let totalWeight = max(segments.reduce(0) { $0 + $1.weight }, 0.000001)
+
+        return GeometryReader { geo in
+            let gapTotal = CGFloat(segments.count - 1) * 1
+            let available = max(geo.size.width - gapTotal, 0)
+            HStack(spacing: 1) {
+                ForEach(segments.indices, id: \.self) { i in
+                    let seg = segments[i]
+                    let width = available * CGFloat(seg.weight / totalWeight)
+                    ZStack(alignment: .leading) {
+                        Rectangle().fill(TMDesign.progressTrack)
+                        Rectangle()
+                            .fill(TMDesign.clinched)
+                            .frame(width: width * CGFloat(min(max(seg.fraction, 0), 1)))
+                    }
+                    .frame(width: width)
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+        }
+        .frame(height: 8)
+        .accessibilityHidden(true)
     }
 
     private func legendItem(color: Color, label: String) -> some View {
         HStack(spacing: 4) {
             Capsule().fill(color).frame(width: 16, height: 3)
-            Text(label).foregroundStyle(.secondary)
+            Text(label)
+                .font(.system(size: 13))
+                .foregroundStyle(TMDesign.secondaryText)
         }
     }
 
-    private var regionBreakdownView: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("By Region")
-                .font(.caption.bold())
-                .foregroundStyle(.secondary)
-                .padding(.horizontal)
-                .padding(.top, 8)
+    // MARK: "By region" rows (audit §7)
 
-            ForEach(regionBreakdown) { region in
-                HStack(spacing: 8) {
-                    Text(region.listName)
-                        .font(.caption.bold())
-                        .frame(width: 80, alignment: .leading)
+    private var byRegionCard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            TMDesign.sectionHeader("By region")
+                .padding(.bottom, 8)
+                .accessibilityAddTraits(.isHeader)
 
-                    ProgressView(value: region.clinchedMileage, total: max(region.totalMileage, 1))
-                        .tint(region.percentage >= 100 ? .green : .blue)
-
-                    Text(String(format: "%.1f / %.1f %@", convert(region.clinchedMileage), convert(region.totalMileage), unit))
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .frame(width: 110, alignment: .trailing)
+            ForEach(Array(regionBreakdown.enumerated()), id: \.element.id) { index, region in
+                byRegionRow(region)
+                if index < regionBreakdown.count - 1 {
+                    Rectangle().fill(TMDesign.hairline).frame(height: 1)
                 }
-                .padding(.horizontal)
             }
         }
-        .padding(.bottom, 8)
-        .background(.ultraThinMaterial)
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private func byRegionRow(_ region: RegionBreakdown) -> some View {
+        let code = Self.regionCode(from: region.listName)
+        let name = GetStartedView.regionName(for: code) ?? code
+        let pct = Int(region.percentage.rounded())
+
+        return HStack(spacing: 12) {
+            Text(code)
+                .font(.system(size: 14, weight: .heavy))
+                .foregroundStyle(TMDesign.blueChipFG)
+                .frame(width: 34, height: 34)
+                .background(TMDesign.blueChipBG, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(name)
+                    .font(.system(size: 16, weight: .bold))
+                    .lineLimit(1)
+                Text("\(region.clinchedSegments.formatted()) of \(region.totalSegments.formatted()) segments")
+                    .font(.system(size: 13))
+                    .monospacedDigit()
+                    .foregroundStyle(TMDesign.tertiaryText)
+            }
+
+            Spacer(minLength: 8)
+
+            VStack(alignment: .trailing, spacing: 2) {
+                Text("\(String(format: "%.1f", convert(region.totalMileage))) \(unit)")
+                    .font(.system(size: 15, weight: .heavy))
+                    .monospacedDigit()
+                Text("\(pct)%")
+                    .font(.system(size: 12, weight: .bold))
+                    .monospacedDigit()
+                    .foregroundStyle(pct >= 100 ? TMDesign.clinched : TMDesign.frontier)
+            }
+        }
+        .padding(.vertical, 10)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(name), \(pct) percent clinched, \(String(format: "%.1f", convert(region.totalMileage))) \(unit), \(region.clinchedSegments.formatted()) of \(region.totalSegments.formatted()) segments")
     }
 
     private func zoomToRoute() {

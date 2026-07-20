@@ -27,23 +27,17 @@ struct UserDetailView: View {
                 ProgressView("Loading \(username)...")
             } else if let profile {
                 VStack(spacing: 0) {
-                    // Compact stats row
-                    HStack(spacing: 0) {
-                        compactStat(value: profile.allRegions.count.formatted(), label: "regions")
-                        Divider().frame(height: 24)
-                        compactStat(value: profile.allRoutes.count.formatted(), label: "routes")
-                        Divider().frame(height: 24)
-                        compactStat(value: profile.totalSegments.formatted(), label: "segments")
-                        if userMiles > 0 {
-                            Divider().frame(height: 24)
-                            let displayMiles = settings.useMiles ? userMiles : userMiles * 1.60934
-                            let unit = settings.useMiles ? "mi" : "km"
-                            compactStat(value: "\(Int(displayMiles).formatted()) \(unit)", label: "traveled")
-                        }
-                    }
-                    .padding(.horizontal)
-                    .padding(.vertical, 8)
-                    .background(.ultraThinMaterial)
+                    // Username as the page identity (audit §2: large title 30pt/800).
+                    // The redundant compact stat strip that used to sit here duplicated
+                    // the totals shown just below in each tab — removed per audit.
+                    Text(username)
+                        .font(.system(size: 30, weight: .heavy))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal)
+                        .padding(.top, 6)
+                        .accessibilityAddTraits(.isHeader)
 
                     Picker("View", selection: $selectedTab) {
                         Label("List", systemImage: "list.bullet").tag(0)
@@ -51,8 +45,9 @@ struct UserDetailView: View {
                         Label("Stats", systemImage: "chart.bar").tag(2)
                     }
                     .pickerStyle(.segmented)
+                    .controlSize(.large)
                     .padding(.horizontal)
-                    .padding(.vertical, 8)
+                    .padding(.vertical, 10)
 
                     // Use ZStack with opacity to keep all views alive across tab switches
                     ZStack {
@@ -82,7 +77,10 @@ struct UserDetailView: View {
                 )
             }
         }
-        .navigationTitle(username)
+        // Username renders as the in-content 30pt/800 large title (audit §2);
+        // an inline nav-bar title would duplicate it directly above.
+        .navigationTitle("")
+        .navigationBarTitleDisplayMode(.inline)
         .sentryScreen("UserDetail")
         .toolbar {
             if profile != nil {
@@ -143,18 +141,6 @@ struct UserDetailView: View {
                 profile = refreshed
             }
         }
-    }
-
-    private func compactStat(value: String, label: String) -> some View {
-        VStack(spacing: 2) {
-            Text(value)
-                .font(.subheadline.bold())
-                .monospacedDigit()
-            Text(label)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
     }
 
     private func shareStats() {
@@ -370,14 +356,19 @@ struct StatBox: View {
         VStack(spacing: 6) {
             Image(systemName: icon)
                 .font(.title2)
-                .foregroundStyle(.blue)
+                .foregroundStyle(TMDesign.accent)
+                .accessibilityHidden(true)
             Text(value)
                 .font(.title.bold())
+                .monospacedDigit()
+                .minimumScaleFactor(0.7)
+                .lineLimit(1)
             Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(.system(size: 13))
+                .foregroundStyle(TMDesign.secondaryText)
         }
         .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -411,13 +402,15 @@ struct CategorySectionView: View {
             // Header
             HStack {
                 Image(systemName: category.systemImage)
-                    .foregroundStyle(.blue)
+                    .foregroundStyle(TMDesign.accent)
+                    .accessibilityHidden(true)
                 Text("\(category.rawValue) by Region")
                     .font(.title3.bold())
                 Spacer()
                 Text("\(totalSegments.formatted()) segments")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 13))
+                    .monospacedDigit()
+                    .foregroundStyle(TMDesign.secondaryText)
             }
 
             let grouped = groupedByCountry
@@ -436,23 +429,27 @@ struct CategorySectionView: View {
                         } label: {
                             HStack(spacing: 6) {
                                 Text(group.region)
-                                    .font(.subheadline.bold())
+                                    .font(.system(size: 15, weight: .bold))
                                 Spacer()
                                 Text(group.segments.count.formatted())
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .font(.system(size: 15))
+                                    .monospacedDigit()
+                                    .foregroundStyle(TMDesign.secondaryText)
                                 Image(systemName: "chevron.right")
                                     .font(.caption2)
-                                    .foregroundStyle(.tertiary)
+                                    .foregroundStyle(TMDesign.chevron)
                             }
                             .padding(.horizontal, 10)
                             .padding(.vertical, 8)
+                            .frame(minHeight: 44)
                             .background(
                                 Color(.tertiarySystemFill),
                                 in: RoundedRectangle(cornerRadius: 8)
                             )
                         }
                         .buttonStyle(.plain)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel("\(group.region), \(group.segments.count.formatted()) segments")
                     }
                 }
             }

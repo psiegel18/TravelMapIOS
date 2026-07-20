@@ -146,7 +146,12 @@ struct StatisticsView: View {
     @State private var isLoadingRail = true
     @State private var loadedRegionCount = 0
     @State private var totalRegionCount = 0
-    @AppStorage("useMiles") private var useMiles = true
+    // Single source of truth for units: Settings-backed SyncedSettingsService.
+    // (A local @AppStorage toggle here previously created a dual-source staleness
+    // bug — it wrote UserDefaults directly, bypassing the @Published + iCloud sync.)
+    @ObservedObject private var settings = SyncedSettingsService.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private var useMiles: Bool { settings.useMiles }
 
     struct RegionStat: Identifiable {
         let id: String
@@ -220,8 +225,8 @@ struct StatisticsView: View {
     private var bodyContent: some View {
         ScrollView {
             VStack(spacing: 20) {
-                unitToggle
-                overviewCard
+                loadingHeader
+                heroCard
                 categoryBreakdownCard
                 if sizeClass == .regular {
                     HStack(alignment: .top, spacing: 16) {
@@ -247,6 +252,8 @@ struct StatisticsView: View {
             isLoadingMileage = true
             isLoadingRoutes = true
             isLoadingRail = true
+            loadedRegionCount = 0
+            totalRegionCount = 0
             await loadMileageData()
         }
         .task {
@@ -268,14 +275,39 @@ struct StatisticsView: View {
         }
     }
 
-    // MARK: - Unit Toggle
+    // MARK: - Loading header (audit §11)
 
-    private var unitToggle: some View {
-        Picker("Units", selection: $useMiles) {
-            Text("Miles").tag(true)
-            Text("Kilometers").tag(false)
+    /// Thin top progress bar + region-count caption shown while route/rail details
+    /// stream in. Replaces the mid-card spinners so the layout never jumps.
+    @ViewBuilder
+    private var loadingHeader: some View {
+        if isLoadingRoutes || isLoadingRail {
+            VStack(spacing: 6) {
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color(tmLight: 0xE3E3E8, dark: 0x2A2A2E))
+                        Capsule()
+                            .fill(TMDesign.accent)
+                            .frame(width: geo.size.width * loadingProgressFraction)
+                    }
+                }
+                .frame(height: 4)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.35), value: loadingProgressFraction)
+
+                Text(totalRegionCount > 0
+                     ? "Loading \(loadedRegionCount.formatted()) / \(totalRegionCount.formatted()) regions…"
+                     : "Loading regions…")
+                    .font(.system(size: 13))
+                    .monospacedDigit()
+                    .foregroundStyle(TMDesign.tertiaryText)
+            }
+            .accessibilityElement(children: .combine)
         }
-        .pickerStyle(.segmented)
+    }
+
+    private var loadingProgressFraction: CGFloat {
+        guard totalRegionCount > 0 else { return 0.08 }
+        return max(0.08, min(1, CGFloat(loadedRegionCount) / CGFloat(totalRegionCount)))
     }
 
     // MARK: - Overview
@@ -285,92 +317,104 @@ struct StatisticsView: View {
         let roadTotal = regionStats.reduce(0.0) { $0 + $1.totalMileage }
         let roadRoutes = regionStats.reduce(0) { $0 + $1.routeCount }
 
-        return VStack(alignment: .leading, spacing: 12) {
-            Text("By Category")
-                .font(.title2.bold())
+        return VStack(alignment: .leading, spacing: 14) {
+            TMDesign.sectionHeader("By Category")
 
-            // Roads row
-            HStack {
-                Image(systemName: "car.fill")
-                    .foregroundStyle(.blue)
-                    .frame(width: 30)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Roads")
-                        .font(.headline)
-                    if isLoadingRoutes {
-                        HStack(spacing: 4) {
-                            ProgressView()
-                                .controlSize(.mini)
-                            if totalRegionCount > 0 {
-                                Text("Loading \(loadedRegionCount)/\(totalRegionCount) regions...")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                Text("Loading...")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    } else {
-                        Text("\(formatInt(roadRoutes)) routes")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                Spacer()
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text("\(formatNumber(convert(roadMi))) \(unit)")
-                        .font(.subheadline.bold())
-                    if roadTotal > 0 {
-                        Text(String(format: "%.1f%%", roadMi / roadTotal * 100))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .padding()
-            .background(.blue.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
+            categoryRow(
+                icon: "car.fill",
+                tileBG: TMDesign.blueChipBG, tileFG: TMDesign.blueChipFG,
+                name: "Roads",
+                routeCount: roadRoutes,
+                clinched: roadMi, total: roadTotal,
+                barColor: TMDesign.accent,
+                percentColor: TMDesign.clinched,
+                isLoading: isLoadingRoutes
+            )
 
-            // Rail row
-            HStack {
-                Image(systemName: "tram.fill")
-                    .foregroundStyle(.red)
-                    .frame(width: 30)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Rail & Transit")
-                        .font(.headline)
-                    if isLoadingRail {
-                        HStack(spacing: 4) {
-                            ProgressView()
-                                .controlSize(.mini)
-                            Text("Loading...")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    } else {
-                        Text("\(formatInt(railTotals.routeCount)) routes")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                Spacer()
-                if !isLoadingRail {
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text("\(formatNumber(convert(railTotals.clinchedMileage))) \(unit)")
-                            .font(.subheadline.bold())
-                        if railTotals.totalMileage > 0 {
-                            Text(String(format: "%.1f%%", railTotals.clinchedMileage / railTotals.totalMileage * 100))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            }
-            .padding()
-            .background(.red.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
+            Rectangle().fill(TMDesign.hairline).frame(height: 1)
+
+            categoryRow(
+                icon: "tram.fill",
+                tileBG: TMDesign.redChipBG, tileFG: TMDesign.redChipFG,
+                name: "Rail & Transit",
+                routeCount: railTotals.routeCount,
+                clinched: railTotals.clinchedMileage, total: railTotals.totalMileage,
+                barColor: TMDesign.rail,
+                percentColor: TMDesign.frontier,
+                isLoading: isLoadingRail
+            )
         }
         .padding()
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    /// One "By Category" row (audit §2): 34pt tinted icon tile, name + route-count
+    /// subtitle, mileage + colored percent text, and a 6pt progress bar. The percent
+    /// is always a numeric label — color reinforces, never carries, the meaning.
+    private func categoryRow(
+        icon: String, tileBG: Color, tileFG: Color, name: String,
+        routeCount: Int, clinched: Double, total: Double,
+        barColor: Color, percentColor: Color, isLoading: Bool
+    ) -> some View {
+        let fraction = total > 0 ? min(clinched / total, 1) : 0
+
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                Image(systemName: icon)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(tileFG)
+                    .frame(width: 34, height: 34)
+                    .background(tileBG, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name)
+                        .font(.system(size: 16, weight: .bold))
+                    Text(isLoading ? "Loading routes…" : "\(formatInt(routeCount)) routes")
+                        .font(.system(size: 13))
+                        .monospacedDigit()
+                        .foregroundStyle(TMDesign.tertiaryText)
+                }
+
+                Spacer(minLength: 8)
+
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(isLoading && total <= 0 ? "—" : "\(formatNumber(convert(clinched))) \(unit)")
+                        .font(.system(size: 16, weight: .heavy))
+                        .monospacedDigit()
+                    Text(total > 0 ? String(format: "%.1f%%", clinched / total * 100) : " ")
+                        .font(.system(size: 13, weight: .bold))
+                        .monospacedDigit()
+                        .foregroundStyle(percentColor)
+                }
+            }
+
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(TMDesign.progressTrack)
+                    Capsule()
+                        .fill(barColor)
+                        .frame(width: geo.size.width * CGFloat(fraction))
+                }
+            }
+            .frame(height: 6)
+        }
+        .frame(minHeight: 44)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(categoryAccessibilityLabel(
+            name: name, routeCount: routeCount, clinched: clinched, total: total, isLoading: isLoading
+        ))
+    }
+
+    private func categoryAccessibilityLabel(
+        name: String, routeCount: Int, clinched: Double, total: Double, isLoading: Bool
+    ) -> String {
+        guard !isLoading else { return "\(name), loading" }
+        var label = "\(name), \(formatInt(routeCount)) routes, \(formatNumber(convert(clinched))) \(useMiles ? "miles" : "kilometers")"
+        if total > 0 {
+            label += ", \(String(format: "%.1f", clinched / total * 100)) percent complete"
+        }
+        return label
     }
 
     // MARK: - Closest to Clinched
@@ -384,24 +428,17 @@ struct StatisticsView: View {
         return VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Image(systemName: "target")
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(TMDesign.frontier)
                 Text("Closest to Clinched")
                     .font(.title3.bold())
             }
 
             if isLoadingRoutes {
-                HStack {
-                    ProgressView()
-                    Text(totalRegionCount > 0 ? "Loading \(loadedRegionCount)/\(totalRegionCount) regions..." : "Loading route details...")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
+                skeletonRows(count: 3)
             } else if inProgress.isEmpty {
                 Text("No routes in progress yet")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 15))
+                    .foregroundStyle(TMDesign.secondaryText)
             } else {
                 ForEach(Array(inProgress)) { route in
                     NavigationLink {
@@ -410,29 +447,44 @@ struct StatisticsView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
                                 Text(route.listName)
-                                    .font(.subheadline.bold())
+                                    .font(.system(size: 15, weight: .bold))
                                 Spacer()
                                 Text("\(formatNumber(convert(route.remainingMileage))) \(unit) left")
-                                    .font(.caption.bold())
-                                    .foregroundStyle(.orange)
+                                    .font(.system(size: 15, weight: .semibold))
+                                    .monospacedDigit()
+                                    .foregroundStyle(TMDesign.frontier)
                                 Image(systemName: "chevron.right")
                                     .font(.caption2)
-                                    .foregroundStyle(.tertiary)
+                                    .foregroundStyle(TMDesign.chevron)
                             }
                             ProgressView(value: route.clinchedMileage, total: route.mileage)
-                                .tint(.orange)
+                                .tint(TMDesign.frontier)
                             Text(String(format: "%.1f%% complete", route.percentage))
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
+                                .font(.system(size: 13))
+                                .monospacedDigit()
+                                .foregroundStyle(TMDesign.secondaryText)
                         }
                         .padding(.vertical, 4)
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("\(route.listName), \(formatNumber(convert(route.remainingMileage))) \(useMiles ? "miles" : "kilometers") left, \(String(format: "%.1f", route.percentage)) percent complete")
                 }
             }
         }
         .padding()
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    /// Skeleton placeholder stack used while route details stream in (audit §11).
+    private func skeletonRows(count: Int) -> some View {
+        VStack(spacing: 0) {
+            ForEach(0..<count, id: \.self) { _ in
+                TMSkeletonRow()
+            }
+        }
     }
 
     // MARK: - Longest Clinched
@@ -489,24 +541,17 @@ struct StatisticsView: View {
         return VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Image(systemName: "checkmark.seal.fill")
-                    .foregroundStyle(.green)
+                    .foregroundStyle(TMDesign.clinched)
                 Text("Longest Clinched")
                     .font(.title3.bold())
             }
 
             if isLoadingRoutes {
-                HStack {
-                    ProgressView()
-                    Text(totalRegionCount > 0 ? "Loading \(loadedRegionCount)/\(totalRegionCount) regions..." : "Loading route details...")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
+                skeletonRows(count: 3)
             } else if clinched.isEmpty {
                 Text("No fully clinched routes yet")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 15))
+                    .foregroundStyle(TMDesign.secondaryText)
             } else {
                 ForEach(clinched) { route in
                     let baseName = routeBaseName(from: route.root)
@@ -520,88 +565,110 @@ struct StatisticsView: View {
                     } label: {
                         HStack {
                             Text(route.listName)
-                                .font(.subheadline.bold())
+                                .font(.system(size: 15, weight: .bold))
                             Spacer()
                             Text("\(formatNumber(convert(route.mileage))) \(unit)")
-                                .font(.caption.bold())
-                                .foregroundStyle(.green)
+                                .font(.system(size: 15, weight: .semibold))
+                                .monospacedDigit()
+                                .foregroundStyle(TMDesign.clinched)
                             Image(systemName: "chevron.right")
                                 .font(.caption2)
-                                .foregroundStyle(.tertiary)
+                                .foregroundStyle(TMDesign.chevron)
                         }
                         .padding(.vertical, 2)
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("\(route.listName), clinched, \(formatNumber(convert(route.mileage))) \(useMiles ? "miles" : "kilometers")")
                 }
                 Text("\(formatInt(aggregatedClinchedRoutes.count)) routes fully clinched")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 13))
+                    .monospacedDigit()
+                    .foregroundStyle(TMDesign.secondaryText)
                     .padding(.top, 4)
             }
         }
         .padding()
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
-    private var overviewCard: some View {
-        VStack(spacing: 12) {
-            Text("Travel Overview")
-                .font(.title2.bold())
+    /// Hero card (audit §2): completion ring + rank pill + Traveled/Available rows,
+    /// with a 3-up regions/routes/segments strip. Replaces the "Travel Overview"
+    /// tile grid, which showed the same data as a wall of small numbers.
+    private var heroCard: some View {
+        let totalMi = regionStats.reduce(0.0) { $0 + $1.totalMileage }
+        let clinchedMi = regionStats.reduce(0.0) { $0 + $1.clinchedMileage }
+        let totalRoutes = regionStats.reduce(0) { $0 + $1.routeCount }
+        let fraction = totalMi > 0 ? clinchedMi / totalMi : 0
 
-            if let rank = rankInfo {
-                HStack(spacing: 6) {
-                    Image(systemName: "trophy.fill")
-                        .foregroundStyle(.yellow)
-                        .font(.caption)
-                    Text("Ranked #\(rank.rank.formatted()) of \(rank.total.formatted()) · Top \(String(format: "%.1f", rank.percentile))%")
-                        .font(.caption.bold())
-                        .foregroundStyle(.secondary)
+        return VStack(spacing: 16) {
+            HStack(alignment: .center, spacing: 20) {
+                TMCompletionRing(fraction: fraction, diameter: 112)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    if let rank = rankInfo {
+                        HStack(spacing: 5) {
+                            Image(systemName: "trophy.fill")
+                                .font(.system(size: 12, weight: .bold))
+                            Text("#\(rank.rank.formatted()) · Top \(String(format: "%.1f", rank.percentile))%")
+                                .font(.system(size: 13, weight: .bold))
+                                .monospacedDigit()
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(TMDesign.goldChipBG, in: Capsule())
+                        .foregroundStyle(TMDesign.goldChipFG)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("Ranked number \(rank.rank.formatted()) of \(rank.total.formatted()), top \(String(format: "%.1f", rank.percentile)) percent")
+                    }
+
+                    heroValueRow(label: "Traveled", value: isLoadingMileage ? "—" : "\(formatNumber(convert(clinchedMi))) \(unit)")
+                    Rectangle().fill(TMDesign.hairline).frame(height: 1)
+                    heroValueRow(label: "Available", value: isLoadingMileage ? "—" : "\(formatNumber(convert(totalMi))) \(unit)")
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            let totalMi = regionStats.reduce(0.0) { $0 + $1.totalMileage }
-            let clinchedMi = regionStats.reduce(0.0) { $0 + $1.clinchedMileage }
-            let totalRoutes = regionStats.reduce(0) { $0 + $1.routeCount }
+            Rectangle().fill(TMDesign.hairline).frame(height: 1)
 
-            LazyVGrid(columns: [
-                GridItem(.flexible()),
-                GridItem(.flexible())
-            ], spacing: 16) {
-                StatTile(
-                    icon: "globe",
-                    title: "Regions",
-                    value: formatInt(profile.allRegions.count)
-                )
-                StatTile(
-                    icon: "road.lanes",
-                    title: "Routes",
-                    value: formatInt(totalRoutes > 0 ? totalRoutes : profile.allRoutes.count)
-                )
-                StatTile(
-                    icon: "point.topleft.down.to.point.bottomright.curvepath",
-                    title: "Traveled",
-                    value: isLoadingMileage ? "..." : "\(formatNumber(convert(clinchedMi))) \(unit)"
-                )
-                StatTile(
-                    icon: "ruler",
-                    title: "Total Available",
-                    value: isLoadingMileage ? "..." : "\(formatNumber(convert(totalMi))) \(unit)"
-                )
-            }
-
-            if totalMi > 0 {
-                VStack(spacing: 4) {
-                    ProgressView(value: clinchedMi, total: totalMi)
-                        .tint(.blue)
-                    Text(String(format: "%.1f%% overall completion", clinchedMi / totalMi * 100))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.top, 4)
+            HStack(spacing: 0) {
+                heroCountStat(value: formatInt(profile.allRegions.count), label: "regions")
+                heroCountStat(value: formatInt(totalRoutes > 0 ? totalRoutes : profile.allRoutes.count), label: "routes")
+                heroCountStat(value: formatInt(profile.totalSegments), label: "segments")
             }
         }
-        .padding()
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .padding(20)
+        .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
+    private func heroValueRow(label: String, value: String) -> some View {
+        HStack {
+            Text(label)
+                .font(.system(size: 15))
+                .foregroundStyle(TMDesign.secondaryText)
+            Spacer()
+            Text(value)
+                .font(.system(size: 15, weight: .bold))
+                .monospacedDigit()
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func heroCountStat(value: String, label: String) -> some View {
+        VStack(spacing: 2) {
+            Text(value)
+                .font(.system(size: 20, weight: .heavy))
+                .monospacedDigit()
+                .minimumScaleFactor(0.7)
+                .lineLimit(1)
+            Text(label)
+                .font(.system(size: 12.5))
+                .foregroundStyle(TMDesign.tertiaryText)
+        }
+        .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .combine)
     }
 
     // MARK: - Combined Region Card (Distance / Segments toggle)
@@ -634,7 +701,7 @@ struct StatisticsView: View {
             }
         }
         .padding()
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
     private func groupedByCountry<T>(_ items: [(region: String, value: T)]) -> [(country: String, items: [(region: String, value: T)])] {
@@ -654,13 +721,7 @@ struct StatisticsView: View {
     private var regionDistanceView: some View {
         Group {
             if isLoadingMileage {
-                HStack(spacing: 8) {
-                    ProgressView()
-                    Text("Loading mileage data...")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .padding()
+                skeletonRows(count: 4)
             } else {
                 let sorted = regionStats.sorted { $0.clinchedMileage > $1.clinchedMileage }
                 let grouped = groupedByCountry(sorted.map { (region: $0.region, value: $0) })
@@ -685,20 +746,32 @@ struct StatisticsView: View {
                                         Text(stat.region)
                                             .font(.headline)
                                         Spacer()
+                                        // Clinched regions get a check shape, never color alone
+                                        if stat.percentage >= 100 {
+                                            Image(systemName: "checkmark.circle.fill")
+                                                .font(.system(size: 11, weight: .bold))
+                                                .foregroundStyle(TMDesign.clinched)
+                                                .accessibilityHidden(true)
+                                        }
                                         Text(String(format: "%.1f%%", stat.percentage))
-                                            .font(.caption2.bold())
-                                            .foregroundStyle(stat.percentage >= 100 ? .green : .primary)
+                                            .font(.system(size: 13, weight: .bold))
+                                            .monospacedDigit()
+                                            .foregroundStyle(stat.percentage >= 100 ? TMDesign.clinched : .primary)
                                     }
                                     ProgressView(value: stat.clinchedMileage, total: max(stat.totalMileage, 0.01))
-                                        .tint(.blue)
+                                        .tint(TMDesign.accent)
                                     Text("\(formatNumber(convert(stat.clinchedMileage))) / \(formatNumber(convert(stat.totalMileage))) \(unit)")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
+                                        .font(.system(size: 13))
+                                        .monospacedDigit()
+                                        .foregroundStyle(TMDesign.secondaryText)
                                 }
                                 .padding(10)
+                                .frame(minHeight: 44)
                                 .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 8))
                             }
                             .buttonStyle(.plain)
+                            .accessibilityElement(children: .combine)
+                            .accessibilityLabel("\(stat.region), \(String(format: "%.1f", stat.percentage)) percent\(stat.percentage >= 100 ? ", clinched" : ""), \(formatNumber(convert(stat.clinchedMileage))) of \(formatNumber(convert(stat.totalMileage))) \(useMiles ? "miles" : "kilometers")")
                         }
                     }
                 }
@@ -731,16 +804,19 @@ struct StatisticsView: View {
                         GeometryReader { geo in
                             let width = geo.size.width * CGFloat(item.value) / CGFloat(maxCount)
                             RoundedRectangle(cornerRadius: 4)
-                                .fill(.blue.opacity(0.6))
+                                .fill(TMDesign.accent.opacity(0.6))
                                 .frame(width: max(width, 2), height: 24)
                         }
                         .frame(height: 24)
 
                         Text(item.value.formatted())
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 50, alignment: .trailing)
+                            .font(.system(size: 15))
+                            .monospacedDigit()
+                            .foregroundStyle(TMDesign.secondaryText)
+                            .frame(width: 56, alignment: .trailing)
                     }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("\(item.region), \(item.value.formatted()) segments")
                 }
             }
         }
@@ -958,29 +1034,5 @@ struct StatisticsView: View {
             }
         }
         return counts
-    }
-}
-
-struct StatTile: View {
-    let icon: String
-    let title: String
-    let value: String
-
-    var body: some View {
-        VStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(.title2)
-                .foregroundStyle(.blue)
-            Text(value)
-                .font(.title3.bold())
-                .minimumScaleFactor(0.6)
-                .lineLimit(1)
-            Text(title)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding()
-        .background(.blue.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
     }
 }

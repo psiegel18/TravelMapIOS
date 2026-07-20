@@ -1,6 +1,40 @@
 import WidgetKit
 import SwiftUI
 
+// MARK: - Brand palette (design audit §12)
+// The widget target can't see TMDesign (app target). Widget surfaces are fixed
+// dark gradients, so fixed brand hexes are correct here (dark-surface variants).
+
+extension Color {
+    /// Fixed hex color for widget / Live Activity surfaces.
+    init(tmwHex hex: UInt32) {
+        self.init(
+            .sRGB,
+            red: Double((hex >> 16) & 0xFF) / 255,
+            green: Double((hex >> 8) & 0xFF) / 255,
+            blue: Double(hex & 0xFF) / 255,
+            opacity: 1
+        )
+    }
+}
+
+private enum WidgetPalette {
+    static let blue = Color(tmwHex: 0x5B8CFF)        // Trailblazer Blue (bright variant)
+    static let blueDeep = Color(tmwHex: 0x2F6BF0)    // Trailblazer Blue (base)
+    static let green = Color(tmwHex: 0x4FD69C)       // Clinched Green
+    static let amber = Color(tmwHex: 0xF6B45A)       // Frontier Amber
+    static let gold = Color(tmwHex: 0xFFD84D)        // rank trophy
+    static let gradientTop = Color(tmwHex: 0x0F1A3D)
+    static let gradientBottom = Color(tmwHex: 0x221450)
+
+    /// Shared progress-bar gradient (replaces the old cyan/purple).
+    static let barGradient = LinearGradient(
+        colors: [blue, blueDeep],
+        startPoint: .leading,
+        endPoint: .trailing
+    )
+}
+
 // MARK: - Entry
 
 struct TravelStatsEntry: TimelineEntry, Codable {
@@ -281,7 +315,7 @@ struct TravelMappingWidgetEntryView: View {
                     .frame(width: 18, height: 18)
                     .clipShape(RoundedRectangle(cornerRadius: 4))
                 Text(entry.username)
-                    .font(.caption.bold())
+                    .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(.white.opacity(0.8))
                     .lineLimit(1)
             }
@@ -289,7 +323,8 @@ struct TravelMappingWidgetEntryView: View {
             Spacer()
 
             Text(formatMiles(entry.totalMiles))
-                .font(.system(size: 36, weight: .bold, design: .rounded))
+                .font(.system(size: 38, weight: .heavy, design: .rounded))
+                .monospacedDigit()
                 .foregroundStyle(.white)
                 .minimumScaleFactor(0.6)
                 .lineLimit(1)
@@ -304,9 +339,10 @@ struct TravelMappingWidgetEntryView: View {
                     HStack(spacing: 4) {
                         Image(systemName: "trophy.fill")
                             .font(.caption2)
-                            .foregroundStyle(.yellow)
+                            .foregroundStyle(WidgetPalette.gold)
                         Text("#\(entry.rank.formatted())")
                             .font(.caption.bold())
+                            .monospacedDigit()
                             .foregroundStyle(.white)
                         Text("· \(entry.routes.formatted()) routes")
                             .font(.caption2)
@@ -319,7 +355,7 @@ struct TravelMappingWidgetEntryView: View {
                                 .fill(.white.opacity(0.15))
                                 .frame(height: 4)
                             Capsule()
-                                .fill(LinearGradient(colors: [.cyan, .blue], startPoint: .leading, endPoint: .trailing))
+                                .fill(WidgetPalette.barGradient)
                                 .frame(width: max(geo.size.width * entry.percentile / 100, 4), height: 4)
                         }
                     }
@@ -353,7 +389,8 @@ struct TravelMappingWidgetEntryView: View {
                 Spacer()
 
                 Text(formatMiles(entry.totalMiles))
-                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                    .font(.system(size: 32, weight: .heavy, design: .rounded))
+                    .monospacedDigit()
                     .foregroundStyle(.white)
                     .minimumScaleFactor(0.6)
                     .lineLimit(1)
@@ -367,13 +404,13 @@ struct TravelMappingWidgetEntryView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Top \(String(format: "%.1f%%", entry.percentile))")
                             .font(.caption2.bold())
-                            .foregroundStyle(.cyan)
+                            .foregroundStyle(WidgetPalette.blue)
                         GeometryReader { geo in
                             ZStack(alignment: .leading) {
                                 Capsule()
                                     .fill(.white.opacity(0.15))
                                 Capsule()
-                                    .fill(LinearGradient(colors: [.cyan, .blue], startPoint: .leading, endPoint: .trailing))
+                                    .fill(WidgetPalette.barGradient)
                                     .frame(width: max(geo.size.width * entry.percentile / 100, 4))
                             }
                         }
@@ -395,9 +432,10 @@ struct TravelMappingWidgetEntryView: View {
                     HStack(spacing: 4) {
                         Image(systemName: "trophy.fill")
                             .font(.caption)
-                            .foregroundStyle(.yellow)
+                            .foregroundStyle(WidgetPalette.gold)
                         Text("#\(entry.rank.formatted())")
                             .font(.title3.bold())
+                            .monospacedDigit()
                             .foregroundStyle(.white)
                     }
                 }
@@ -406,7 +444,8 @@ struct TravelMappingWidgetEntryView: View {
                     VStack(spacing: 2) {
                         Text("\(entry.routes.formatted())")
                             .font(.headline.bold())
-                            .foregroundStyle(.cyan)
+                            .monospacedDigit()
+                            .foregroundStyle(WidgetPalette.blue)
                         Text("routes")
                             .font(.caption2)
                             .foregroundStyle(.white.opacity(0.5))
@@ -414,7 +453,8 @@ struct TravelMappingWidgetEntryView: View {
                     VStack(spacing: 2) {
                         Text("\(entry.regionCount.formatted())")
                             .font(.headline.bold())
-                            .foregroundStyle(.green)
+                            .monospacedDigit()
+                            .foregroundStyle(WidgetPalette.green)
                         Text("regions")
                             .font(.caption2)
                             .foregroundStyle(.white.opacity(0.5))
@@ -425,7 +465,7 @@ struct TravelMappingWidgetEntryView: View {
                     VStack(spacing: 2) {
                         Text(entry.topRegion)
                             .font(.headline.bold())
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(WidgetPalette.amber)
                         Text("\(formatMiles(entry.topRegionMiles)) \(unitAbbreviation)")
                             .font(.caption2)
                             .foregroundStyle(.white.opacity(0.5))
@@ -461,7 +501,8 @@ struct TravelMappingWidgetEntryView: View {
             // Hero: Miles
             VStack(alignment: .leading, spacing: 2) {
                 Text(formatMiles(entry.totalMiles))
-                    .font(.system(size: 48, weight: .bold, design: .rounded))
+                    .font(.system(size: 48, weight: .heavy, design: .rounded))
+                    .monospacedDigit()
                     .foregroundStyle(.white)
                     .minimumScaleFactor(0.5)
                     .lineLimit(1)
@@ -474,9 +515,10 @@ struct TravelMappingWidgetEntryView: View {
             if entry.rank > 0 {
                 HStack(spacing: 8) {
                     Image(systemName: "trophy.fill")
-                        .foregroundStyle(.yellow)
+                        .foregroundStyle(WidgetPalette.gold)
                     Text("#\(entry.rank.formatted())")
                         .font(.title3.bold())
+                        .monospacedDigit()
                         .foregroundStyle(.white)
                     Text("of \(entry.userCount.formatted())")
                         .font(.caption)
@@ -484,7 +526,7 @@ struct TravelMappingWidgetEntryView: View {
                     Spacer()
                     Text("Top \(String(format: "%.1f%%", entry.percentile))")
                         .font(.caption.bold())
-                        .foregroundStyle(.cyan)
+                        .foregroundStyle(WidgetPalette.blue)
                 }
 
                 GeometryReader { geo in
@@ -492,7 +534,7 @@ struct TravelMappingWidgetEntryView: View {
                         Capsule()
                             .fill(.white.opacity(0.12))
                         Capsule()
-                            .fill(LinearGradient(colors: [.cyan, .blue, .purple], startPoint: .leading, endPoint: .trailing))
+                            .fill(WidgetPalette.barGradient)
                             .frame(width: max(geo.size.width * entry.percentile / 100, 6))
                     }
                 }
@@ -501,10 +543,10 @@ struct TravelMappingWidgetEntryView: View {
 
             // Stats cards
             HStack(spacing: 8) {
-                statCard(value: "\(entry.routes.formatted())", label: "Routes", icon: "road.lanes", color: .cyan)
-                statCard(value: "\(entry.regionCount.formatted())", label: "Regions", icon: "map", color: .green)
+                statCard(value: "\(entry.routes.formatted())", label: "Routes", icon: "road.lanes", color: WidgetPalette.blue)
+                statCard(value: "\(entry.regionCount.formatted())", label: "Regions", icon: "map", color: WidgetPalette.green)
                 if !entry.topRegion.isEmpty {
-                    statCard(value: entry.topRegion, label: "Top Region", icon: "star.fill", color: .orange, subtext: "\(formatMiles(entry.topRegionMiles)) \(unitAbbreviation)")
+                    statCard(value: entry.topRegion, label: "Top Region", icon: "star.fill", color: WidgetPalette.amber, subtext: "\(formatMiles(entry.topRegionMiles)) \(unitAbbreviation)")
                 }
             }
 
@@ -543,18 +585,37 @@ struct TravelMappingWidgetEntryView: View {
 
     // MARK: - Accessory (Lock Screen)
 
+    /// Completion fraction for the lock-screen ring. The entry carries no
+    /// traveled/available mileage pair, so the ring mirrors the percentile that
+    /// already drives the home-widget progress bars (Top X% → X% of the ring).
+    private var ringFraction: Double {
+        guard entry.rank > 0 else { return 0 }
+        return min(max(entry.percentile / 100, 0), 1)
+    }
+
     private var accessoryCircular: some View {
         ZStack {
             AccessoryWidgetBackground()
+            Circle()
+                .stroke(.white.opacity(0.25), lineWidth: 5)
+                .padding(3)
+            Circle()
+                .trim(from: 0, to: ringFraction)
+                .stroke(.white, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+                .padding(3)
             VStack(spacing: 0) {
                 Text(formatMilesShort(entry.totalMiles))
-                    .font(.system(.headline, design: .rounded).bold())
+                    .font(.system(.subheadline, design: .rounded).bold())
+                    .monospacedDigit()
                     .minimumScaleFactor(0.5)
                     .lineLimit(1)
                 Text(unitAbbreviation)
                     .font(.caption2)
             }
+            .padding(.horizontal, 10)
         }
+        .accessibilityLabel("\(formatMiles(entry.totalMiles)) \(distanceCaption), top \(Int(entry.percentile.rounded())) percent")
     }
 
     private var accessoryRectangular: some View {
@@ -623,11 +684,9 @@ struct TravelMappingWidget: Widget {
         StaticConfiguration(kind: kind, provider: TravelStatsProvider()) { entry in
             TravelMappingWidgetEntryView(entry: entry)
                 .containerBackground(for: .widget) {
+                    // Brand indigo gradient (audit §12): #0F1A3D → #221450, 135°.
                     LinearGradient(
-                        colors: [
-                            Color(red: 0.06, green: 0.10, blue: 0.24),
-                            Color(red: 0.13, green: 0.08, blue: 0.30)
-                        ],
+                        colors: [WidgetPalette.gradientTop, WidgetPalette.gradientBottom],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     )

@@ -19,8 +19,14 @@ struct RoutePlannerView: View {
     @State private var errorMessage: String?
     @State private var showDirections = false
     @State private var hasReportedInitialDisplay = false
+    @FocusState private var focusedField: PlannerField?
     @AppStorage("primaryUser") private var primaryUser = ""
     @ObservedObject private var settings = SyncedSettingsService.shared
+
+    private enum PlannerField { case origin, destination }
+
+    /// 1px border for unselected cards / secondary buttons (audit §5).
+    private let cardBorder = Color(tmLight: 0xE6E6EC, dark: 0x3A3A3E)
 
     private var unit: String { settings.useMiles ? "mi" : "km" }
 
@@ -47,47 +53,38 @@ struct RoutePlannerView: View {
 
     private var bodyContent: some View {
         VStack(spacing: 0) {
-            // Input fields
-            VStack(spacing: 8) {
-                HStack {
-                    Image(systemName: "circle.fill").foregroundStyle(.green).font(.caption)
-                    TextField("Start location", text: $startQuery)
-                        .textFieldStyle(.roundedBorder)
-                        .submitLabel(.next)
-                }
-                HStack {
-                    Image(systemName: "mappin.circle.fill").foregroundStyle(.red).font(.caption)
-                    TextField("End location", text: $endQuery)
-                        .textFieldStyle(.roundedBorder)
-                        .submitLabel(.search)
-                        .onSubmit {
-                            Task { await calculateRoute() }
-                        }
-                }
+            // Title + unified From/To card
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Route Planner")
+                    .font(.system(size: 28, weight: .heavy))
+                    .kerning(-0.4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityAddTraits(.isHeader)
 
-                Button {
-                    Haptics.light()
-                    Task { await calculateRoute() }
-                } label: {
-                    if isCalculating {
+                fromToCard
+
+                if isCalculating {
+                    HStack(spacing: 8) {
                         ProgressView()
-                            .frame(maxWidth: .infinity)
-                    } else {
-                        Label("Find Route", systemImage: "arrow.triangle.turn.up.right.diamond")
-                            .frame(maxWidth: .infinity)
+                        Text("Finding routes…")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(TMDesign.secondaryText)
                     }
+                    .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(startQuery.isEmpty || endQuery.isEmpty || isCalculating)
             }
-            .padding()
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .padding(.bottom, 10)
 
-            // Route selector pills (when multiple routes available)
-            if routes.count > 1 {
-                routeSelector
+            // Route alternative cards (replaces the old chip selector + emoji summary row)
+            if !routes.isEmpty {
+                routeCards
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 10)
             }
 
-            // Map
+            // Map — inset rounded thumbnail; cards above carry the decision data
             ZStack(alignment: .topTrailing) {
                 Map(position: $mapPosition) {
                     // All routes (non-selected faded)
@@ -102,14 +99,14 @@ struct RoutePlannerView: View {
                     // TM segments for selected route
                     ForEach(tmSegments) { seg in
                         MapPolyline(coordinates: [seg.start, seg.end])
-                            .stroke(seg.isClinched ? .green : .orange, lineWidth: 4)
+                            .stroke(seg.isClinched ? TMDesign.clinched : TMDesign.frontier, lineWidth: 4)
                     }
 
                     if let start = startCoordinate {
-                        Marker("Start", coordinate: start).tint(.green)
+                        Marker("Start", coordinate: start).tint(TMDesign.clinched)
                     }
                     if let end = endCoordinate {
-                        Marker("End", coordinate: end).tint(.red)
+                        Marker("End", coordinate: end).tint(TMDesign.rail)
                     }
                 }
                 .onMapCameraChange { context in
@@ -117,56 +114,56 @@ struct RoutePlannerView: View {
                 }
 
                 // Map controls
-                VStack(spacing: 6) {
-                    // Zoom buttons
+                VStack(spacing: 8) {
+                    // Zoom buttons — 44pt minimum targets (audit §15)
                     Button {
                         adjustZoom(factor: 0.5)
                     } label: {
                         Image(systemName: "plus")
-                            .font(.caption.bold())
-                            .frame(width: 32, height: 32)
-                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                            .font(.system(size: 15, weight: .semibold))
+                            .frame(width: 44, height: 44)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Zoom in")
 
                     Button {
                         adjustZoom(factor: 2.0)
                     } label: {
                         Image(systemName: "minus")
-                            .font(.caption.bold())
-                            .frame(width: 32, height: 32)
-                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                            .font(.system(size: 15, weight: .semibold))
+                            .frame(width: 44, height: 44)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Zoom out")
 
-                    // Legend
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 4) {
-                            RoundedRectangle(cornerRadius: 1).fill(.orange).frame(width: 14, height: 3)
-                            Text("New").font(.system(size: 9))
-                        }
-                        HStack(spacing: 4) {
-                            RoundedRectangle(cornerRadius: 1).fill(.green).frame(width: 14, height: 3)
-                            Text("Driven").font(.system(size: 9))
-                        }
-                        HStack(spacing: 4) {
-                            RoundedRectangle(cornerRadius: 1).fill(.gray.opacity(0.5)).frame(width: 14, height: 3)
-                            Text("Route").font(.system(size: 9))
-                        }
+                    // Legend — real labels, no 9pt type (audit §5)
+                    VStack(alignment: .leading, spacing: 5) {
+                        legendLine(color: TMDesign.frontier, label: "New")
+                        legendLine(color: TMDesign.clinched, label: "Driven")
+                        legendLine(color: .gray.opacity(0.5), label: "Route")
                     }
-                    .padding(6)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                    .padding(8)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("Legend: amber is new, green is driven, gray is the route")
                 }
                 .padding(8)
             }
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
+            .frame(minHeight: 160)
 
-            // Results summary
+            // Error + primary action row
             if selectedRoute != nil || errorMessage != nil {
-                resultsView
+                bottomActionBar
             }
         }
+        .background(TMDesign.secondarySurface.ignoresSafeArea())
         .navigationTitle("Route Planner")
-        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $showDirections) {
             directionsSheet
         }
@@ -181,127 +178,227 @@ struct RoutePlannerView: View {
         }
     }
 
-    // MARK: - Route Selector
+    // MARK: - From/To Card
 
-    private var routeSelector: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(Array(routes.enumerated()), id: \.offset) { index, rt in
-                    let segs = routeSegments[index] ?? []
-                    let newSegs = segs.filter { !$0.isClinched }.count
-                    let drivenSegs = segs.filter(\.isClinched).count
-                    let isSelected = index == selectedRouteIndex
-                    Button {
-                        Haptics.selection()
-                        selectedRouteIndex = index
-                    } label: {
-                        VStack(spacing: 3) {
-                            Text("Route \(index + 1)")
-                                .font(.caption2.bold())
-                            Text("\(formatDistance(rt.distance, decimals: 0)) · \(formatTime(rt.expectedTravelTime))")
-                                .font(.caption2)
-                            if isLoadingSegments && segs.isEmpty {
-                                ProgressView()
-                                    .controlSize(.mini)
-                            } else if !segs.isEmpty {
-                                HStack(spacing: 6) {
-                                    if newSegs > 0 {
-                                        HStack(spacing: 2) {
-                                            Circle().fill(.orange).frame(width: 6, height: 6)
-                                            Text("\(newSegs.formatted()) new")
-                                                .font(.caption2.bold())
-                                                .foregroundStyle(isSelected ? .white : .orange)
-                                        }
-                                    }
-                                    if drivenSegs > 0 {
-                                        HStack(spacing: 2) {
-                                            Circle().fill(.green).frame(width: 6, height: 6)
-                                            Text("\(drivenSegs.formatted()) driven")
-                                                .font(.caption2)
-                                                .foregroundStyle(isSelected ? .white.opacity(0.8) : .green)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(
-                            isSelected ? Color.blue : Color(.tertiarySystemFill),
-                            in: RoundedRectangle(cornerRadius: 10)
-                        )
-                        .foregroundStyle(isSelected ? .white : .primary)
-                    }
-                    .buttonStyle(.plain)
+    /// Unified From/To card: two rows split by a hairline, trailing swap control (audit §5).
+    private var fromToCard: some View {
+        HStack(spacing: 8) {
+            VStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    Circle()
+                        .fill(TMDesign.clinched)
+                        .frame(width: 11, height: 11)
+                        .accessibilityHidden(true)
+                    TextField("Start location", text: $startQuery)
+                        .font(.system(size: 16, weight: .semibold))
+                        .focused($focusedField, equals: .origin)
+                        .submitLabel(.next)
+                        .onSubmit { focusedField = .destination }
+                        .accessibilityLabel("Start location")
                 }
+                .padding(.vertical, 13)
+
+                Rectangle()
+                    .fill(TMDesign.hairline)
+                    .frame(height: 1)
+
+                HStack(spacing: 10) {
+                    Image(systemName: "mappin.and.ellipse")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(TMDesign.rail)
+                        .frame(width: 11)
+                        .accessibilityHidden(true)
+                    TextField("End location", text: $endQuery)
+                        .font(.system(size: 16, weight: .semibold))
+                        .focused($focusedField, equals: .destination)
+                        .submitLabel(.search)
+                        .onSubmit {
+                            Task { await calculateRoute() }
+                        }
+                        .accessibilityLabel("End location")
+                }
+                .padding(.vertical, 13)
             }
-            .padding(.horizontal)
-            .padding(.vertical, 6)
+
+            Button {
+                swapEndpoints()
+            } label: {
+                Image(systemName: "arrow.up.arrow.down")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(TMDesign.tertiaryText)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(startQuery.isEmpty && endQuery.isEmpty)
+            .accessibilityLabel("Swap start and end")
+            .accessibilityHint("Reverses the route direction")
         }
-        .background(.ultraThinMaterial)
+        .padding(.horizontal, 14)
+        .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(cardBorder, lineWidth: 1)
+        )
     }
 
-    // MARK: - Results View
+    /// Swap origin/destination (text and resolved coordinates) and re-search if a
+    /// route is already on screen.
+    private func swapEndpoints() {
+        Haptics.light()
+        swap(&startQuery, &endQuery)
+        let tmp = startCoordinate
+        startCoordinate = endCoordinate
+        endCoordinate = tmp
+        if !routes.isEmpty && !startQuery.isEmpty && !endQuery.isEmpty {
+            Task { await calculateRoute() }
+        }
+    }
 
-    private var resultsView: some View {
-        VStack(spacing: 6) {
+    private func legendLine(color: Color, label: String) -> some View {
+        HStack(spacing: 6) {
+            RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 18, height: 4)
+            Text(label).font(.system(size: 14, weight: .semibold))
+        }
+    }
+
+    // MARK: - Route Cards
+
+    private var fastestRouteIndex: Int? {
+        routes.indices.min(by: { routes[$0].expectedTravelTime < routes[$1].expectedTravelTime })
+    }
+
+    /// The alternative with the most new-to-clinch segments — worth flagging (audit §5).
+    private var mostNewRouteIndex: Int? {
+        guard routes.count > 1 else { return nil }
+        let counts = routes.indices.map { idx in
+            (routeSegments[idx] ?? []).filter { !$0.isClinched }.count
+        }
+        guard let maxCount = counts.max(), maxCount > 0 else { return nil }
+        return counts.firstIndex(of: maxCount)
+    }
+
+    private var routeCards: some View {
+        Group {
+            if routes.count > 2 {
+                ScrollView(showsIndicators: false) { routeCardsStack }
+                    .frame(maxHeight: 208)
+            } else {
+                routeCardsStack
+            }
+        }
+    }
+
+    private var routeCardsStack: some View {
+        VStack(spacing: 8) {
+            ForEach(Array(routes.enumerated()), id: \.offset) { index, rt in
+                routeCard(index: index, route: rt)
+            }
+        }
+    }
+
+    private func routeCard(index: Int, route rt: MKRoute) -> some View {
+        let segs = routeSegments[index] ?? []
+        let newSegs = segs.filter { !$0.isClinched }.count
+        let drivenSegs = segs.count - newSegs
+        let isSelected = index == selectedRouteIndex
+
+        return Button {
+            Haptics.selection()
+            selectedRouteIndex = index
+        } label: {
+            VStack(alignment: .leading, spacing: 9) {
+                HStack(spacing: 6) {
+                    Text("Route \(index + 1)")
+                        .font(.system(size: 17, weight: .heavy))
+                    Text("· \(formatDistance(rt.distance, decimals: 0)) · \(formatTime(rt.expectedTravelTime))")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(TMDesign.tertiaryText)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    if index == fastestRouteIndex {
+                        TMChip(text: "Fastest", bg: TMDesign.accent, fg: .white)
+                    }
+                    if index == mostNewRouteIndex {
+                        TMChip(text: "+\(newSegs.formatted()) new", bg: TMDesign.amberChipBG, fg: TMDesign.amberChipFG)
+                    }
+                }
+
+                if isLoadingSegments && segs.isEmpty {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Matching TM routes…")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(TMDesign.tertiaryText)
+                    }
+                } else if !segs.isEmpty {
+                    HStack(spacing: 8) {
+                        routeStatChip(
+                            dot: TMDesign.frontier,
+                            text: "\(newSegs.formatted()) new to clinch",
+                            bg: TMDesign.amberChipBG,
+                            fg: TMDesign.amberChipFG
+                        )
+                        routeStatChip(
+                            dot: TMDesign.clinched,
+                            text: "\(drivenSegs.formatted()) driven",
+                            bg: TMDesign.greenChipBG,
+                            fg: TMDesign.greenChipFG
+                        )
+                    }
+                } else {
+                    Text("No TM routes along this option")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(TMDesign.tertiaryText)
+                }
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(isSelected ? TMDesign.accent : cardBorder, lineWidth: isSelected ? 2 : 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
+
+    /// Dot + word chip — new/driven never rides on color alone (audit §5).
+    private func routeStatChip(dot: Color, text: String, bg: Color, fg: Color) -> some View {
+        HStack(spacing: 6) {
+            Circle().fill(dot).frame(width: 9, height: 9)
+            Text(text)
+                .font(.system(size: 14, weight: .bold))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity)
+        .background(bg, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .foregroundStyle(fg)
+    }
+
+    // MARK: - Bottom Action Bar
+
+    private var bottomActionBar: some View {
+        VStack(spacing: 8) {
             if let error = errorMessage {
                 Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            } else if let route = selectedRoute {
-                // Route stats
-                HStack {
-                    Label(formatDistance(route.distance), systemImage: "road.lanes")
-                    Spacer()
-                    Label(formatTime(route.expectedTravelTime), systemImage: "clock")
-                    Spacer()
-                    if isLoadingSegments && tmSegments.isEmpty {
-                        HStack(spacing: 4) {
-                            ProgressView().controlSize(.mini)
-                            Text("Loading TM segs...")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    } else {
-                        Label("\(tmSegments.count.formatted()) TM segs", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
-                    }
-                }
-                .font(.caption)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(TMDesign.redChipFG)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(TMDesign.redChipBG, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
 
-                if !tmSegments.isEmpty && !primaryUser.isEmpty {
-                    let clinched = tmSegments.filter(\.isClinched).count
-                    let newCount = tmSegments.count - clinched
-                    HStack(spacing: 12) {
-                        HStack(spacing: 4) {
-                            Circle().fill(.orange).frame(width: 8, height: 8)
-                            Text("\(newCount.formatted()) new to clinch")
-                        }
-                        HStack(spacing: 4) {
-                            Circle().fill(.green).frame(width: 8, height: 8)
-                            Text("\(clinched.formatted()) already driven")
-                        }
-                    }
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                }
-
-                // Action buttons
-                HStack(spacing: 8) {
-                    // Directions
-                    Button {
-                        Haptics.light()
-                        showDirections = true
-                    } label: {
-                        Label("Directions", systemImage: "list.number")
-                            .font(.caption.bold())
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 6)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.blue)
-
-                    // Open in Maps
+            if selectedRoute != nil {
+                HStack(spacing: 10) {
+                    // Primary: Navigate (Apple/Google chooser, unchanged behavior)
                     if let start = startCoordinate, let end = endCoordinate {
                         Menu {
                             Button {
@@ -315,28 +412,54 @@ struct RoutePlannerView: View {
                                 Label("Google Maps", systemImage: "arrow.up.forward.app")
                             }
                         } label: {
-                            Label("Navigate", systemImage: "arrow.triangle.turn.up.right.diamond.fill")
-                                .font(.caption.bold())
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 6)
+                            HStack(spacing: 8) {
+                                Image(systemName: "arrow.triangle.turn.up.right.diamond.fill")
+                                    .font(.system(size: 16, weight: .semibold))
+                                Text("Navigate")
+                                    .font(.system(size: 16, weight: .bold))
+                            }
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity, minHeight: 50)
+                            .background(TMDesign.accent, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Navigate")
+                        .accessibilityHint("Opens this route in Apple Maps or Google Maps")
                     }
 
-                    // Share
-                    ShareLink(item: generateDirectionsText()) {
-                        Image(systemName: "square.and.arrow.up")
-                            .font(.caption.bold())
-                            .padding(.vertical, 6)
-                            .padding(.horizontal, 10)
+                    // Secondary: turn-by-turn directions list
+                    Button {
+                        Haptics.light()
+                        showDirections = true
+                    } label: {
+                        squareSecondaryIcon("list.number")
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Turn-by-turn directions")
+
+                    // Secondary: share
+                    ShareLink(item: generateDirectionsText()) {
+                        squareSecondaryIcon("square.and.arrow.up")
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Share directions")
                 }
-                .padding(.top, 2)
             }
         }
-        .padding()
-        .background(.ultraThinMaterial)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+
+    private func squareSecondaryIcon(_ systemName: String) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: 18, weight: .semibold))
+            .foregroundStyle(TMDesign.accent)
+            .frame(width: 50, height: 50)
+            .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(cardBorder, lineWidth: 1)
+            )
     }
 
     // MARK: - Directions Sheet
@@ -353,6 +476,7 @@ struct RoutePlannerView: View {
                             Label(formatTime(route.expectedTravelTime), systemImage: "clock")
                         }
                         .font(.subheadline)
+                        .monospacedDigit()
 
                         if !tmSegments.isEmpty {
                             let clinched = tmSegments.filter(\.isClinched).count
@@ -362,10 +486,11 @@ struct RoutePlannerView: View {
                                 Spacer()
                                 if !primaryUser.isEmpty {
                                     Text("\(newCount.formatted()) new")
-                                        .foregroundStyle(.orange)
+                                        .foregroundStyle(TMDesign.amberChipFG)
                                 }
                             }
                             .font(.subheadline)
+                            .monospacedDigit()
                         }
                     } header: {
                         Text("\(startQuery) → \(endQuery)")
@@ -378,21 +503,23 @@ struct RoutePlannerView: View {
                                 VStack(alignment: .leading, spacing: 4) {
                                     HStack(alignment: .top) {
                                         Text("\(index + 1).")
-                                            .font(.caption.bold())
+                                            .font(.system(size: 15, weight: .bold))
+                                            .monospacedDigit()
                                             .foregroundStyle(.secondary)
-                                            .frame(width: 24, alignment: .trailing)
+                                            .frame(width: 26, alignment: .trailing)
                                         VStack(alignment: .leading, spacing: 2) {
                                             Text(step.instructions)
                                                 .font(.subheadline)
                                             if step.distance > 0 {
                                                 Text(formatDistance(step.distance))
-                                                    .font(.caption)
+                                                    .font(.system(size: 15))
+                                                    .monospacedDigit()
                                                     .foregroundStyle(.secondary)
                                             }
                                             if let notice = step.notice, !notice.isEmpty {
                                                 Text(notice)
-                                                    .font(.caption2)
-                                                    .foregroundStyle(.orange)
+                                                    .font(.system(size: 13))
+                                                    .foregroundStyle(TMDesign.amberChipFG)
                                             }
                                         }
                                     }
@@ -405,16 +532,18 @@ struct RoutePlannerView: View {
                                         HStack(spacing: 8) {
                                             if newSegs > 0 {
                                                 Label("\(newSegs.formatted()) new", systemImage: "road.lanes")
-                                                    .font(.caption2)
-                                                    .foregroundStyle(.orange)
+                                                    .font(.system(size: 13, weight: .medium))
+                                                    .monospacedDigit()
+                                                    .foregroundStyle(TMDesign.amberChipFG)
                                             }
                                             if clinchedSegs > 0 {
                                                 Label("\(clinchedSegs.formatted()) traveled", systemImage: "checkmark.circle")
-                                                    .font(.caption2)
-                                                    .foregroundStyle(.green)
+                                                    .font(.system(size: 13, weight: .medium))
+                                                    .monospacedDigit()
+                                                    .foregroundStyle(TMDesign.greenChipFG)
                                             }
                                         }
-                                        .padding(.leading, 28)
+                                        .padding(.leading, 30)
                                     }
                                 }
                                 .padding(.vertical, 2)
@@ -545,6 +674,10 @@ struct RoutePlannerView: View {
     // MARK: - Route Calculation
 
     private func calculateRoute() async {
+        // Submit-triggered (no Find Route button): ignore empty or re-entrant requests.
+        // Early return touches no state, so the reportFullyDisplayed contract is unaffected.
+        guard !isCalculating, !startQuery.isEmpty, !endQuery.isEmpty else { return }
+        focusedField = nil
         isCalculating = true
         errorMessage = nil
         routes = []

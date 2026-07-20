@@ -8,10 +8,16 @@ struct RoadTripListView: View {
     @State private var tripToDelete: RoadTrip?
     @State private var showOrphanedDialog = false
     @State private var showLocationDeniedAlert = false
+    @State private var showTripTypeChooser = false
 
     private var locationPermissionDenied: Bool {
         let status = CLLocationManager().authorizationStatus
         return status == .denied || status == .restricted
+    }
+
+    /// Empty state replaces both the start section and the past-trips placeholder (audit §11).
+    private var showEmptyState: Bool {
+        !isLoading && trips.isEmpty && !recorder.isRecording
     }
 
     var body: some View {
@@ -22,78 +28,37 @@ struct RoadTripListView: View {
                     NavigationLink {
                         RoadTripRecordingView()
                     } label: {
-                        HStack {
-                            Circle()
-                                .fill(.red)
-                                .frame(width: 10, height: 10)
-                                .accessibilityHidden(true)
-                            VStack(alignment: .leading) {
+                        HStack(spacing: 10) {
+                            TMPulsingDot(color: TMDesign.rail, size: 10)
+                            VStack(alignment: .leading, spacing: 2) {
                                 Text(recorder.currentTrip?.name ?? "Recording...")
                                     .font(.headline)
                                 Text("\(recorder.elapsedFormatted) - \(recorder.pointCount.formatted()) points")
-                                    .font(.caption)
+                                    .font(.subheadline)
+                                    .monospacedDigit()
                                     .foregroundStyle(.secondary)
                             }
                         }
                     }
                     .accessibilityLabel("Recording in progress: \(recorder.currentTrip?.name ?? "trip"). Tap to view.")
-                } else {
-                    Button {
-                        if locationPermissionDenied {
-                            showLocationDeniedAlert = true
-                        } else {
-                            Haptics.success()
-                            recorder.startTrip(tripType: .road)
-                        }
-                    } label: {
-                        Label("Start Road Trip", systemImage: "car.fill")
-                            .font(.headline)
-                            .foregroundStyle(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 8)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .accessibilityHint("Begins GPS tracking to record which roads you drive on")
-
-                    Button {
-                        if locationPermissionDenied {
-                            showLocationDeniedAlert = true
-                        } else {
-                            Haptics.success()
-                            recorder.startTrip(tripType: .rail)
-                        }
-                    } label: {
-                        Label("Start Train Trip", systemImage: "tram.fill")
-                            .font(.headline)
-                            .foregroundStyle(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 8)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.red)
-                    .accessibilityHint("Begins GPS tracking to record which rail segments you ride on")
+                } else if !showEmptyState {
+                    startTripButton
+                        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+                        .listRowBackground(Color.clear)
                 }
             }
 
             // Past trips
-            Section("Past Trips") {
+            Section {
                 if isLoading {
-                    ProgressView()
-                } else if trips.isEmpty {
-                    VStack(spacing: 12) {
-                        Image(systemName: "car")
-                            .font(.system(size: 40))
-                            .foregroundStyle(.secondary)
-                        Text("No trips recorded yet")
-                            .font(.headline)
-                            .foregroundStyle(.secondary)
-                        Text("Tap \"Start Road Trip\" above to begin tracking. Your GPS will detect which TM routes you drive on.")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                            .multilineTextAlignment(.center)
+                    ForEach(0..<3, id: \.self) { _ in
+                        TMSkeletonRow()
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 20)
+                } else if trips.isEmpty {
+                    emptyStateCard
+                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
                 } else {
                     ForEach(trips) { trip in
                         NavigationLink {
@@ -104,9 +69,28 @@ struct RoadTripListView: View {
                     }
                     .onDelete(perform: confirmDelete)
                 }
+            } header: {
+                if !showEmptyState {
+                    TMDesign.sectionHeader("Past Trips")
+                }
             }
         }
         .navigationTitle("Road Trips")
+        .confirmationDialog("Start a trip", isPresented: $showTripTypeChooser, titleVisibility: .visible) {
+            Button {
+                startTrip(.road)
+            } label: {
+                Label("Road Trip", systemImage: "car.fill")
+            }
+            Button {
+                startTrip(.rail)
+            } label: {
+                Label("Train Trip", systemImage: "tram.fill")
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("GPS tracking detects which TM routes you travel — no tapping required.")
+        }
         .alert("Delete Trip?", isPresented: .constant(tripToDelete != nil), presenting: tripToDelete) { trip in
             Button("Cancel", role: .cancel) {
                 tripToDelete = nil
@@ -160,6 +144,87 @@ struct RoadTripListView: View {
         }
     }
 
+    /// Single entry point (audit §4): one Start Trip button opening a Road/Rail choice.
+    /// The location-permission check gates both choices.
+    private var startTripButton: some View {
+        Button {
+            requestStartTrip()
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "plus.circle.fill")
+                    .font(.system(size: 18, weight: .bold))
+                Text("Start Trip")
+                    .font(.system(size: 17, weight: .bold))
+            }
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .frame(minHeight: 50)
+            .background(TMDesign.accent, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Choose road or rail, then GPS tracking records which routes you travel")
+    }
+
+    /// Empty state per audit §11 — "Record your first drive".
+    private var emptyStateCard: some View {
+        VStack(spacing: 14) {
+            ZStack {
+                Circle()
+                    .fill(TMDesign.blueChipBG)
+                    .frame(width: 76, height: 76)
+                Image(systemName: "car.fill")
+                    .font(.system(size: 30, weight: .semibold))
+                    .foregroundStyle(TMDesign.blueChipFG)
+            }
+            .accessibilityHidden(true)
+
+            Text("Record your first drive")
+                .font(.system(size: 18, weight: .heavy))
+
+            Text("Start a trip and your GPS quietly matches the TM routes you travel — no tapping required.")
+                .font(.system(size: 15))
+                .foregroundStyle(TMDesign.secondaryText)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button {
+                requestStartTrip()
+            } label: {
+                Label("Start a trip", systemImage: "plus")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 22)
+                    .padding(.vertical, 13)
+                    .background(TMDesign.accent, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 2)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 24)
+        .padding(.horizontal, 18)
+        .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
+    private func requestStartTrip() {
+        if locationPermissionDenied {
+            showLocationDeniedAlert = true
+        } else {
+            showTripTypeChooser = true
+        }
+    }
+
+    private func startTrip(_ type: TripType) {
+        // Re-check here too so both dialog choices are gated even if permission
+        // changed while the chooser was up.
+        if locationPermissionDenied {
+            showLocationDeniedAlert = true
+        } else {
+            Haptics.success()
+            recorder.startTrip(tripType: type)
+        }
+    }
+
     private func loadTrips() async {
         let loaded = (try? await TripStorageService.shared.listTrips()) ?? []
         trips = loaded.filter { $0.status != .recording }
@@ -185,27 +250,43 @@ struct RoadTripListView: View {
 struct TripRowView: View {
     let trip: RoadTrip
 
+    private var isRail: Bool { trip.tripType == .rail }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Image(systemName: trip.tripType == .rail ? "tram.fill" : "car.fill")
-                    .foregroundStyle(trip.tripType == .rail ? .red : .blue)
-                    .font(.caption)
+        HStack(spacing: 12) {
+            Image(systemName: isRail ? "tram.fill" : "car.fill")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(isRail ? TMDesign.redChipFG : TMDesign.blueChipFG)
+                .frame(width: 34, height: 34)
+                .background(
+                    isRail ? TMDesign.redChipBG : TMDesign.blueChipBG,
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                )
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 3) {
                 Text(trip.name)
-                    .font(.headline)
+                    .font(.system(size: 17, weight: .bold))
+                    .lineLimit(1)
+                Text(metadataLine)
+                    .font(.system(size: 15))
+                    .monospacedDigit()
+                    .foregroundStyle(TMDesign.secondaryText)
+                    .lineLimit(2)
             }
-            HStack(spacing: 12) {
-                Label(trip.startDate.formatted(date: .abbreviated, time: .shortened), systemImage: "calendar")
-                if let dur = trip.duration {
-                    Label(formatDuration(dur), systemImage: "clock")
-                }
-                Label("\(trip.matchedSegments.count.formatted()) segments", systemImage: trip.tripType == .rail ? "tram" : "road.lanes")
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 6)
+        .frame(minHeight: 60)
         .accessibilityElement(children: .combine)
+    }
+
+    private var metadataLine: String {
+        var parts = [trip.startDate.formatted(date: .abbreviated, time: .shortened)]
+        if let dur = trip.duration {
+            parts.append(formatDuration(dur))
+        }
+        parts.append("\(trip.matchedSegments.count.formatted()) segments")
+        return parts.joined(separator: " · ")
     }
 
     private func formatDuration(_ dur: TimeInterval) -> String {
