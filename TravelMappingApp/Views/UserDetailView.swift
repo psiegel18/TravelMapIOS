@@ -9,6 +9,11 @@ struct UserDetailView: View {
     @State private var profile: UserProfile?
     @State private var isLoading = true
     @State private var selectedTab = 0
+    // The Map tab mounts on first visit, not at profile open: an MKMapView adding
+    // hundreds of polyline overlays blocks the main thread for seconds (Sentry
+    // app-hang TRAVELMAPPING-16/-H captured it inside MKMapView addOverlays:),
+    // and doing that work behind the List tab hung every large-profile open.
+    @State private var hasActivatedMapTab = false
     @State private var shareContent: ShareContent?
     @State private var mapLoadedRegions: Set<String> = []
     @State private var userMiles: Double = 0
@@ -54,18 +59,25 @@ struct UserDetailView: View {
                             .opacity(selectedTab == 0 ? 1 : 0)
                             .allowsHitTesting(selectedTab == 0)
 
-                        TravelMapView(
-                            username: username,
-                            dataService: dataService,
-                            loadedRegionsBinding: $mapLoadedRegions,
-                            isActiveTab: selectedTab == 1
-                        )
-                        .opacity(selectedTab == 1 ? 1 : 0)
-                        .allowsHitTesting(selectedTab == 1)
+                        if hasActivatedMapTab {
+                            TravelMapView(
+                                username: username,
+                                dataService: dataService,
+                                loadedRegionsBinding: $mapLoadedRegions,
+                                isActiveTab: selectedTab == 1
+                            )
+                            .opacity(selectedTab == 1 ? 1 : 0)
+                            .allowsHitTesting(selectedTab == 1)
+                        }
 
                         StatisticsView(profile: profile)
                             .opacity(selectedTab == 2 ? 1 : 0)
                             .allowsHitTesting(selectedTab == 2)
+                    }
+                    .onChange(of: selectedTab) {
+                        if selectedTab == 1 {
+                            hasActivatedMapTab = true
+                        }
                     }
                 }
             } else {

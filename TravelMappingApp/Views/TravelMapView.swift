@@ -172,10 +172,18 @@ struct TravelMapView: View {
         return sqrt(dLat * dLat + dLng * dLng)
     }
 
-    /// Max coordinates per polyline — keeps MapKit dash rendering consistent on long routes.
-    /// MapKit stops rendering dash patterns on geographically long polylines,
-    /// so we keep this low to ensure dashes stay visible.
-    private let maxPolylineCoords = 15
+    /// Max coordinates per polyline. MapKit stops rendering dash patterns on
+    /// geographically long polylines, so dashed/dotted road styles need short
+    /// polylines (15 coords) to keep dashes visible. Solid styles have no such
+    /// limit — and a low cap multiplies the overlay count enormously (a 20k-segment
+    /// region becomes ~1,400 MapPolylines), which blocks the main thread for
+    /// 10+ seconds inside MKMapView addOverlays: (Sentry app-hang TRAVELMAPPING-H).
+    private var maxPolylineCoords: Int {
+        switch MapStyleService.parse(settings.roadLineStyle) {
+        case .dashed, .dotted: return 15
+        case .solid, .thick, .thin: return 200
+        }
+    }
 
     private func distance(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> Double {
         let dLat = (a.latitude - b.latitude) * 111_320
@@ -320,6 +328,10 @@ struct TravelMapView: View {
         }
         .onChange(of: selectedRegions) {
             Task { await loadSegments() }
+        }
+        .onChange(of: settings.roadLineStyle) {
+            // The merge cap depends on the line style (dashes need short polylines)
+            rebuildPolylines()
         }
         .onChange(of: locationManager.lastLocation?.timestamp) {
             if zoomToUserOnNextFix, let loc = locationManager.lastLocation {
