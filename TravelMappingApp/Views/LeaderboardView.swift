@@ -139,7 +139,19 @@ struct PodiumView: View {
     }
 
     private func podiumColumn(place: Int, user: TMStatsService.UserRegionStats) -> some View {
-        NavigationLink(value: user.username) {
+        // Content with a hidden NavigationLink overlay — a bare NavigationLink row
+        // child would get the List's disclosure chevron drawn over the podium art.
+        podiumColumnContent(place: place, user: user)
+            .overlay {
+                NavigationLink(value: user.username) { EmptyView() }
+                    .opacity(0)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityLabel("Rank \(place), \(user.username), \(formattedDistance(miles: user.totalMiles, useMiles: useMiles))")
+    }
+
+    private func podiumColumnContent(place: Int, user: TMStatsService.UserRegionStats) -> some View {
             VStack(spacing: 6) {
                 if place == 1 {
                     Text("👑")
@@ -176,10 +188,6 @@ struct PodiumView: View {
             }
             .frame(maxWidth: .infinity)
             .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Rank \(place), \(user.username), \(formattedDistance(miles: user.totalMiles, useMiles: useMiles))")
     }
 
     @ViewBuilder

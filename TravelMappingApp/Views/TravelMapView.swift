@@ -1117,7 +1117,7 @@ struct TravelMapView: View {
     /// the same showClinched/showUnclinched/showRail state as the Layers sheet.
     private var filterPills: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 filterPill(
                     "Traveled \(clinchedCount.formatted())",
                     isOn: showClinched,
@@ -1175,7 +1175,8 @@ struct TravelMapView: View {
                     .monospacedDigit()
             }
             .foregroundStyle(isOn ? Color.white : offFG)
-            .padding(.horizontal, 14)
+            // Tight enough that all three pills fit without scrolling on a 402pt screen
+            .padding(.horizontal, 10)
             .frame(minHeight: 44)
             .background(isOn ? onBG : TMDesign.cardBG, in: Capsule())
             .overlay(Capsule().stroke(isOn ? Color.clear : TMDesign.hairline, lineWidth: 1))

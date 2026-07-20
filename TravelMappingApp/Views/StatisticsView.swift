@@ -312,10 +312,24 @@ struct StatisticsView: View {
 
     // MARK: - Overview
 
+    /// The user's own traveled routes in the given categories (matches the List tab
+    /// and hero strip) — NOT the region-wide route totals from the API.
+    private func traveledRouteCount(for categories: [RouteCategory]) -> Int {
+        var routes = Set<String>()
+        for category in categories {
+            for segment in profile.segments(for: category) {
+                routes.insert("\(segment.region1) \(segment.route)")
+                if let r2 = segment.region2, let route2 = segment.route2 {
+                    routes.insert("\(r2) \(route2)")
+                }
+            }
+        }
+        return routes.count
+    }
+
     private var categoryBreakdownCard: some View {
         let roadMi = regionStats.reduce(0.0) { $0 + $1.clinchedMileage }
         let roadTotal = regionStats.reduce(0.0) { $0 + $1.totalMileage }
-        let roadRoutes = regionStats.reduce(0) { $0 + $1.routeCount }
 
         return VStack(alignment: .leading, spacing: 14) {
             TMDesign.sectionHeader("By Category")
@@ -324,7 +338,7 @@ struct StatisticsView: View {
                 icon: "car.fill",
                 tileBG: TMDesign.blueChipBG, tileFG: TMDesign.blueChipFG,
                 name: "Roads",
-                routeCount: roadRoutes,
+                routeCount: traveledRouteCount(for: [.road, .ferry]),
                 clinched: roadMi, total: roadTotal,
                 barColor: TMDesign.accent,
                 percentColor: TMDesign.clinched,
@@ -337,7 +351,7 @@ struct StatisticsView: View {
                 icon: "tram.fill",
                 tileBG: TMDesign.redChipBG, tileFG: TMDesign.redChipFG,
                 name: "Rail & Transit",
-                routeCount: railTotals.routeCount,
+                routeCount: traveledRouteCount(for: [.rail]),
                 clinched: railTotals.clinchedMileage, total: railTotals.totalMileage,
                 barColor: TMDesign.rail,
                 percentColor: TMDesign.frontier,
@@ -600,7 +614,6 @@ struct StatisticsView: View {
     private var heroCard: some View {
         let totalMi = regionStats.reduce(0.0) { $0 + $1.totalMileage }
         let clinchedMi = regionStats.reduce(0.0) { $0 + $1.clinchedMileage }
-        let totalRoutes = regionStats.reduce(0) { $0 + $1.routeCount }
         let fraction = totalMi > 0 ? clinchedMi / totalMi : 0
 
         return VStack(spacing: 16) {
@@ -635,7 +648,9 @@ struct StatisticsView: View {
 
             HStack(spacing: 0) {
                 heroCountStat(value: formatInt(profile.allRegions.count), label: "regions")
-                heroCountStat(value: formatInt(totalRoutes > 0 ? totalRoutes : profile.allRoutes.count), label: "routes")
+                // The user's own traveled routes (matches the List tab) — NOT the sum of
+                // per-region routeCount, which counts every route the regions contain.
+                heroCountStat(value: formatInt(profile.allRoutes.count), label: "routes")
                 heroCountStat(value: formatInt(profile.totalSegments), label: "segments")
             }
         }

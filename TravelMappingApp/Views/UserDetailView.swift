@@ -45,7 +45,6 @@ struct UserDetailView: View {
                         Label("Stats", systemImage: "chart.bar").tag(2)
                     }
                     .pickerStyle(.segmented)
-                    .controlSize(.large)
                     .padding(.horizontal)
                     .padding(.vertical, 10)
 

@@ -76,22 +76,10 @@ struct RoadTripListView: View {
             }
         }
         .navigationTitle("Road Trips")
-        .confirmationDialog("Start a trip", isPresented: $showTripTypeChooser, titleVisibility: .visible) {
-            Button {
-                startTrip(.road)
-            } label: {
-                Label("Road Trip", systemImage: "car.fill")
-            }
-            Button {
-                startTrip(.rail)
-            } label: {
-                Label("Train Trip", systemImage: "tram.fill")
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("GPS tracking detects which TM routes you travel — no tapping required.")
-        }
-        .alert("Delete Trip?", isPresented: .constant(tripToDelete != nil), presenting: tripToDelete) { trip in
+        .alert("Delete Trip?", isPresented: Binding(
+            get: { tripToDelete != nil },
+            set: { if !$0 { tripToDelete = nil } }
+        ), presenting: tripToDelete) { trip in
             Button("Cancel", role: .cancel) {
                 tripToDelete = nil
             }
@@ -163,6 +151,7 @@ struct RoadTripListView: View {
         }
         .buttonStyle(.plain)
         .accessibilityHint("Choose road or rail, then GPS tracking records which routes you travel")
+        .tripTypeChooser(isPresented: $showTripTypeChooser, startTrip: startTrip)
     }
 
     /// Empty state per audit §11 — "Record your first drive".
@@ -199,6 +188,7 @@ struct RoadTripListView: View {
             }
             .buttonStyle(.plain)
             .padding(.top, 2)
+            .tripTypeChooser(isPresented: $showTripTypeChooser, startTrip: startTrip)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 24)
@@ -206,6 +196,10 @@ struct RoadTripListView: View {
         .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
 
+    // The chooser is attached to the trigger buttons (only one exists in the tree
+    // at a time), NOT chained on the List with the three alerts — four presentation
+    // modifiers chained on one node silently drop the confirmationDialog, the same
+    // failure class as the documented Section-chained-alerts bug.
     private func requestStartTrip() {
         if locationPermissionDenied {
             showLocationDeniedAlert = true
@@ -293,5 +287,27 @@ struct TripRowView: View {
         let hours = Int(dur) / 3600
         let minutes = (Int(dur) % 3600) / 60
         return hours > 0 ? "\(hours)h \(minutes)m" : "\(minutes)m"
+    }
+}
+
+/// Road/Rail trip-type chooser, attached at the trigger button so it never shares a
+/// presentation chain with the List's alerts (chained presentations silently fail).
+private extension View {
+    func tripTypeChooser(isPresented: Binding<Bool>, startTrip: @escaping (TripType) -> Void) -> some View {
+        confirmationDialog("Start a trip", isPresented: isPresented, titleVisibility: .visible) {
+            Button {
+                startTrip(.road)
+            } label: {
+                Label("Road Trip", systemImage: "car.fill")
+            }
+            Button {
+                startTrip(.rail)
+            } label: {
+                Label("Train Trip", systemImage: "tram.fill")
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("GPS tracking detects which TM routes you travel — no tapping required.")
+        }
     }
 }
