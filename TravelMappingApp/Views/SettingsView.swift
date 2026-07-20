@@ -11,6 +11,7 @@ struct SettingsView: View {
     @State private var versionTapCount = 0
     @State private var showSentryTestAlert = false
     @State private var showTipJar = false
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var isValidatingUser = false
     @State private var userValidationResult: Bool? = Self.cachedValidationResult
     @State private var lastValidatedUsername = Self.cachedValidatedUsername
@@ -208,9 +209,16 @@ struct SettingsView: View {
                     Label("Leave a Tip", systemImage: "heart")
                 }
                 .sheet(isPresented: $showTipJar) {
-                    TipJarSheet()
-                        .presentationDetents([.medium, .large])
-                        .presentationDragIndicator(.visible)
+                    // Medium detent is right for iPhone, but on iPad it renders as a
+                    // half-height card that clips the third tip — use a full form
+                    // sheet there instead.
+                    if sizeClass == .compact {
+                        TipJarSheet()
+                            .presentationDetents([.medium, .large])
+                            .presentationDragIndicator(.visible)
+                    } else {
+                        TipJarSheet()
+                    }
                 }
             } header: {
                 TMDesign.sectionHeader("Support")
