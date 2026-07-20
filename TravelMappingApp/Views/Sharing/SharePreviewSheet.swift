@@ -3,13 +3,15 @@ import SwiftUI
 enum ShareContent: Identifiable {
     case stats(image: UIImage, username: String, subtitle: String)
     case map(image: UIImage, cardImage: UIImage, username: String)
-    case trip(image: UIImage)
+    case trip(image: UIImage, tripID: UUID)
 
     var id: String {
         switch self {
         case .stats(_, let u, _): return "stats-\(u)"
         case .map(_, _, let u): return "map-\(u)"
-        case .trip: return "trip-\(UUID().uuidString)"
+        // Must be stable across accesses — a fresh UUID per access makes SwiftUI
+        // think the sheet's item changed and tear it down mid-interaction.
+        case .trip(_, let tripID): return "trip-\(tripID.uuidString)"
         }
     }
 
@@ -26,7 +28,7 @@ enum ShareContent: Identifiable {
         switch self {
         case .stats(let img, _, _): return img
         case .map(_, let card, _): return card
-        case .trip(let img): return img
+        case .trip(let img, _): return img
         }
     }
 
@@ -83,9 +85,10 @@ struct SharePreviewSheet: View {
                         .buttonStyle(.plain)
                     }
 
-                    Button {
-                        shareAsImage()
-                    } label: {
+                    ShareLink(
+                        item: Image(uiImage: content.cardImage),
+                        preview: SharePreview(content.linkTitle, image: Image(uiImage: content.cardImage))
+                    ) {
                         Label("Share as Image", systemImage: "photo")
                             .font(.headline)
                             .foregroundStyle(content.hasLink ? .blue : .white)
@@ -132,13 +135,11 @@ struct SharePreviewSheet: View {
         presentShareSheet(items: [item])
     }
 
-    private func shareAsImage() {
-        presentShareSheet(items: [content.cardImage])
-    }
-
     private func presentShareSheet(items: [Any]) {
-        guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-              let root = scene.windows.first?.rootViewController else { return }
+        let windowScenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let scene = windowScenes.first { $0.activationState == .foregroundActive } ?? windowScenes.first
+        guard let root = scene?.keyWindow?.rootViewController
+                ?? scene?.windows.first?.rootViewController else { return }
 
         var topVC = root
         while let presented = topVC.presentedViewController {

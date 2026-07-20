@@ -13,15 +13,18 @@ class SegmentMatcher {
 
     private static let cellSize: Double = 0.01 // ~1.1 km
 
-    private var segmentCache: [Int: TravelMappingAPI.MapSegment] = [:]
-    private var spatialGrid: [GridCell: [Int]] = [:]  // cell -> segment IDs
+    private var segmentCache: [String: TravelMappingAPI.MapSegment] = [:]
+    private var spatialGrid: [GridCell: [String]] = [:]  // cell -> segment IDs
+    private var rootToListName: [String: String] = [:]   // root -> "FL I-95" style list name
     private var currentBBox: (minLat: Double, maxLat: Double, minLng: Double, maxLng: Double)?
 
     // MARK: - Tracking State
 
-    private var currentSegmentID: Int?
+    private var currentSegmentID: String?
     private var currentSegmentEntryTime: Date?
-    private var consecutiveMatchCount: Int = 0
+    private var pendingSegmentID: String?
+    private var pendingMatchCount: Int = 0
+    private var pendingFirstMatchTime: Date?
     private(set) var matchedSegments: [MatchedSegment] = []
 
     private static let matchThreshold: CLLocationDistance = 60   // meters, perpendicular projection
@@ -36,7 +39,8 @@ class SegmentMatcher {
 
     /// Process a GPS point and return the matched segment (if any).
     func processPoint(_ point: GPSPoint) -> TravelMappingAPI.MapSegment? {
-        guard point.horizontalAccuracy < 200 else { return nil } // filter bad fixes
+        // Negative horizontalAccuracy means the fix is invalid, not "very accurate"
+        guard point.horizontalAccuracy >= 0 && point.horizontalAccuracy < 200 else { return nil } // filter bad fixes
 
         let cell = gridCell(for: point.coordinate)
         let neighborCells = neighbors(of: cell)
@@ -45,7 +49,7 @@ class SegmentMatcher {
         var bestDistance: CLLocationDistance = .greatestFiniteMagnitude
         let useBearingFilter = point.course >= 0 && point.speed >= Self.minSpeedForBearingCheck
 
-        var visited = Set<Int>()
+        var visited = Set<String>()
         for neighborCell in neighborCells {
             guard let segmentIDs = spatialGrid[neighborCell] else { continue }
             for segID in segmentIDs {
@@ -81,32 +85,47 @@ class SegmentMatcher {
             if currentSegmentID != nil {
                 finalizeCurrentSegment(at: point.timestamp)
             }
-            consecutiveMatchCount = 0
+            clearPendingCandidate()
             return nil
         }
 
-        // Same segment as before
+        // Same segment as before — any pending switch candidate was jitter
         if matched.id == currentSegmentID {
-            consecutiveMatchCount += 1
+            clearPendingCandidate()
             return matched
         }
 
-        // New segment — require consecutive matches to avoid jitter
-        if consecutiveMatchCount < Self.minConsecutiveMatches - 1 {
-            consecutiveMatchCount += 1
-            return segmentCache[currentSegmentID ?? -1]
+        // Different segment — require minConsecutiveMatches consecutive hits on the
+        // SAME candidate before committing, so one noisy overpass/cross-street point
+        // can't hijack the track.
+        if matched.id == pendingSegmentID {
+            pendingMatchCount += 1
+        } else {
+            pendingSegmentID = matched.id
+            pendingMatchCount = 1
+            pendingFirstMatchTime = point.timestamp
+        }
+
+        guard pendingMatchCount >= Self.minConsecutiveMatches else {
+            return currentSegmentID.flatMap { segmentCache[$0] }
         }
 
         // Commit to new segment
         if currentSegmentID != nil {
-            finalizeCurrentSegment(at: point.timestamp)
+            finalizeCurrentSegment(at: pendingFirstMatchTime ?? point.timestamp)
         }
 
         currentSegmentID = matched.id
-        currentSegmentEntryTime = point.timestamp
-        consecutiveMatchCount = 1
+        currentSegmentEntryTime = pendingFirstMatchTime ?? point.timestamp
+        clearPendingCandidate()
 
         return matched
+    }
+
+    private func clearPendingCandidate() {
+        pendingSegmentID = nil
+        pendingMatchCount = 0
+        pendingFirstMatchTime = nil
     }
 
     /// Check if we need to fetch new segment data from the API.
@@ -133,9 +152,19 @@ class SegmentMatcher {
         )
     }
 
-    /// Update the segment cache with new data from the API.
-    func updateCache(segments: [TravelMappingAPI.MapSegment], bbox: (minLat: Double, maxLat: Double, minLng: Double, maxLng: Double)) {
+    /// Update the segment cache with new data from the API. `routes` supplies the
+    /// root → listName mapping (e.g. "fl.i095" → "FL I-95") that MatchedSegment and
+    /// the .list export need — segments alone only carry the root.
+    func updateCache(
+        segments: [TravelMappingAPI.MapSegment],
+        routes: [TravelMappingAPI.RouteMetadata],
+        bbox: (minLat: Double, maxLat: Double, minLng: Double, maxLng: Double)
+    ) {
         currentBBox = bbox
+
+        for route in routes where !route.listName.isEmpty {
+            rootToListName[route.root] = route.listName
+        }
 
         for seg in segments {
             if segmentCache[seg.id] == nil {
@@ -181,7 +210,18 @@ class SegmentMatcher {
         matchedSegments = segments
         currentSegmentID = nil
         currentSegmentEntryTime = nil
-        consecutiveMatchCount = 0
+        clearPendingCandidate()
+    }
+
+    /// Clear all per-trip tracking state. Must be called when a new trip starts —
+    /// otherwise the previous trip's matched segments leak into the next trip's
+    /// finalizeTrip() output and exported .list file. The spatial segment cache is
+    /// kept: it's keyed by location, not by trip.
+    func reset() {
+        matchedSegments = []
+        currentSegmentID = nil
+        currentSegmentEntryTime = nil
+        clearPendingCandidate()
     }
 
     // MARK: - Private
@@ -194,7 +234,7 @@ class SegmentMatcher {
         let matched = MatchedSegment(
             id: UUID(),
             root: seg.root,
-            listName: seg.root, // will be resolved later
+            listName: rootToListName[seg.root] ?? seg.root,
             startWaypoint: seg.startName,
             endWaypoint: seg.endName,
             entryTime: entryTime,

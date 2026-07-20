@@ -5,15 +5,25 @@ import Sentry
 struct TravelMappingWatchApp: App {
     @StateObject private var sessionManager = WatchSessionManager.shared
 
+    /// Mirrors the iOS channel detection in TravelMappingApp.swift: a sandbox receipt
+    /// means TestFlight, otherwise App Store. Keeps watch events in the same Sentry
+    /// environments (development/testflight/appstore) as the iPhone app.
+    private static let isTestFlight = Bundle.main.appStoreReceiptURL?.lastPathComponent == "sandboxReceipt"
+
     init() {
+        let buildChannel: String
+        #if DEBUG
+        buildChannel = "development"
+        #else
+        buildChannel = Self.isTestFlight ? "testflight" : "appstore"
+        #endif
+
         SentrySDK.start(configureOptions: { options in
             options.dsn = "https://4d5e26ddfb95aaaef4721256a35176e5@o4510452629700608.ingest.us.sentry.io/4511177068183552"
             #if DEBUG
             options.debug = true
-            options.environment = "development"
-            #else
-            options.environment = "production"
             #endif
+            options.environment = buildChannel
             options.sampleRate = 1.0
             options.tracesSampleRate = 0.5
             options.enableCrashHandler = true
@@ -24,6 +34,7 @@ struct TravelMappingWatchApp: App {
 
             options.initialScope = { scope in
                 scope.setTag(value: "watchos", key: "app.platform")
+                scope.setTag(value: buildChannel, key: "app.channel")
                 scope.setTag(value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown", key: "app.version")
                 return scope
             }
@@ -83,14 +94,14 @@ struct WatchDashboardView: View {
 
                 HStack(spacing: 16) {
                     VStack(spacing: 1) {
-                        Text("\(regionCount)")
+                        Text("\(regionCount.formatted())")
                             .font(.system(.subheadline, design: .rounded).bold())
                         Text("Regions")
                             .font(.system(size: 9))
                             .foregroundStyle(.secondary)
                     }
                     VStack(spacing: 1) {
-                        Text("\(routeCount)")
+                        Text("\(routeCount.formatted())")
                             .font(.system(.subheadline, design: .rounded).bold())
                         Text("Routes")
                             .font(.system(size: 9))
@@ -98,9 +109,9 @@ struct WatchDashboardView: View {
                     }
                     if let rank, let total = totalUsers {
                         VStack(spacing: 1) {
-                            Text("#\(rank)")
+                            Text("#\(rank.formatted())")
                                 .font(.system(.subheadline, design: .rounded).bold())
-                            Text("of \(total)")
+                            Text("of \(total.formatted())")
                                 .font(.system(size: 9))
                                 .foregroundStyle(.secondary)
                         }
@@ -139,7 +150,7 @@ struct WatchDashboardView: View {
                 routeCount = routes.count
             }
         } catch {
-            print("Watch routes error: \(error)")
+            SentrySDK.capture(error: error)
         }
 
         do {
@@ -149,7 +160,7 @@ struct WatchDashboardView: View {
                 parseCSVStats(csv)
             }
         } catch {
-            print("Watch stats error: \(error)")
+            SentrySDK.capture(error: error)
         }
 
         isLoading = false
@@ -205,10 +216,20 @@ struct WatchTripView: View {
                                 .foregroundStyle(trip.isPaused ? .orange : .red)
                         }
 
-                        // Timer
-                        Text(trip.formattedTime)
-                            .font(.system(.title, design: .rounded).bold())
-                            .monospacedDigit()
+                        // Timer — tick locally off startDate when the phone provides it
+                        // (applicationContext pushes are coalesced, so the pushed
+                        // elapsedTime alone freezes between updates).
+                        if let start = trip.startDate, !trip.isPaused {
+                            TimelineView(.periodic(from: .now, by: 1.0)) { timeline in
+                                Text(WatchSessionManager.TripState.format(max(timeline.date.timeIntervalSince(start), 0)))
+                                    .font(.system(.title, design: .rounded).bold())
+                                    .monospacedDigit()
+                            }
+                        } else {
+                            Text(trip.formattedTime)
+                                .font(.system(.title, design: .rounded).bold())
+                                .monospacedDigit()
+                        }
 
                         // Speed + Distance
                         HStack(spacing: 12) {
@@ -241,10 +262,10 @@ struct WatchTripView: View {
 
                         // Counts
                         HStack(spacing: 12) {
-                            Label("\(trip.matchedCount)", systemImage: "checkmark.circle")
+                            Label("\(trip.matchedCount.formatted())", systemImage: "checkmark.circle")
                                 .font(.caption2)
                                 .foregroundStyle(.green)
-                            Label("\(trip.pointCount)", systemImage: "location")
+                            Label("\(trip.pointCount.formatted())", systemImage: "location")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }

@@ -111,7 +111,7 @@ struct ListFileGenerator {
         // Group segments by root, merge consecutive
         let sorted = segments.sorted { a, b in
             if a.root != b.root { return a.root < b.root }
-            return a.id < b.id
+            return a.orderIndex < b.orderIndex
         }
 
         struct SimpleSegment {

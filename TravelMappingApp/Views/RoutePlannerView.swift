@@ -18,7 +18,17 @@ struct RoutePlannerView: View {
     @State private var isLoadingSegments = false
     @State private var errorMessage: String?
     @State private var showDirections = false
+    @State private var hasReportedInitialDisplay = false
     @AppStorage("primaryUser") private var primaryUser = ""
+    @ObservedObject private var settings = SyncedSettingsService.shared
+
+    private var unit: String { settings.useMiles ? "mi" : "km" }
+
+    /// Format a distance in meters using the user's unit preference.
+    private func formatDistance(_ meters: Double, decimals: Int = 1) -> String {
+        let value = settings.useMiles ? meters / 1609.34 : meters / 1000
+        return String(format: "%.\(decimals)f %@", value, unit)
+    }
 
     private var selectedRoute: MKRoute? {
         guard selectedRouteIndex < routes.count else { return nil }
@@ -160,6 +170,15 @@ struct RoutePlannerView: View {
         .sheet(isPresented: $showDirections) {
             directionsSheet
         }
+        .task {
+            // The traced view uses waitForFullDisplay, so every visit must eventually
+            // report. In the default (no search pending) state the view is already
+            // fully displayed on appear; route calculation reports its own completion.
+            if !hasReportedInitialDisplay && !isCalculating {
+                hasReportedInitialDisplay = true
+                SentrySDK.reportFullyDisplayed()
+            }
+        }
     }
 
     // MARK: - Route Selector
@@ -179,7 +198,7 @@ struct RoutePlannerView: View {
                         VStack(spacing: 3) {
                             Text("Route \(index + 1)")
                                 .font(.caption2.bold())
-                            Text(String(format: "%.0f mi · %@", rt.distance / 1609.34, formatTime(rt.expectedTravelTime)))
+                            Text("\(formatDistance(rt.distance, decimals: 0)) · \(formatTime(rt.expectedTravelTime))")
                                 .font(.caption2)
                             if isLoadingSegments && segs.isEmpty {
                                 ProgressView()
@@ -189,7 +208,7 @@ struct RoutePlannerView: View {
                                     if newSegs > 0 {
                                         HStack(spacing: 2) {
                                             Circle().fill(.orange).frame(width: 6, height: 6)
-                                            Text("\(newSegs) new")
+                                            Text("\(newSegs.formatted()) new")
                                                 .font(.caption2.bold())
                                                 .foregroundStyle(isSelected ? .white : .orange)
                                         }
@@ -197,7 +216,7 @@ struct RoutePlannerView: View {
                                     if drivenSegs > 0 {
                                         HStack(spacing: 2) {
                                             Circle().fill(.green).frame(width: 6, height: 6)
-                                            Text("\(drivenSegs) driven")
+                                            Text("\(drivenSegs.formatted()) driven")
                                                 .font(.caption2)
                                                 .foregroundStyle(isSelected ? .white.opacity(0.8) : .green)
                                         }
@@ -233,7 +252,7 @@ struct RoutePlannerView: View {
             } else if let route = selectedRoute {
                 // Route stats
                 HStack {
-                    Label(String(format: "%.1f mi", route.distance / 1609.34), systemImage: "road.lanes")
+                    Label(formatDistance(route.distance), systemImage: "road.lanes")
                     Spacer()
                     Label(formatTime(route.expectedTravelTime), systemImage: "clock")
                     Spacer()
@@ -329,7 +348,7 @@ struct RoutePlannerView: View {
                     // Summary section
                     Section {
                         HStack {
-                            Label(String(format: "%.1f mi", route.distance / 1609.34), systemImage: "road.lanes")
+                            Label(formatDistance(route.distance), systemImage: "road.lanes")
                             Spacer()
                             Label(formatTime(route.expectedTravelTime), systemImage: "clock")
                         }
@@ -339,10 +358,10 @@ struct RoutePlannerView: View {
                             let clinched = tmSegments.filter(\.isClinched).count
                             let newCount = tmSegments.count - clinched
                             HStack {
-                                Label("\(tmSegments.count) TM segments", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+                                Label("\(tmSegments.count.formatted()) TM segments", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
                                 Spacer()
                                 if !primaryUser.isEmpty {
-                                    Text("\(newCount) new")
+                                    Text("\(newCount.formatted()) new")
                                         .foregroundStyle(.orange)
                                 }
                             }
@@ -366,7 +385,7 @@ struct RoutePlannerView: View {
                                             Text(step.instructions)
                                                 .font(.subheadline)
                                             if step.distance > 0 {
-                                                Text(String(format: "%.1f mi", step.distance / 1609.34))
+                                                Text(formatDistance(step.distance))
                                                     .font(.caption)
                                                     .foregroundStyle(.secondary)
                                             }
@@ -385,12 +404,12 @@ struct RoutePlannerView: View {
                                         let clinchedSegs = stepSegs.filter(\.isClinched).count
                                         HStack(spacing: 8) {
                                             if newSegs > 0 {
-                                                Label("\(newSegs) new", systemImage: "road.lanes")
+                                                Label("\(newSegs.formatted()) new", systemImage: "road.lanes")
                                                     .font(.caption2)
                                                     .foregroundStyle(.orange)
                                             }
                                             if clinchedSegs > 0 {
-                                                Label("\(clinchedSegs) traveled", systemImage: "checkmark.circle")
+                                                Label("\(clinchedSegs.formatted()) traveled", systemImage: "checkmark.circle")
                                                     .font(.caption2)
                                                     .foregroundStyle(.green)
                                             }
@@ -493,7 +512,7 @@ struct RoutePlannerView: View {
         var lines: [String] = []
 
         lines.append("Route: \(startQuery) → \(endQuery)")
-        lines.append(String(format: "Distance: %.1f mi | Time: %@", route.distance / 1609.34, formatTime(route.expectedTravelTime)))
+        lines.append("Distance: \(formatDistance(route.distance)) | Time: \(formatTime(route.expectedTravelTime))")
 
         let clinched = tmSegments.filter(\.isClinched).count
         let newCount = tmSegments.count - clinched
@@ -505,7 +524,7 @@ struct RoutePlannerView: View {
         lines.append("")
 
         for (index, step) in route.steps.enumerated() where !step.instructions.isEmpty {
-            let dist = step.distance > 0 ? String(format: " — %.1f mi", step.distance / 1609.34) : ""
+            let dist = step.distance > 0 ? " — \(formatDistance(step.distance))" : ""
             lines.append("\(index + 1). \(step.instructions)\(dist)")
 
             let stepSegs = segmentsForStep(step)
@@ -541,6 +560,7 @@ struct RoutePlannerView: View {
                   let end = endItems.mapItems.first?.placemark.coordinate else {
                 errorMessage = "Could not find one of the locations"
                 isCalculating = false
+                SentrySDK.reportFullyDisplayed()
                 return
             }
 
@@ -576,6 +596,9 @@ struct RoutePlannerView: View {
         } catch {
             errorMessage = "Error: \(error.localizedDescription)"
             isCalculating = false
+            // Every visit must eventually report full display (waitForFullDisplay: true),
+            // including the failure path.
+            SentrySDK.reportFullyDisplayed()
         }
     }
 

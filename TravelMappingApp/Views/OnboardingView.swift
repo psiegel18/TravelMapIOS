@@ -71,26 +71,38 @@ struct OnboardingView: View {
         let exists = await validateUsername(username)
         isValidating = false
 
-        if exists {
-            finish()
-        } else {
+        if exists == false {
+            // Only block on a definitive "not found" — nil means the request failed
+            // (offline, server down), and valid users shouldn't be locked out for that.
             validationError = "Username \"\(username)\" not found on Travel Mapping. Check your spelling or leave blank to skip."
+        } else {
+            finish()
         }
     }
 
-    private func validateUsername(_ username: String) async -> Bool {
+    /// Returns true if found, false if confirmed not found, nil if the request failed
+    /// (mirrors SettingsView.validateUsername — network failure is "unknown", not "invalid").
+    private func validateUsername(_ username: String) async -> Bool? {
         let url = URL(string: "https://travelmapping.net/lib/getTravelerRoutes.php?dbname=TravelMapping")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        request.httpBody = "params={\"traveler\":\"\(username)\"}".data(using: .utf8)
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&+=")
+        let encoded = username.addingPercentEncoding(withAllowedCharacters: allowed) ?? username
+        request.httpBody = "params={\"traveler\":\"\(encoded)\"}".data(using: .utf8)
 
-        guard let (data, _) = try? await URLSession.shared.data(for: request),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let routes = json["routes"] as? [Any] else {
-            return false
+        do {
+            let (data, _) = try await URLSession.shared.data(for: request)
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let routes = json["routes"] as? [Any] else {
+                return nil  // Unexpected payload — treat as unknown, don't block
+            }
+            return !routes.isEmpty
+        } catch {
+            SentrySDK.capture(error: error)
+            return nil
         }
-        return !routes.isEmpty
     }
 
     private func finish() {
@@ -99,6 +111,13 @@ struct OnboardingView: View {
             settings.primaryUser = trimmed
             watchUsername = trimmed
             FavoritesService.shared.addFavorite(trimmed)
+            // Mirror the launch-time scope setup in TravelMappingApp.init so events from
+            // this first session already carry the user and tm.username tag.
+            SentrySDK.configureScope { scope in
+                scope.setUser(User(userId: trimmed))
+                scope.setTag(value: trimmed, key: "tm.username")
+                scope.setTag(value: "true", key: "primary_user_set")
+            }
         }
         isPresented = false
         SentrySDK.logger.info("Onboarding completed", attributes: [

@@ -8,6 +8,8 @@ struct RouteProgressView: View {
 
     @State private var waypoints: [WaypointStatus] = []
     @State private var isLoading = true
+    @State private var errorMessage: String?
+    @State private var isRetrying = false
     @AppStorage("useMiles") private var useMiles = true
 
     struct WaypointStatus: Identifiable {
@@ -16,7 +18,9 @@ struct RouteProgressView: View {
         let isClinched: Bool // segment AFTER this waypoint is clinched
     }
 
-    var clinchedCount: Int { waypoints.filter(\.isClinched).count }
+    // Count segments only — the last waypoint mirrors the previous segment's
+    // clinched state for display, so it's excluded from the segment tally.
+    var clinchedCount: Int { waypoints.dropLast().filter(\.isClinched).count }
     var totalCount: Int { max(waypoints.count - 1, 0) }
     var percentage: Double { totalCount > 0 ? Double(clinchedCount) / Double(totalCount) * 100 : 0 }
 
@@ -24,6 +28,8 @@ struct RouteProgressView: View {
         Group {
             if isLoading {
                 ProgressView("Loading route...")
+            } else if let error = errorMessage {
+                loadErrorView(message: error)
             } else {
                 ScrollView {
                     VStack(spacing: 16) {
@@ -95,7 +101,48 @@ struct RouteProgressView: View {
         }
     }
 
+    /// Inline error state with a retry button (mirrors the ErrorView pattern).
+    private func loadErrorView(message: String) -> some View {
+        VStack(spacing: 16) {
+            Image(systemName: "wifi.exclamationmark")
+                .font(.system(size: 48))
+                .foregroundStyle(.secondary)
+
+            Text("Couldn't Load Route")
+                .font(.headline)
+
+            Text(message)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 40)
+
+            Button {
+                Haptics.light()
+                isRetrying = true
+                Task {
+                    isLoading = true
+                    await loadRouteData()
+                    isRetrying = false
+                }
+            } label: {
+                Label("Try Again", systemImage: "arrow.clockwise")
+                    .font(.subheadline.bold())
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
+                    .background(.blue, in: Capsule())
+                    .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+            .disabled(isRetrying)
+            .opacity(isRetrying ? 0.5 : 1)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     private func loadRouteData() async {
+        errorMessage = nil
         do {
             let details = try await TravelMappingAPI.shared.getRouteData(
                 roots: [root],
@@ -109,7 +156,17 @@ struct RouteProgressView: View {
 
             var wps: [WaypointStatus] = []
             for (i, _) in route.coordinates.enumerated() {
-                let clinched = i < route.clinched.count ? route.clinched[i] : false
+                // clinched is per-segment (n-1 entries for n waypoints). The last
+                // waypoint has no following segment, so use the previous segment's
+                // state — a fully-clinched route then shows all checkmarks.
+                let clinched: Bool
+                if i < route.clinched.count {
+                    clinched = route.clinched[i]
+                } else if i > 0, i - 1 < route.clinched.count {
+                    clinched = route.clinched[i - 1]
+                } else {
+                    clinched = false
+                }
                 wps.append(WaypointStatus(
                     id: i,
                     name: "Waypoint \(i + 1)", // API doesn't return names in this endpoint
@@ -120,6 +177,7 @@ struct RouteProgressView: View {
             waypoints = wps
         } catch {
             SentrySDK.capture(error: error)
+            errorMessage = ErrorView.friendly(error.localizedDescription)
         }
 
         isLoading = false

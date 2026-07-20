@@ -14,6 +14,35 @@ struct TravelStatsEntry: TimelineEntry, Codable {
     let topRegion: String
     let topRegionMiles: Double
     let regionCount: Int
+    /// Whether to display distances in miles (false = kilometers). Mirrors the app's
+    /// units preference, written to the app group as "widgetUseMiles" and encoded
+    /// into "cachedWidgetEntry" by ContentView. Distances are always *stored* in miles.
+    let useMiles: Bool
+}
+
+// Custom decoding lives in an extension so the memberwise initializer is preserved.
+// `useMiles` uses decodeIfPresent so cached entries written before the field existed
+// still decode (backward-compatible Codable convention).
+extension TravelStatsEntry {
+    enum CodingKeys: String, CodingKey {
+        case date, username, routes, totalMiles, rank, userCount
+        case percentile, topRegion, topRegionMiles, regionCount, useMiles
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        date = try container.decode(Date.self, forKey: .date)
+        username = try container.decode(String.self, forKey: .username)
+        routes = try container.decode(Int.self, forKey: .routes)
+        totalMiles = try container.decode(Double.self, forKey: .totalMiles)
+        rank = try container.decode(Int.self, forKey: .rank)
+        userCount = try container.decode(Int.self, forKey: .userCount)
+        percentile = try container.decode(Double.self, forKey: .percentile)
+        topRegion = try container.decode(String.self, forKey: .topRegion)
+        topRegionMiles = try container.decode(Double.self, forKey: .topRegionMiles)
+        regionCount = try container.decode(Int.self, forKey: .regionCount)
+        useMiles = try container.decodeIfPresent(Bool.self, forKey: .useMiles) ?? true
+    }
 }
 
 // MARK: - Timeline Provider
@@ -32,7 +61,8 @@ struct TravelStatsProvider: TimelineProvider {
             percentile: 91.8,
             topRegion: "IL",
             topRegionMiles: 1711.8,
-            regionCount: 31
+            regionCount: 31,
+            useMiles: true
         )
     }
 
@@ -42,36 +72,72 @@ struct TravelStatsProvider: TimelineProvider {
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<TravelStatsEntry>) -> Void) {
         Task {
-            let entry = await fetchEntry()
-            let nextUpdate = Calendar.current.date(byAdding: .hour, value: 6, to: Date())!
-            completion(Timeline(entries: [entry], policy: .after(nextUpdate)))
+            if let entry = await fetchEntry() {
+                // Only successful fetches are cached — a failure must never
+                // clobber the last good entry with zeros.
+                cacheEntry(entry)
+                let nextUpdate = Calendar.current.date(byAdding: .hour, value: 6, to: Date())!
+                completion(Timeline(entries: [entry], policy: .after(nextUpdate)))
+            } else {
+                // Network failure: show the last good (possibly stale) entry and
+                // retry sooner. Zeros only when there's no cache at all.
+                let fallback = loadCachedEntry() ?? emptyEntry()
+                let nextUpdate = Calendar.current.date(byAdding: .hour, value: 1, to: Date())!
+                completion(Timeline(entries: [fallback], policy: .after(nextUpdate)))
+            }
         }
     }
 
-    private func fetchEntry() async -> TravelStatsEntry {
-        let username = UserDefaults(suiteName: Self.suiteName)?.string(forKey: "widgetUsername") ?? "psiegel18"
+    /// Returns nil when the stats fetch fails so getTimeline can fall back to cache.
+    private func fetchEntry() async -> TravelStatsEntry? {
+        let defaults = UserDefaults(suiteName: Self.suiteName)
+        let username = defaults?.string(forKey: "widgetUsername") ?? "psiegel18"
 
-        // Get route count from TM API
-        let routes = (try? await fetchRouteCount(username: username)) ?? 0
+        // Get mileage + rank from stats CSV — the core of the widget. No stats, no entry.
+        guard let statsData = await fetchStatsFromCSV(username: username) else {
+            return nil
+        }
 
-        // Get mileage + rank from stats CSV
-        let statsData = await fetchStatsFromCSV(username: username)
+        // Get route count from TM API; fall back to the cached count on failure so a
+        // partial outage doesn't zero the routes stat.
+        let routes = (try? await fetchRouteCount(username: username)) ?? loadCachedEntry()?.routes ?? 0
 
-        let entry = TravelStatsEntry(
+        return TravelStatsEntry(
             date: Date(),
             username: username,
             routes: routes,
-            totalMiles: statsData?.totalMiles ?? 0,
-            rank: statsData?.rank ?? 0,
-            userCount: statsData?.userCount ?? 0,
-            percentile: statsData?.percentile ?? 0,
-            topRegion: statsData?.topRegion ?? "",
-            topRegionMiles: statsData?.topRegionMiles ?? 0,
-            regionCount: statsData?.regionCount ?? 0
+            totalMiles: statsData.totalMiles,
+            rank: statsData.rank,
+            userCount: statsData.userCount,
+            percentile: statsData.percentile,
+            topRegion: statsData.topRegion,
+            topRegionMiles: statsData.topRegionMiles,
+            regionCount: statsData.regionCount,
+            useMiles: preferredUseMiles()
         )
+    }
 
-        cacheEntry(entry)
-        return entry
+    private func emptyEntry() -> TravelStatsEntry {
+        let username = UserDefaults(suiteName: Self.suiteName)?.string(forKey: "widgetUsername") ?? "psiegel18"
+        return TravelStatsEntry(
+            date: Date(),
+            username: username,
+            routes: 0,
+            totalMiles: 0,
+            rank: 0,
+            userCount: 0,
+            percentile: 0,
+            topRegion: "",
+            topRegionMiles: 0,
+            regionCount: 0,
+            useMiles: preferredUseMiles()
+        )
+    }
+
+    /// Units preference written by the app (ContentView) to the app group.
+    /// Absent key (widget added before the app ever wrote it) defaults to miles.
+    private func preferredUseMiles() -> Bool {
+        (UserDefaults(suiteName: Self.suiteName)?.object(forKey: "widgetUseMiles") as? Bool) ?? true
     }
 
     private func fetchRouteCount(username: String) async throws -> Int {
@@ -121,6 +187,9 @@ struct TravelStatsProvider: TimelineProvider {
             let fields = line.components(separatedBy: ",")
             guard fields.count == headers.count else { continue }
             let name = fields[0]
+            // Skip the summary row (same pattern as TMStatsService) — counting it
+            // shifts every rank by one and inflates userCount.
+            if name.uppercased() == "TOTAL" { continue }
             let total = Double(fields[1]) ?? 0
             allUsers.append((username: name, miles: total))
             if name.lowercased() == username.lowercased() {
@@ -224,7 +293,7 @@ struct TravelMappingWidgetEntryView: View {
                 .foregroundStyle(.white)
                 .minimumScaleFactor(0.6)
                 .lineLimit(1)
-            Text("miles traveled")
+            Text(distanceCaption)
                 .font(.caption2)
                 .foregroundStyle(.white.opacity(0.5))
 
@@ -288,7 +357,7 @@ struct TravelMappingWidgetEntryView: View {
                     .foregroundStyle(.white)
                     .minimumScaleFactor(0.6)
                     .lineLimit(1)
-                Text("miles traveled")
+                Text(distanceCaption)
                     .font(.caption2)
                     .foregroundStyle(.white.opacity(0.5))
 
@@ -357,7 +426,7 @@ struct TravelMappingWidgetEntryView: View {
                         Text(entry.topRegion)
                             .font(.headline.bold())
                             .foregroundStyle(.orange)
-                        Text("\(formatMiles(entry.topRegionMiles)) mi")
+                        Text("\(formatMiles(entry.topRegionMiles)) \(unitAbbreviation)")
                             .font(.caption2)
                             .foregroundStyle(.white.opacity(0.5))
                     }
@@ -396,7 +465,7 @@ struct TravelMappingWidgetEntryView: View {
                     .foregroundStyle(.white)
                     .minimumScaleFactor(0.5)
                     .lineLimit(1)
-                Text("miles traveled")
+                Text(distanceCaption)
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.5))
             }
@@ -435,7 +504,7 @@ struct TravelMappingWidgetEntryView: View {
                 statCard(value: "\(entry.routes.formatted())", label: "Routes", icon: "road.lanes", color: .cyan)
                 statCard(value: "\(entry.regionCount.formatted())", label: "Regions", icon: "map", color: .green)
                 if !entry.topRegion.isEmpty {
-                    statCard(value: entry.topRegion, label: "Top Region", icon: "star.fill", color: .orange, subtext: "\(formatMiles(entry.topRegionMiles)) mi")
+                    statCard(value: entry.topRegion, label: "Top Region", icon: "star.fill", color: .orange, subtext: "\(formatMiles(entry.topRegionMiles)) \(unitAbbreviation)")
                 }
             }
 
@@ -482,7 +551,7 @@ struct TravelMappingWidgetEntryView: View {
                     .font(.system(.headline, design: .rounded).bold())
                     .minimumScaleFactor(0.5)
                     .lineLimit(1)
-                Text("mi")
+                Text(unitAbbreviation)
                     .font(.caption2)
             }
         }
@@ -497,10 +566,10 @@ struct TravelMappingWidgetEntryView: View {
             }
             .font(.caption.bold())
 
-            Text("\(formatMiles(entry.totalMiles)) mi")
+            Text("\(formatMiles(entry.totalMiles)) \(unitAbbreviation)")
                 .font(.headline)
             if entry.rank > 0 {
-                Text("#\(entry.rank) · \(entry.routes) routes")
+                Text("#\(entry.rank.formatted()) · \(entry.routes.formatted()) routes")
                     .font(.caption2)
             }
         }
@@ -508,26 +577,40 @@ struct TravelMappingWidgetEntryView: View {
 
     private var accessoryInline: some View {
         if entry.rank > 0 {
-            Text("\(formatMiles(entry.totalMiles)) mi · #\(entry.rank)")
+            Text("\(formatMiles(entry.totalMiles)) \(unitAbbreviation) · #\(entry.rank.formatted())")
         } else {
-            Text("\(formatMiles(entry.totalMiles)) mi")
+            Text("\(formatMiles(entry.totalMiles)) \(unitAbbreviation)")
         }
     }
 
     // MARK: - Formatting
 
+    /// All stored distances are miles; convert for display when the user prefers km.
+    private func displayDistance(_ miles: Double) -> Double {
+        entry.useMiles ? miles : miles * 1.609344
+    }
+
+    private var unitAbbreviation: String {
+        entry.useMiles ? "mi" : "km"
+    }
+
+    private var distanceCaption: String {
+        entry.useMiles ? "miles traveled" : "km traveled"
+    }
+
     private func formatMiles(_ miles: Double) -> String {
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
         formatter.maximumFractionDigits = 0
-        return formatter.string(from: NSNumber(value: miles)) ?? "0"
+        return formatter.string(from: NSNumber(value: displayDistance(miles))) ?? "0"
     }
 
     private func formatMilesShort(_ miles: Double) -> String {
-        if miles >= 10000 {
-            return String(format: "%.0fk", miles / 1000)
+        let value = displayDistance(miles)
+        if value >= 10000 {
+            return String(format: "%.0fk", value / 1000)
         }
-        return String(format: "%.0f", miles)
+        return String(format: "%.0f", value)
     }
 }
 

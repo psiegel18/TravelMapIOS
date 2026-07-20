@@ -13,6 +13,9 @@ struct TravelMapView: View {
     @State private var routeMetadata: [TravelMappingAPI.RouteMetadata] = []
     @State private var isLoading = true
     @State private var loadingProgress: String?
+    /// Monotonically increasing load generation — each loadSegments call bumps it
+    /// and checks it before every state write so stale loads can't overwrite newer state.
+    @State private var loadGeneration = 0
     @State private var errorMessage: String?
     @State private var showClinched = true
     @State private var showUnclinched = false
@@ -35,7 +38,7 @@ struct TravelMapView: View {
     @State private var showLegend = false
     @State private var zoomToUserOnNextFix = false
     @State private var isSelectMode = false
-    @State private var selectedSegmentIDs: Set<Int> = []
+    @State private var selectedSegmentIDs: Set<String> = []
     @State private var showSelectionDetail = false
     @State private var routeSearchText = ""
     @State private var tappedSegmentDetail: SegmentDetail?
@@ -128,7 +131,7 @@ struct TravelMapView: View {
         startID: Int,
         maxCoords: Int
     ) -> [MergedPolyline] {
-        let filtered = segs.sorted { $0.root < $1.root || ($0.root == $1.root && $0.id < $1.id) }
+        let filtered = segs.sorted { $0.root < $1.root || ($0.root == $1.root && $0.orderIndex < $1.orderIndex) }
         var result: [MergedPolyline] = []
         var currentCoords: [CLLocationCoordinate2D] = []
         var currentRoot = ""
@@ -245,8 +248,17 @@ struct TravelMapView: View {
         }
         .navigationTitle("\(username)'s Map")
         .navigationBarTitleDisplayMode(.inline)
-        .if(isActiveTab) { view in
-            view.searchable(text: $routeSearchText, prompt: "Search routes (e.g. I-95)")
+        .background {
+            // .searchable applied conditionally above the Map would swap the view
+            // tree on every tab switch and tear down the MapKit layer (the 5-7s
+            // iPad Metal-teardown hang class). Hosting it on a background leaf
+            // keeps the Map's identity stable — only this Color.clear comes and
+            // goes with isActiveTab, while the search field still only appears
+            // when this tab is active.
+            if isActiveTab {
+                Color.clear
+                    .searchable(text: $routeSearchText, prompt: "Search routes (e.g. I-95)")
+            }
         }
         .onChange(of: routeSearchText) {
             if !routeSearchText.isEmpty {
@@ -319,7 +331,7 @@ struct TravelMapView: View {
         var currentRoot = ""
         var polyID = 100_000
 
-        for seg in selectedSegs.sorted(by: { $0.root < $1.root || ($0.root == $1.root && $0.id < $1.id) }) {
+        for seg in selectedSegs.sorted(by: { $0.root < $1.root || ($0.root == $1.root && $0.orderIndex < $1.orderIndex) }) {
             if seg.root == currentRoot, let last = coords.last, distance(last, seg.start) < 500 {
                 coords.append(seg.end)
             } else {
@@ -416,12 +428,23 @@ struct TravelMapView: View {
         let maxLat = region.center.latitude + region.span.latitudeDelta / 2
         let minLng = region.center.longitude - region.span.longitudeDelta / 2
         let maxLng = region.center.longitude + region.span.longitudeDelta / 2
+        let spanLng = region.span.longitudeDelta
+
+        // Antimeridian-aware longitude test: when the visible window crosses ±180°
+        // the raw min/max wraps out of [-180, 180], so normalize the segment
+        // longitude into the window's frame; skip the filter for near-global spans.
+        func lngInBounds(_ lng: Double) -> Bool {
+            if spanLng >= 180 { return true }
+            if minLng < -180 { return lng >= minLng + 360 || lng <= maxLng }
+            if maxLng > 180 { return lng >= minLng || lng <= maxLng - 360 }
+            return lng >= minLng && lng <= maxLng
+        }
 
         func inBounds(_ seg: TravelMappingAPI.MapSegment) -> Bool {
             (seg.start.latitude >= minLat && seg.start.latitude <= maxLat &&
-             seg.start.longitude >= minLng && seg.start.longitude <= maxLng) ||
+             lngInBounds(seg.start.longitude)) ||
             (seg.end.latitude >= minLat && seg.end.latitude <= maxLat &&
-             seg.end.longitude >= minLng && seg.end.longitude <= maxLng)
+             lngInBounds(seg.end.longitude))
         }
 
         var visibleSegs: [TravelMappingAPI.MapSegment] = []
@@ -651,19 +674,27 @@ struct TravelMapView: View {
         .accessibilityHint("Tap segments on the map to select them for export")
     }
 
+    /// A merged selection line with a stable identity derived from its segment IDs —
+    /// duplicate display texts must not collide in ForEach.
+    private struct SelectionLine: Identifiable {
+        let ids: Set<String>
+        let text: String
+        var id: String { ids.sorted().joined(separator: ",") }
+    }
+
     /// Merged lines for the selection detail panel — consecutive segments on the same route
     /// become a single line (e.g., "IRL E20 11(M7) 6(N7)" instead of 6 separate lines).
-    private var selectionLines: [(ids: Set<Int>, text: String)] {
+    private var selectionLines: [SelectionLine] {
         let selected = segments.filter { selectedSegmentIDs.contains($0.id) }
         let rootToName = Dictionary(routeMetadata.map { ($0.root, $0.listName) }, uniquingKeysWith: { a, _ in a })
 
         let sorted = selected.sorted { a, b in
             if a.root != b.root { return a.root < b.root }
-            return a.id < b.id
+            return a.orderIndex < b.orderIndex
         }
 
         struct MergedLine {
-            var ids: Set<Int>
+            var ids: Set<String>
             let root: String
             let listName: String
             var startWP: String
@@ -693,7 +724,7 @@ struct TravelMapView: View {
         }
         if let cur = current { result.append(cur) }
 
-        return result.map { (ids: $0.ids, text: $0.text) }
+        return result.map { SelectionLine(ids: $0.ids, text: $0.text) }
     }
 
     private var selectionBar: some View {
@@ -756,7 +787,7 @@ struct TravelMapView: View {
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
-                        ForEach(selectionLines, id: \.text) { line in
+                        ForEach(selectionLines) { line in
                             HStack {
                                 Text(line.text)
                                     .font(.system(.caption2, design: .monospaced))
@@ -823,6 +854,22 @@ struct TravelMapView: View {
         return result
     }
 
+    /// Longitude center/span that stays correct for regions straddling the
+    /// antimeridian (±180°, e.g. the Aleutians): when the raw span exceeds 180°,
+    /// shift western longitudes by +360 and normalize the center back.
+    nonisolated private static func longitudeCenterAndSpan(for lngs: [Double]) -> (center: Double, span: Double) {
+        guard let rawMin = lngs.min(), let rawMax = lngs.max() else { return (0, 0) }
+        if rawMax - rawMin <= 180 {
+            return ((rawMin + rawMax) / 2, rawMax - rawMin)
+        }
+        let shifted = lngs.map { $0 < 0 ? $0 + 360 : $0 }
+        let sMin = shifted.min()!
+        let sMax = shifted.max()!
+        var center = (sMin + sMax) / 2
+        if center > 180 { center -= 360 }
+        return (center, sMax - sMin)
+    }
+
     private func zoomToRoute(_ search: String) {
         let normalizedSearch = normalizeRouteString(search)
         // Find matching route in road or rail metadata
@@ -839,9 +886,9 @@ struct TravelMapView: View {
         let lats = routeSegs.flatMap { [$0.start.latitude, $0.end.latitude] }
         let lngs = routeSegs.flatMap { [$0.start.longitude, $0.end.longitude] }
         let centerLat = (lats.min()! + lats.max()!) / 2
-        let centerLng = (lngs.min()! + lngs.max()!) / 2
+        let (centerLng, lngSpan) = Self.longitudeCenterAndSpan(for: lngs)
         let spanLat = max((lats.max()! - lats.min()!) * 1.3, 0.05)
-        let spanLng = max((lngs.max()! - lngs.min()!) * 1.3, 0.05)
+        let spanLng = min(max(lngSpan * 1.3, 0.05), 360)
 
         Haptics.success()
         withAnimation {
@@ -1133,15 +1180,18 @@ struct TravelMapView: View {
             }
         }
 
-        // Favorite regions take priority if any exist
+        // Favorite regions take priority if any exist.
+        // Setting selectedRegions fires onChange → loadSegments; do NOT also call
+        // loadSegments here or the data loads twice.
         let favoritesInThisProfile = Set(settings.favoriteRegions).intersection(regions)
         if !favoritesInThisProfile.isEmpty {
             selectedRegions = favoritesInThisProfile
-            await loadSegments()
             return
         }
 
         if regions.count <= 3 {
+            // selectedRegions is already [] here, so assigning [] fires no onChange —
+            // this explicit call is the only load for the "All Regions" case.
             selectedRegions = []
             await loadSegments()
         } else {
@@ -1156,6 +1206,11 @@ struct TravelMapView: View {
     }
 
     private func loadSegments() async {
+        // Bump the generation: any older load still in flight sees a mismatch at
+        // its next checkpoint and bails without touching state.
+        loadGeneration += 1
+        let generation = loadGeneration
+
         isLoading = true
         loadingProgress = nil
         errorMessage = nil
@@ -1167,7 +1222,9 @@ struct TravelMapView: View {
 
         if selectedRegions.isEmpty {
             // "All Regions" — load everything but only keep clinched
-            guard let profile = await dataService.loadUserProfile(username: username) else {
+            let profile = await dataService.loadUserProfile(username: username)
+            guard generation == loadGeneration else { return }
+            guard let profile else {
                 errorMessage = "Could not load profile"
                 isLoading = false
                 return
@@ -1187,6 +1244,9 @@ struct TravelMapView: View {
         let batchSize = 6
 
         for batchStart in stride(from: 0, to: regionsToLoad.count, by: batchSize) {
+            // Stop between batches if this task was cancelled or a newer load started
+            guard !Task.isCancelled, generation == loadGeneration else { return }
+
             let batchEnd = min(batchStart + batchSize, regionsToLoad.count)
             let batch = Array(regionsToLoad[batchStart..<batchEnd])
 
@@ -1219,13 +1279,15 @@ struct TravelMapView: View {
                 }
             }
 
-            // Update map after each batch
+            // Update map after each batch — only if still the current load
+            guard !Task.isCancelled, generation == loadGeneration else { return }
             segments = allSegments
             routeMetadata = allRoutes
             rebuildPolylines()
             loadingProgress = "Loading \(completed)/\(total) regions..."
         }
 
+        guard generation == loadGeneration else { return }
         segments = allSegments
         routeMetadata = allRoutes
 
@@ -1237,6 +1299,7 @@ struct TravelMapView: View {
         var allRailRoutes: [TravelMappingAPI.RouteMetadata] = []
 
         for region in regionsToLoad {
+            guard !Task.isCancelled, generation == loadGeneration else { return }
             do {
                 let r = try await TravelMappingAPI.rail.getRegionSegments(
                     region: region,
@@ -1253,6 +1316,7 @@ struct TravelMapView: View {
             }
         }
 
+        guard generation == loadGeneration else { return }
         railSegments = allRailSegs
         railMetadata = allRailRoutes
 
@@ -1279,13 +1343,11 @@ struct TravelMapView: View {
 
         let minLat = lats.min()!
         let maxLat = lats.max()!
-        let minLng = lngs.min()!
-        let maxLng = lngs.max()!
 
         let centerLat = (minLat + maxLat) / 2
-        let centerLng = (minLng + maxLng) / 2
+        let (centerLng, lngSpan) = Self.longitudeCenterAndSpan(for: lngs)
         let spanLat = max((maxLat - minLat) * 1.2, 0.5)
-        let spanLng = max((maxLng - minLng) * 1.2, 0.5)
+        let spanLng = min(max(lngSpan * 1.2, 0.5), 360)
 
         currentSpanLat = spanLat
         currentSpanLng = spanLng

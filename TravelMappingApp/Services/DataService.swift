@@ -1,7 +1,23 @@
 import Foundation
+import Sentry
 
 @MainActor
 class DataService: ObservableObject {
+
+    enum DataServiceError: Error, LocalizedError {
+        case gitHubRateLimited
+        case badStatus(Int)
+
+        var errorDescription: String? {
+            switch self {
+            case .gitHubRateLimited:
+                return "GitHub API rate limit reached. Please try again in a few minutes."
+            case .badStatus(let code):
+                return "GitHub API returned status \(code)."
+            }
+        }
+    }
+
     @Published var users: [UserSummary] = []
     @Published var isLoading = false
     @Published var errorMessage: String?
@@ -84,6 +100,17 @@ class DataService: ObservableObject {
                         let segments = ListFileParser.parse(content: content, category: category)
                         return segments.isEmpty ? nil : (category, segments)
                     } catch {
+                        // 404 just means the user has no list of this type — that's normal
+                        // and not worth reporting. Anything else (network failure, server
+                        // error, decode failure) is a real problem that callers can't see
+                        // because it collapses into "no data", so capture it here.
+                        if (error as? URLError)?.code != .fileDoesNotExist {
+                            SentrySDK.capture(error: error) { scope in
+                                scope.setTag(value: category.rawValue, key: "list_category")
+                                scope.setExtra(value: username, key: "username")
+                                scope.setExtra(value: category.directoryName, key: "directory")
+                            }
+                        }
                         return nil
                     }
                 }
@@ -126,14 +153,30 @@ class DataService: ObservableObject {
         let url = URL(string: "\(Self.githubBase)/\(directory)")!
         let (data, response) = try await session.data(from: url)
 
-        if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 404 {
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+        if statusCode == 404 {
             return []
         }
+        if statusCode == 403 {
+            // GitHub rate limit (60 req/hr unauthenticated) — surface a clear error
+            // instead of caching the JSON error body as a directory listing.
+            let error = DataServiceError.gitHubRateLimited
+            SentrySDK.capture(error: error) { scope in
+                scope.setTag(value: "github_api", key: "api_endpoint")
+                scope.setExtra(value: directory, key: "directory")
+            }
+            throw error
+        }
+        guard statusCode == 200 else {
+            throw DataServiceError.badStatus(statusCode)
+        }
+
+        // Decode BEFORE caching so a non-listing body never becomes a 24h cache hit
+        let files = try JSONDecoder().decode([GitHubFile].self, from: data)
 
         // Cache for 24 hours
         await CacheService.shared.set(key: cacheKey, data: data)
 
-        let files = try JSONDecoder().decode([GitHubFile].self, from: data)
         return files
             .filter { $0.name.hasSuffix(".\(ext)") }
             .map { String($0.name.dropLast(ext.count + 1)) }
@@ -151,16 +194,20 @@ class DataService: ObservableObject {
         let url = URL(string: "\(Self.rawBase)/\(directory)/\(filename)")!
         let (data, response) = try await session.data(from: url)
 
-        if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 404 {
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+        if statusCode == 404 {
             throw URLError(.fileDoesNotExist)
         }
-
-        // Cache for 24 hours
-        await CacheService.shared.set(key: cacheKey, data: data)
+        guard statusCode == 200 else {
+            throw DataServiceError.badStatus(statusCode)
+        }
 
         guard let content = String(data: data, encoding: .utf8) else {
             throw URLError(.cannotDecodeContentData)
         }
+
+        // Cache for 24 hours (only after validation)
+        await CacheService.shared.set(key: cacheKey, data: data)
 
         return content
     }

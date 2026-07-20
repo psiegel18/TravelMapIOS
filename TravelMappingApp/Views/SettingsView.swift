@@ -66,6 +66,9 @@ struct SettingsView: View {
                                 if isSet {
                                     scope.setUser(User(userId: settings.primaryUser))
                                     scope.setTag(value: settings.primaryUser, key: "tm.username")
+                                } else {
+                                    scope.setUser(nil)
+                                    scope.removeTag(key: "tm.username")
                                 }
                             }
                         }
@@ -318,7 +321,10 @@ struct SettingsView: View {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        request.httpBody = "params={\"traveler\":\"\(username)\"}".data(using: .utf8)
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&+=")
+        let encoded = username.addingPercentEncoding(withAllowedCharacters: allowed) ?? username
+        request.httpBody = "params={\"traveler\":\"\(encoded)\"}".data(using: .utf8)
 
         guard let (data, _) = try? await URLSession.shared.data(for: request),
               !data.isEmpty,
@@ -482,9 +488,22 @@ struct CacheStatusView: View {
 // MARK: - Tip Jar
 
 struct TipJarView: View {
+    private enum PurchaseState {
+        case success, pending, failure
+
+        var color: Color {
+            switch self {
+            case .success: return .green
+            case .pending: return .orange
+            case .failure: return .secondary
+            }
+        }
+    }
+
     @State private var products: [Product] = []
     @State private var isLoading = true
     @State private var purchaseMessage: String?
+    @State private var purchaseState: PurchaseState = .success
 
 
     private static let tipIDs = [
@@ -547,7 +566,7 @@ struct TipJarView: View {
                 if let message = purchaseMessage {
                     Text(message)
                         .font(.caption)
-                        .foregroundStyle(.green)
+                        .foregroundStyle(purchaseState.color)
                         .frame(maxWidth: .infinity)
                 }
             }
@@ -560,11 +579,14 @@ struct TipJarView: View {
             }
             isLoading = false
         }
-        .task {
-            for await result in Transaction.updates {
-                if case .verified(let transaction) = result {
-                    await transaction.finish()
-                }
+        // Pending purchases (e.g. Ask to Buy) are finished by the app-launch
+        // Transaction.updates listener in TravelMappingApp; reflect the completion here
+        // if the user is still looking at the "pending" message.
+        .onReceive(NotificationCenter.default.publisher(for: .tipTransactionFinished)) { _ in
+            if purchaseState == .pending {
+                purchaseState = .success
+                purchaseMessage = "Thank you for your support! 🎉"
+                Haptics.success()
             }
         }
     }
@@ -578,19 +600,22 @@ struct TipJarView: View {
                 case .verified(let transaction):
                     await transaction.finish()
                     Haptics.success()
+                    purchaseState = .success
                     purchaseMessage = "Thank you for your support! 🎉"
                     SentrySDK.logger.info("Tip purchased", attributes: [
                         "productId": product.id,
                         "price": product.displayPrice,
                     ])
                 case .unverified:
-                    purchaseMessage = "Purchase could not be verified."
+                    purchaseState = .failure
+                    purchaseMessage = "Purchase could not be verified. You have not been charged."
                     SentrySDK.logger.warn("Tip purchase unverified", attributes: ["productId": product.id])
                 }
             case .userCancelled:
                 break
             case .pending:
-                purchaseMessage = "Purchase pending..."
+                purchaseState = .pending
+                purchaseMessage = "Purchase pending approval — it will complete automatically once approved."
                 SentrySDK.logger.info("Tip purchase pending", attributes: ["productId": product.id])
             @unknown default:
                 break

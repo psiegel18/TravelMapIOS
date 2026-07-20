@@ -145,13 +145,13 @@ struct RoadTripRecordingView: View {
                 HStack(spacing: 16) {
                     statTile(value: distanceInPreferredUnit, label: "Distance")
                     statTile(value: speedInPreferredUnit, label: "Speed")
-                    statTile(value: "\(recorder.matchedCount)", label: "Segments")
+                    statTile(value: "\(recorder.matchedCount.formatted())", label: "Segments")
                     statTile(value: accuracyText, label: "GPS", color: accuracyColor)
                 }
                 .padding(.horizontal)
 
                 // Point count
-                Text("\(recorder.pointCount) GPS points recorded")
+                Text("\(recorder.pointCount.formatted()) GPS points recorded")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
 
@@ -189,7 +189,7 @@ struct RoadTripRecordingView: View {
             }
         } message: {
             let distance = distanceInPreferredUnit
-            Text("You've recorded \(recorder.elapsedFormatted) over \(distance) with \(recorder.matchedCount) route segments matched.")
+            Text("You've recorded \(recorder.elapsedFormatted) over \(distance) with \(recorder.matchedCount.formatted()) route segments matched.")
         }
         .alert("Trip Name", isPresented: $showNameEditor) {
             TextField("Trip name", text: $editedName)

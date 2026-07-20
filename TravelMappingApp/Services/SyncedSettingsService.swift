@@ -21,6 +21,7 @@ class SyncedSettingsService: ObservableObject {
             UserDefaults(suiteName: "group.com.psiegel18.TravelMapping")?
                 .set(primaryUser, forKey: "widgetUsername")
             UserDefaults.standard.set(primaryUser, forKey: "watchUsername")
+            WatchSyncService.shared.syncUsername(primaryUser)
         }
     }
     @Published var useMiles: Bool {
@@ -110,16 +111,30 @@ class SyncedSettingsService: ObservableObject {
         return local.object(forKey: key) as? T
     }
 
+    /// True while applying values that arrived FROM iCloud. The @Published didSets all
+    /// call save(), which would echo every inbound change straight back to the cloud
+    /// (ping-pong between devices, stale-value clobbering) — so save() skips the cloud
+    /// write while this is set, but still mirrors to local UserDefaults.
+    private var isApplyingCloudChange = false
+
     private func save(_ key: String, _ value: Any) {
-        cloud.set(value, forKey: key)
         local.set(value, forKey: key)
+        guard !isApplyingCloudChange else { return }
+        cloud.set(value, forKey: key)
         cloud.synchronize()
     }
 
-    @objc private func cloudDidChange(_ notification: Notification) {
-        let userInfo = notification.userInfo
-        let reason = userInfo?[NSUbiquitousKeyValueStoreChangeReasonKey] as? Int ?? -1
-        let changedKeys = userInfo?[NSUbiquitousKeyValueStoreChangedKeysKey] as? [String] ?? []
+    // The KVS notification arrives on an arbitrary thread — extract only Sendable
+    // values here, then immediately hop to the main actor for all real work.
+    @objc nonisolated private func cloudDidChange(_ notification: Notification) {
+        let reason = notification.userInfo?[NSUbiquitousKeyValueStoreChangeReasonKey] as? Int ?? -1
+        let changedKeys = notification.userInfo?[NSUbiquitousKeyValueStoreChangedKeysKey] as? [String] ?? []
+        Task { @MainActor in
+            self.applyCloudChange(reason: reason, changedKeys: changedKeys)
+        }
+    }
+
+    private func applyCloudChange(reason: Int, changedKeys: [String]) {
         let reasonName: String = switch reason {
         case NSUbiquitousKeyValueStoreServerChange: "serverChange"
         case NSUbiquitousKeyValueStoreInitialSyncChange: "initialSync"
@@ -135,19 +150,21 @@ class SyncedSettingsService: ObservableObject {
                 "keyCount": changedKeys.count,
             ])
         }
-        Task { @MainActor in
-            // Pull latest values from cloud
-            if let v: String = Self.load("primaryUser") { primaryUser = v }
-            if let v: Bool = Self.load("useMiles") { useMiles = v }
-            if let v: String = Self.load("accentColorName") { accentColorName = v }
-            if let v: String = Self.load("roadLineStyle") { roadLineStyle = v }
-            if let v: String = Self.load("railLineStyle") { railLineStyle = v }
-            if let v: Double = Self.load("roadLineWidth") { roadLineWidth = v }
-            if let v: Double = Self.load("railLineWidth") { railLineWidth = v }
-            if let v: [String] = Self.load("recentUsers") { recentUsers = v }
-            if let v: [String] = Self.load("favoriteRegions") { favoriteRegions = v }
-            self.syncPreferencesContext()
-        }
+
+        // Pull latest values from cloud. Only assign properties whose values actually
+        // changed (each assignment fires a didSet), and suppress cloud echo throughout.
+        isApplyingCloudChange = true
+        defer { isApplyingCloudChange = false }
+        if let v: String = Self.load("primaryUser"), v != primaryUser { primaryUser = v }
+        if let v: Bool = Self.load("useMiles"), v != useMiles { useMiles = v }
+        if let v: String = Self.load("accentColorName"), v != accentColorName { accentColorName = v }
+        if let v: String = Self.load("roadLineStyle"), v != roadLineStyle { roadLineStyle = v }
+        if let v: String = Self.load("railLineStyle"), v != railLineStyle { railLineStyle = v }
+        if let v: Double = Self.load("roadLineWidth"), v != roadLineWidth { roadLineWidth = v }
+        if let v: Double = Self.load("railLineWidth"), v != railLineWidth { railLineWidth = v }
+        if let v: [String] = Self.load("recentUsers"), v != recentUsers { recentUsers = v }
+        if let v: [String] = Self.load("favoriteRegions"), v != favoriteRegions { favoriteRegions = v }
+        syncPreferencesContext()
     }
 
     func syncPreferencesContext() {

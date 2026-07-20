@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreLocation
 
 struct RoadTripListView: View {
     @ObservedObject private var recorder = TripRecordingService.shared
@@ -6,6 +7,12 @@ struct RoadTripListView: View {
     @State private var isLoading = true
     @State private var tripToDelete: RoadTrip?
     @State private var showOrphanedDialog = false
+    @State private var showLocationDeniedAlert = false
+
+    private var locationPermissionDenied: Bool {
+        let status = CLLocationManager().authorizationStatus
+        return status == .denied || status == .restricted
+    }
 
     var body: some View {
         List {
@@ -23,7 +30,7 @@ struct RoadTripListView: View {
                             VStack(alignment: .leading) {
                                 Text(recorder.currentTrip?.name ?? "Recording...")
                                     .font(.headline)
-                                Text("\(recorder.elapsedFormatted) - \(recorder.pointCount) points")
+                                Text("\(recorder.elapsedFormatted) - \(recorder.pointCount.formatted()) points")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -32,8 +39,12 @@ struct RoadTripListView: View {
                     .accessibilityLabel("Recording in progress: \(recorder.currentTrip?.name ?? "trip"). Tap to view.")
                 } else {
                     Button {
-                        Haptics.success()
-                        recorder.startTrip(tripType: .road)
+                        if locationPermissionDenied {
+                            showLocationDeniedAlert = true
+                        } else {
+                            Haptics.success()
+                            recorder.startTrip(tripType: .road)
+                        }
                     } label: {
                         Label("Start Road Trip", systemImage: "car.fill")
                             .font(.headline)
@@ -45,8 +56,12 @@ struct RoadTripListView: View {
                     .accessibilityHint("Begins GPS tracking to record which roads you drive on")
 
                     Button {
-                        Haptics.success()
-                        recorder.startTrip(tripType: .rail)
+                        if locationPermissionDenied {
+                            showLocationDeniedAlert = true
+                        } else {
+                            Haptics.success()
+                            recorder.startTrip(tripType: .rail)
+                        }
                     } label: {
                         Label("Start Train Trip", systemImage: "tram.fill")
                             .font(.headline)
@@ -101,24 +116,43 @@ struct RoadTripListView: View {
                 tripToDelete = nil
             }
         } message: { trip in
-            Text("Delete \"\(trip.name)\"? This will also delete \(trip.rawPoints.count) GPS points and the exported .list file. This cannot be undone.")
+            Text("Delete \"\(trip.name)\"? This will also delete \(trip.rawPoints.count.formatted()) GPS points and the exported .list file. This cannot be undone.")
         }
         .alert("Unfinished Trip Found", isPresented: $showOrphanedDialog, presenting: recorder.orphanedTrip) { trip in
             Button("Keep") {
-                Task { await recorder.finalizeOrphanedTrip() }
-                Task { await loadTrips() }
+                Task {
+                    await recorder.finalizeOrphanedTrip()
+                    await loadTrips()
+                }
             }
             Button("Discard", role: .destructive) {
-                Task { await recorder.discardOrphanedTrip() }
-                Task { await loadTrips() }
+                Task {
+                    await recorder.discardOrphanedTrip()
+                    await loadTrips()
+                }
             }
         } message: { trip in
-            Text("\"\(trip.name)\" was interrupted with \(trip.rawPoints.count) GPS points. Save it as completed, or discard?")
+            Text("\"\(trip.name)\" was interrupted with \(trip.rawPoints.count.formatted()) GPS points. Save it as completed, or discard?")
+        }
+        .alert("Location Access Needed", isPresented: $showLocationDeniedAlert) {
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Trip recording needs location access to detect which routes you travel. Enable location for Travel Mapping in Settings.")
         }
         .onChange(of: recorder.orphanedTrip?.id) {
             showOrphanedDialog = recorder.orphanedTrip != nil
         }
         .task {
+            // The orphaned trip is detected at app launch — before this view exists — so
+            // onChange alone never fires for it. Check the current value on first load too.
+            if recorder.orphanedTrip != nil {
+                showOrphanedDialog = true
+            }
             await loadTrips()
         }
         .refreshable {
@@ -165,7 +199,7 @@ struct TripRowView: View {
                 if let dur = trip.duration {
                     Label(formatDuration(dur), systemImage: "clock")
                 }
-                Label("\(trip.matchedSegments.count) segments", systemImage: trip.tripType == .rail ? "tram" : "road.lanes")
+                Label("\(trip.matchedSegments.count.formatted()) segments", systemImage: trip.tripType == .rail ? "tram" : "road.lanes")
             }
             .font(.caption)
             .foregroundStyle(.secondary)

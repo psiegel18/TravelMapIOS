@@ -10,8 +10,15 @@ struct StartRoadTripIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
+        let service = TripRecordingService.shared
+        // startTrip() no-ops while recording — don't claim we started a new trip
+        guard !service.isRecording else {
+            let currentName = service.currentTrip?.name ?? "a road trip"
+            return .result(dialog: "Already recording \"\(currentName)\". Stop it before starting a new trip.")
+        }
+
         let name = tripName ?? "Trip on \(Date().formatted(date: .abbreviated, time: .omitted))"
-        TripRecordingService.shared.startTrip(name: name)
+        service.startTrip(name: name)
         return .result(dialog: "Started recording \"\(name)\". Drive safe!")
     }
 }
@@ -22,15 +29,34 @@ struct StopRoadTripIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        guard TripRecordingService.shared.isRecording else {
+        let service = TripRecordingService.shared
+
+        if !service.isRecording {
+            // Cold launch: the async orphan scan may not have finished yet, so check
+            // disk directly — otherwise we'd reply "nothing recording" while the
+            // orphaned trip then silently auto-resumes.
+            var orphan = service.orphanedTrip
+            if orphan == nil {
+                orphan = (try? await TripStorageService.shared.listTrips())?.first(where: { $0.status == .recording })
+            }
+            // Re-check: the orphan scan may have auto-resumed the trip while we read disk;
+            // if so, fall through to the normal stop path below.
+            if !service.isRecording, let orphan {
+                service.orphanedTrip = orphan
+                await service.finalizeOrphanedTrip()
+                return .result(dialog: "Road trip stopped. Recorded \(orphan.rawPoints.count.formatted()) GPS points and matched \(orphan.matchedSegments.count.formatted()) route segments.")
+            }
+        }
+
+        guard service.isRecording else {
             return .result(dialog: "No road trip is currently being recorded.")
         }
 
-        let pointCount = TripRecordingService.shared.pointCount
-        let matchedCount = TripRecordingService.shared.matchedCount
-        TripRecordingService.shared.stopTrip()
+        let pointCount = service.pointCount
+        let matchedCount = service.matchedCount
+        service.stopTrip()
 
-        return .result(dialog: "Road trip stopped. Recorded \(pointCount) GPS points and matched \(matchedCount) route segments.")
+        return .result(dialog: "Road trip stopped. Recorded \(pointCount.formatted()) GPS points and matched \(matchedCount.formatted()) route segments.")
     }
 }
 

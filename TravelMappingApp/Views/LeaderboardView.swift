@@ -110,7 +110,7 @@ struct YourRankRow: View {
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                Text("#\(rank) of \(total)")
+                Text("#\(rank.formatted()) of \(total.formatted())")
                     .font(.title2.bold())
                     .foregroundStyle(.blue)
                 Text(String(format: "Top %.1f%%", percentile))
@@ -149,7 +149,7 @@ struct LeaderboardRow: View {
 
     var body: some View {
         HStack {
-            Text("#\(rank)")
+            Text("#\(rank.formatted())")
                 .font(.caption.bold())
                 .foregroundStyle(rank <= 3 ? .yellow : .secondary)
                 .frame(width: 40, alignment: .leading)

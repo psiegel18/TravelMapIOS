@@ -70,8 +70,8 @@ class FavoritesService: ObservableObject {
 
         if iCloudSyncEnabled {
             // Remove from deleted set (user explicitly re-favorited)
-            var deleted = loadDeletedSet()
-            deleted.remove(username)
+            var deleted = loadDeletedMap()
+            deleted.removeValue(forKey: username)
             saveToCloud(favorites: favorites, deleted: deleted)
         } else {
             saveToLocal()
@@ -88,8 +88,8 @@ class FavoritesService: ObservableObject {
 
         if iCloudSyncEnabled {
             // Add to deleted set so other devices know to remove it
-            var deleted = loadDeletedSet()
-            deleted.insert(username)
+            var deleted = loadDeletedMap()
+            deleted[username] = Date()
             saveToCloud(favorites: favorites, deleted: deleted)
         } else {
             saveToLocal()
@@ -115,9 +115,14 @@ class FavoritesService: ObservableObject {
 
     // MARK: - Private
 
+    /// Tombstones older than this are pruned — they exist only to propagate a deletion
+    /// to other devices, which happens well within 30 days. Without pruning they grow
+    /// forever against the 1MB NSUbiquitousKeyValueStore quota.
+    private static let tombstoneMaxAge: TimeInterval = 30 * 24 * 3600
+
     private func loadFromCloud() {
         let cloudFavs = Set(cloud.array(forKey: favoritesKey) as? [String] ?? [])
-        let cloudDeleted = Set(cloud.array(forKey: deletedKey) as? [String] ?? [])
+        let cloudDeleted = Set(loadDeletedMap().keys)
 
         // Favorites = cloud favorites minus anything in the deleted set
         favorites = cloudFavs.subtracting(cloudDeleted)
@@ -131,27 +136,48 @@ class FavoritesService: ObservableObject {
         local.set(Array(favorites), forKey: localOnlyKey)
     }
 
-    private func loadDeletedSet() -> Set<String> {
-        Set(cloud.array(forKey: deletedKey) as? [String] ?? [])
+    /// Load deletion tombstones as username → deletion date, pruning expired entries.
+    /// Gracefully migrates the legacy format (plain [String] with no timestamps) by
+    /// stamping those entries with the current date.
+    private func loadDeletedMap() -> [String: Date] {
+        let raw: [String: Date]
+        if let dict = cloud.dictionary(forKey: deletedKey) as? [String: Date] {
+            raw = dict
+        } else if let legacy = cloud.array(forKey: deletedKey) as? [String] {
+            let now = Date()
+            raw = Dictionary(legacy.map { ($0, now) }, uniquingKeysWith: { first, _ in first })
+        } else {
+            raw = [:]
+        }
+        let cutoff = Date().addingTimeInterval(-Self.tombstoneMaxAge)
+        return raw.filter { $0.value > cutoff }
     }
 
-    private func saveToCloud(favorites: Set<String>, deleted: Set<String>) {
+    private func saveToCloud(favorites: Set<String>, deleted: [String: Date]) {
         cloud.set(Array(favorites), forKey: favoritesKey)
-        cloud.set(Array(deleted), forKey: deletedKey)
+        cloud.set(deleted, forKey: deletedKey)
         cloud.synchronize()
     }
 
-    @objc private func cloudDidChange(_ notification: Notification) {
+    // The KVS notification arrives on an arbitrary thread — the handler must be
+    // nonisolated and immediately hop to the main actor before touching state.
+    @objc nonisolated private func cloudDidChange(_ notification: Notification) {
         Task { @MainActor in
-            let cloudFavs = Set(cloud.array(forKey: favoritesKey) as? [String] ?? [])
-            let cloudDeleted = Set(cloud.array(forKey: deletedKey) as? [String] ?? [])
+            // With sync off, remote changes must not merge in (or echo back out)
+            guard self.iCloudSyncEnabled else { return }
 
-            // Merge: union of favorites from all devices, minus union of deletions
-            let mergedFavs = favorites.union(cloudFavs)
-            let mergedDeleted = loadDeletedSet().union(cloudDeleted)
+            let cloudFavs = Set(self.cloud.array(forKey: self.favoritesKey) as? [String] ?? [])
+            let deleted = self.loadDeletedMap()
 
-            favorites = mergedFavs.subtracting(mergedDeleted)
-            saveToCloud(favorites: favorites, deleted: mergedDeleted)
+            // Merge: union of favorites from all devices, minus deletions
+            let mergedFavs = self.favorites.union(cloudFavs)
+            self.favorites = mergedFavs.subtracting(deleted.keys)
+
+            // Only write back when our merge actually adds something — echoing
+            // every inbound change back to iCloud causes ping-pong between devices
+            if self.favorites != cloudFavs {
+                self.saveToCloud(favorites: self.favorites, deleted: deleted)
+            }
         }
     }
 
@@ -162,10 +188,17 @@ class FavoritesService: ObservableObject {
               !oldFavs.isEmpty else { return }
 
         // Merge old favorites into cloud (don't override deletions)
-        let deleted = loadDeletedSet()
-        let newFavs = oldFavs.subtracting(deleted)
+        let deleted = loadDeletedMap()
+        let newFavs = oldFavs.subtracting(deleted.keys)
         favorites = favorites.union(newFavs)
-        saveToCloud(favorites: favorites, deleted: deleted)
+
+        // Persist locally FIRST — if iCloud is off or unavailable, the cloud write
+        // silently goes nowhere and removing the legacy key below would otherwise
+        // permanently lose the user's favorites.
+        saveToLocal()
+        if iCloudSyncEnabled {
+            saveToCloud(favorites: favorites, deleted: deleted)
+        }
 
         // Clear old storage
         local.removeObject(forKey: localFavoritesKey)

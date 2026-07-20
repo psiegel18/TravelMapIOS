@@ -50,7 +50,24 @@ fi
 
 # 2. Create/finalize release and associate commits.
 BUNDLE_ID="com.psiegel18.TravelMapping"
-RELEASE="${BUNDLE_ID}@${CI_BUNDLE_SHORT_VERSION:-unknown}+${CI_BUILD_NUMBER:-0}"
+
+# Marketing version: CI_BUNDLE_SHORT_VERSION is NOT a real Xcode Cloud env var, so read
+# CFBundleShortVersionString from the built app's Info.plist inside the archive instead.
+# Best-effort — falls back to "unknown" rather than failing the build.
+MARKETING_VERSION="unknown"
+APP_PLIST="$CI_ARCHIVE_PATH/Products/Applications/TravelMappingApp.app/Info.plist"
+if [ -f "$APP_PLIST" ]; then
+  PLIST_VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$APP_PLIST" 2>/dev/null)
+  if [ -n "$PLIST_VERSION" ]; then
+    MARKETING_VERSION="$PLIST_VERSION"
+  else
+    echo "warning: could not read CFBundleShortVersionString from $APP_PLIST — using 'unknown'"
+  fi
+else
+  echo "warning: app Info.plist not found at $APP_PLIST — using 'unknown' for release version"
+fi
+
+RELEASE="${BUNDLE_ID}@${MARKETING_VERSION}+${CI_BUILD_NUMBER:-0}"
 
 echo "Registering release $RELEASE"
 sentry-cli releases new "$RELEASE" || echo "warning: releases new failed (release may already exist, continuing)"

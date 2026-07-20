@@ -3,6 +3,13 @@ import WidgetKit
 import ActivityKit
 
 struct RoadTripLiveActivity: Widget {
+    /// Live-timer anchor derived from the trip's *active* elapsed time. Anchoring to
+    /// attributes.startDate would keep counting through pauses; this re-anchors on
+    /// every content update so paused stretches are excluded.
+    private func timerAnchor(_ state: RoadTripAttributes.ContentState) -> Date {
+        Date(timeIntervalSinceNow: -state.elapsedTime)
+    }
+
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: RoadTripAttributes.self) { context in
             // Lock screen banner
@@ -32,9 +39,15 @@ struct RoadTripLiveActivity: Widget {
                 Spacer()
 
                 VStack(alignment: .trailing, spacing: 4) {
-                    Text(context.attributes.startDate, style: .timer)
-                        .font(.system(.title3, design: .monospaced).bold())
-                        .monospacedDigit()
+                    if context.state.isPaused {
+                        Text("Paused")
+                            .font(.system(.title3, design: .monospaced).bold())
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text(timerAnchor(context.state), style: .timer)
+                            .font(.system(.title3, design: .monospaced).bold())
+                            .monospacedDigit()
+                    }
 
                     Text("\(context.state.matchedSegments) segments")
                         .font(.caption)
@@ -58,9 +71,15 @@ struct RoadTripLiveActivity: Widget {
                 }
 
                 DynamicIslandExpandedRegion(.trailing) {
-                    Text(context.attributes.startDate, style: .timer)
-                        .font(.system(.caption, design: .monospaced))
-                        .monospacedDigit()
+                    if context.state.isPaused {
+                        Text("Paused")
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text(timerAnchor(context.state), style: .timer)
+                            .font(.system(.caption, design: .monospaced))
+                            .monospacedDigit()
+                    }
                 }
 
                 DynamicIslandExpandedRegion(.bottom) {
@@ -81,9 +100,14 @@ struct RoadTripLiveActivity: Widget {
                     .foregroundStyle(.blue)
 
             } compactTrailing: {
-                Text(context.attributes.startDate, style: .timer)
-                    .font(.system(.caption2, design: .monospaced))
-                    .monospacedDigit()
+                if context.state.isPaused {
+                    Image(systemName: "pause.fill")
+                        .foregroundStyle(.orange)
+                } else {
+                    Text(timerAnchor(context.state), style: .timer)
+                        .font(.system(.caption2, design: .monospaced))
+                        .monospacedDigit()
+                }
 
             } minimal: {
                 Image(systemName: "car.fill")

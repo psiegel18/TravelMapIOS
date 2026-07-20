@@ -76,6 +76,10 @@ struct RoadTrip: Identifiable, Codable {
     var tripType: TripType
     var rawPoints: [GPSPoint]
     var matchedSegments: [MatchedSegment]
+    /// Seconds of actual recording time (excludes paused stretches and dead time
+    /// before an orphan resume). Persisted on every auto-save so elapsed survives
+    /// a force-quit; 0 for trips saved by builds that predate the field.
+    var activeDuration: TimeInterval = 0
 
     var duration: TimeInterval? {
         guard let end = endDate else { return nil }
@@ -104,6 +108,7 @@ struct RoadTrip: Identifiable, Codable {
         tripType = try container.decodeIfPresent(TripType.self, forKey: .tripType) ?? .road
         rawPoints = try container.decode([GPSPoint].self, forKey: .rawPoints)
         matchedSegments = try container.decode([MatchedSegment].self, forKey: .matchedSegments)
+        activeDuration = try container.decodeIfPresent(TimeInterval.self, forKey: .activeDuration) ?? 0
     }
 
     init(name: String? = nil, tripType: TripType = .road) {
@@ -116,5 +121,6 @@ struct RoadTrip: Identifiable, Codable {
         self.tripType = tripType
         self.rawPoints = []
         self.matchedSegments = []
+        self.activeDuration = 0
     }
 }

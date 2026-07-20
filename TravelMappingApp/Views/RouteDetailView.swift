@@ -24,13 +24,25 @@ struct RouteDetailView: View {
         self.isRail = isRail
     }
 
-    @State private var routeDetail: TravelMappingAPI.RouteDetail?
+    /// One entry per region — each keeps its own coordinate/clinched arrays so
+    /// segment and mileage computation never spans region boundaries.
     @State private var allRegionDetails: [TravelMappingAPI.RouteDetail] = []
     @State private var regionBreakdown: [RegionBreakdown] = []
+    /// Computed once per detail-load (off the main thread) — body renders read
+    /// these cached values instead of recomputing on every map pan.
+    @State private var mergedPolylines: [MergedDetailPolyline] = []
+    @State private var routeStats = RouteStats()
     @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var mapPosition: MapCameraPosition = .automatic
     @ObservedObject private var settings = SyncedSettingsService.shared
+
+    struct RouteStats {
+        var totalMileage: Double = 0
+        var clinchedMileage: Double = 0
+        var totalSegments: Int = 0
+        var clinchedSegments: Int = 0
+    }
 
     struct RegionBreakdown: Identifiable {
         let id: String // listName
@@ -52,8 +64,8 @@ struct RouteDetailView: View {
                     ProgressView("Loading route...")
                 } else if let error = errorMessage {
                     ErrorView(message: error) { await load() }
-                } else if let detail = routeDetail {
-                    loadedContent(detail: detail)
+                } else if !allRegionDetails.isEmpty {
+                    loadedContent
                 } else {
                     ErrorView(message: "No route data returned for \(listName). The server may be temporarily unavailable.") { await load() }
                 }
@@ -66,13 +78,12 @@ struct RouteDetailView: View {
         }
     }
 
-    @ViewBuilder
-    private func loadedContent(detail: TravelMappingAPI.RouteDetail) -> some View {
+    private var loadedContent: some View {
         VStack(spacing: 0) {
-            mapView(detail: detail)
+            mapView
                 .frame(maxHeight: .infinity)
 
-            statsBar(detail: detail)
+            statsBar
 
             if regionBreakdown.count > 1 {
                 regionBreakdownView
@@ -80,51 +91,87 @@ struct RouteDetailView: View {
         }
     }
 
-    private struct MergedDetailPolyline: Identifiable {
+    struct MergedDetailPolyline: Identifiable {
         let id: Int
         let coordinates: [CLLocationCoordinate2D]
         let clinched: Bool
     }
 
-    private var mergedPolylines: [MergedDetailPolyline] {
-        // Coalesce consecutive same-clinched segments whose endpoints align into a single polyline
-        // to avoid thousands of MapPolyline objects — the main-thread Metal teardown of those
-        // caused 7s+ app hangs on iPad.
-        let segments: [(start: CLLocationCoordinate2D, end: CLLocationCoordinate2D, clinched: Bool)]
-        if !allRegionDetails.isEmpty {
-            segments = allRegionDetails.flatMap(\.segments)
-        } else {
-            segments = routeDetail?.segments ?? []
-        }
-
+    /// Coalesce consecutive same-clinched segments whose endpoints align into a single
+    /// polyline to avoid thousands of MapPolyline objects — the main-thread Metal
+    /// teardown of those caused 7s+ app hangs on iPad. Each region's detail keeps its
+    /// own arrays; merging and mileage never span a region boundary. Also accumulates
+    /// the stats-bar totals in the same pass, using an equirectangular approximation
+    /// instead of allocating CLLocation pairs per coordinate.
+    nonisolated static func computeRenderData(
+        for details: [TravelMappingAPI.RouteDetail]
+    ) -> (polylines: [MergedDetailPolyline], stats: RouteStats, breakdown: [RegionBreakdown]) {
         var result: [MergedDetailPolyline] = []
-        var coords: [CLLocationCoordinate2D] = []
-        var currentClinched: Bool? = nil
+        var stats = RouteStats()
+        var breakdown: [RegionBreakdown] = []
         var nextID = 0
 
-        func flush() {
-            guard coords.count >= 2, let clinched = currentClinched else { return }
-            result.append(MergedDetailPolyline(id: nextID, coordinates: coords, clinched: clinched))
-            nextID += 1
+        for detail in details {
+            var coords: [CLLocationCoordinate2D] = []
+            var currentClinched: Bool? = nil
+            var regionTotal = 0.0
+            var regionClinched = 0.0
+            var regionClinchedSegs = 0
+
+            func flush() {
+                guard coords.count >= 2, let clinched = currentClinched else { return }
+                result.append(MergedDetailPolyline(id: nextID, coordinates: coords, clinched: clinched))
+                nextID += 1
+            }
+
+            let segments = detail.segments
+            for seg in segments {
+                let miles = approxMiles(seg.start, seg.end)
+                regionTotal += miles
+                if seg.clinched {
+                    regionClinched += miles
+                    regionClinchedSegs += 1
+                }
+
+                if currentClinched == seg.clinched,
+                   let last = coords.last,
+                   abs(last.latitude - seg.start.latitude) < 1e-6,
+                   abs(last.longitude - seg.start.longitude) < 1e-6 {
+                    coords.append(seg.end)
+                } else {
+                    flush()
+                    coords = [seg.start, seg.end]
+                    currentClinched = seg.clinched
+                }
+            }
+            flush() // hard break at the region boundary — never merge across regions
+
+            stats.totalMileage += regionTotal
+            stats.clinchedMileage += regionClinched
+            stats.totalSegments += segments.count
+            stats.clinchedSegments += regionClinchedSegs
+            breakdown.append(RegionBreakdown(
+                id: detail.listName,
+                listName: detail.listName,
+                clinchedMileage: regionClinched,
+                totalMileage: regionTotal,
+                clinchedSegments: regionClinchedSegs,
+                totalSegments: segments.count
+            ))
         }
 
-        for seg in segments {
-            if currentClinched == seg.clinched,
-               let last = coords.last,
-               abs(last.latitude - seg.start.latitude) < 1e-6,
-               abs(last.longitude - seg.start.longitude) < 1e-6 {
-                coords.append(seg.end)
-            } else {
-                flush()
-                coords = [seg.start, seg.end]
-                currentClinched = seg.clinched
-            }
-        }
-        flush()
-        return result
+        breakdown.sort { $0.listName < $1.listName }
+        return (result, stats, breakdown)
     }
 
-    private func mapView(detail: TravelMappingAPI.RouteDetail) -> some View {
+    /// Equirectangular distance approximation in miles — avoids per-pair CLLocation allocation.
+    nonisolated private static func approxMiles(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> Double {
+        let dLat = (a.latitude - b.latitude) * 111_320
+        let dLng = (a.longitude - b.longitude) * 111_320 * cos(((a.latitude + b.latitude) / 2) * .pi / 180)
+        return sqrt(dLat * dLat + dLng * dLng) / 1609.34
+    }
+
+    private var mapView: some View {
         Map(position: $mapPosition) {
             // Draw merged polylines colored by clinched status
             ForEach(mergedPolylines) { poly in
@@ -139,22 +186,22 @@ struct RouteDetailView: View {
             }
 
             // Start and end markers
-            if let first = detail.coordinates.first {
+            if let first = allRegionDetails.first?.coordinates.first {
                 Marker("Start", coordinate: first).tint(.green)
             }
-            if let last = detail.coordinates.last {
+            if let last = allRegionDetails.last?.coordinates.last {
                 Marker("End", coordinate: last).tint(.red)
             }
         }
         .mapStyle(.standard)
         .onAppear {
-            zoomToRoute(detail: detail)
+            zoomToRoute()
         }
     }
 
-    private func statsBar(detail: TravelMappingAPI.RouteDetail) -> some View {
-        let total = detail.totalMileage
-        let clinched = detail.clinchedMileage
+    private var statsBar: some View {
+        let total = routeStats.totalMileage
+        let clinched = routeStats.clinchedMileage
         let pct = total > 0 ? clinched / total * 100 : 0
 
         return VStack(spacing: 8) {
@@ -169,7 +216,7 @@ struct RouteDetailView: View {
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text("\(detail.segments.filter(\.clinched).count) / \(detail.segments.count)")
+                    Text("\(routeStats.clinchedSegments.formatted()) / \(routeStats.totalSegments.formatted())")
                         .font(.headline.bold())
                         .monospacedDigit()
                     Text("segments")
@@ -229,10 +276,11 @@ struct RouteDetailView: View {
         .background(.ultraThinMaterial)
     }
 
-    private func zoomToRoute(detail: TravelMappingAPI.RouteDetail) {
-        guard !detail.coordinates.isEmpty else { return }
-        let lats = detail.coordinates.map(\.latitude)
-        let lngs = detail.coordinates.map(\.longitude)
+    private func zoomToRoute() {
+        let allCoordinates = allRegionDetails.flatMap(\.coordinates)
+        guard !allCoordinates.isEmpty else { return }
+        let lats = allCoordinates.map(\.latitude)
+        let lngs = allCoordinates.map(\.longitude)
         let centerLat = (lats.min()! + lats.max()!) / 2
         let centerLng = (lngs.min()! + lngs.max()!) / 2
         let spanLat = max((lats.max()! - lats.min()!) * 1.3, 0.05)
@@ -249,50 +297,31 @@ struct RouteDetailView: View {
     private func load() async {
         isLoading = true
         errorMessage = nil
-        regionBreakdown = []
-        allRegionDetails = []
         do {
             let api = isRail ? TravelMappingAPI.rail : TravelMappingAPI.shared
             let details = try await api.getRouteData(
                 roots: roots,
                 traveler: username
             )
-            if details.count > 1 {
-                // Build per-region breakdown
-                regionBreakdown = details.map { detail in
-                    let segs = detail.segments
-                    let clinchedSegs = segs.filter(\.clinched)
-                    return RegionBreakdown(
-                        id: detail.listName,
-                        listName: detail.listName,
-                        clinchedMileage: detail.clinchedMileage,
-                        totalMileage: detail.totalMileage,
-                        clinchedSegments: clinchedSegs.count,
-                        totalSegments: segs.count
-                    )
-                }.sorted { $0.listName < $1.listName }
 
-                // Store individual region details for proper map rendering (no cross-region lines)
-                allRegionDetails = details
+            // Each region's detail keeps its own coordinate/clinched arrays —
+            // never concatenated, so no phantom cross-boundary segments and no
+            // clinched-flag shift. Polylines + stats computed once per load,
+            // off the main thread.
+            let computed = await Task.detached(priority: .userInitiated) {
+                Self.computeRenderData(for: details)
+            }.value
 
-                // Also create a combined detail for aggregate stats bar
-                var allCoords: [CLLocationCoordinate2D] = []
-                var allClinched: [Bool] = []
-                for detail in details {
-                    allCoords.append(contentsOf: detail.coordinates)
-                    allClinched.append(contentsOf: detail.clinched)
-                }
-                routeDetail = TravelMappingAPI.RouteDetail(
-                    id: listName,
-                    listName: listName,
-                    coordinates: allCoords,
-                    clinched: allClinched
-                )
-            } else {
-                routeDetail = details.first
-            }
+            allRegionDetails = details
+            mergedPolylines = computed.polylines
+            routeStats = computed.stats
+            regionBreakdown = details.count > 1 ? computed.breakdown : []
         } catch {
             errorMessage = error.localizedDescription
+            allRegionDetails = []
+            mergedPolylines = []
+            routeStats = RouteStats()
+            regionBreakdown = []
         }
         isLoading = false
         SentrySDK.reportFullyDisplayed()

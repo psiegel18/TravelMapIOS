@@ -137,7 +137,11 @@ struct UserDetailView: View {
             CatalogService.shared.loadIfNeeded()
         }
         .refreshable {
-            profile = await dataService.loadUserProfile(username: username)
+            // Keep the loaded profile if the refresh fails transiently —
+            // replacing it with nil would flash the "No Data" screen.
+            if let refreshed = await dataService.loadUserProfile(username: username) {
+                profile = refreshed
+            }
         }
     }
 
@@ -199,15 +203,37 @@ struct UserDetailView: View {
         }
     }
 
-    @MainActor
+    /// Longitude center/span that stays correct for regions straddling the
+    /// antimeridian (±180°, e.g. the Aleutians): when the raw span exceeds 180°,
+    /// shift western longitudes by +360 and normalize the center back.
+    private static func longitudeCenterAndSpan(for lngs: [Double]) -> (center: Double, span: Double) {
+        guard let rawMin = lngs.min(), let rawMax = lngs.max() else { return (0, 0) }
+        if rawMax - rawMin <= 180 {
+            return ((rawMin + rawMax) / 2, rawMax - rawMin)
+        }
+        let shifted = lngs.map { $0 < 0 ? $0 + 360 : $0 }
+        let sMin = shifted.min()!
+        let sMax = shifted.max()!
+        var center = (sMin + sMax) / 2
+        if center > 180 { center -= 360 }
+        return (center, sMax - sMin)
+    }
+
     private func renderMapSnapshot(username: String, regions: [String]) async -> UIImage? {
+        // Fetch all regions concurrently instead of serially
         var allSegments: [TravelMappingAPI.MapSegment] = []
-        for region in regions {
-            if let result = try? await TravelMappingAPI.shared.getRegionSegments(
-                region: region,
-                traveler: username
-            ) {
-                allSegments.append(contentsOf: result.segments.filter(\.isClinched))
+        await withTaskGroup(of: [TravelMappingAPI.MapSegment].self) { group in
+            for region in regions {
+                group.addTask {
+                    guard let result = try? await TravelMappingAPI.shared.getRegionSegments(
+                        region: region,
+                        traveler: username
+                    ) else { return [] }
+                    return result.segments.filter(\.isClinched)
+                }
+            }
+            for await segs in group {
+                allSegments.append(contentsOf: segs)
             }
         }
 
@@ -216,41 +242,57 @@ struct UserDetailView: View {
         let lats = allSegments.flatMap { [$0.start.latitude, $0.end.latitude] }
         let lngs = allSegments.flatMap { [$0.start.longitude, $0.end.longitude] }
         let centerLat = (lats.min()! + lats.max()!) / 2
-        let centerLng = (lngs.min()! + lngs.max()!) / 2
+        let (centerLng, lngSpan) = Self.longitudeCenterAndSpan(for: lngs)
         let spanLat = max((lats.max()! - lats.min()!) * 1.2, 0.05)
-        let spanLng = max((lngs.max()! - lngs.min()!) * 1.2, 0.05)
+        let spanLng = max(lngSpan * 1.2, 0.05)
 
         let options = MKMapSnapshotter.Options()
         options.region = MKCoordinateRegion(
             center: CLLocationCoordinate2D(latitude: centerLat, longitude: centerLng),
-            span: MKCoordinateSpan(latitudeDelta: spanLat, longitudeDelta: spanLng)
+            span: MKCoordinateSpan(latitudeDelta: spanLat, longitudeDelta: min(spanLng, 360))
         )
         options.size = CGSize(width: 1200, height: 800)
         options.mapType = .standard
 
         guard let snapshot = try? await MKMapSnapshotter(options: options).start() else { return nil }
 
+        // Project coordinates to image points (cheap math), then do all
+        // CoreGraphics stroking off the main actor.
         let image = snapshot.image
-        UIGraphicsBeginImageContextWithOptions(image.size, true, image.scale)
-        defer { UIGraphicsEndImageContext() }
-
-        image.draw(at: .zero)
-        guard let context = UIGraphicsGetCurrentContext() else { return image }
-
-        context.setLineWidth(4)
-        context.setLineCap(.round)
-        context.setLineJoin(.round)
-
-        for seg in allSegments {
-            let start = snapshot.point(for: seg.start)
-            let end = snapshot.point(for: seg.end)
-            context.setStrokeColor(UIColor.systemBlue.cgColor)
-            context.move(to: start)
-            context.addLine(to: end)
-            context.strokePath()
+        let lines: [(start: CGPoint, end: CGPoint)] = allSegments.map {
+            (snapshot.point(for: $0.start), snapshot.point(for: $0.end))
         }
 
-        return UIGraphicsGetImageFromCurrentImageContext() ?? image
+        return await Task.detached(priority: .userInitiated) {
+            Self.drawSegmentLines(lines, on: image)
+        }.value
+    }
+
+    /// Strokes segment lines onto the snapshot image. Runs off the main actor —
+    /// UIGraphicsImageRenderer is thread-safe.
+    nonisolated private static func drawSegmentLines(
+        _ lines: [(start: CGPoint, end: CGPoint)],
+        on image: UIImage
+    ) -> UIImage {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = image.scale
+        format.opaque = true
+        let renderer = UIGraphicsImageRenderer(size: image.size, format: format)
+
+        return renderer.image { rendererContext in
+            image.draw(at: .zero)
+            let context = rendererContext.cgContext
+            context.setLineWidth(4)
+            context.setLineCap(.round)
+            context.setLineJoin(.round)
+            context.setStrokeColor(UIColor.systemBlue.cgColor)
+
+            for line in lines {
+                context.move(to: line.start)
+                context.addLine(to: line.end)
+                context.strokePath()
+            }
+        }
     }
 
     private func shareLink() {

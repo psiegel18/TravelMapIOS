@@ -1,9 +1,14 @@
 import Foundation
+import Sentry
 import WatchConnectivity
 
 /// Receives trip state and directions from the paired iPhone.
 class WatchSessionManager: NSObject, ObservableObject, WCSessionDelegate {
     static let shared = WatchSessionManager()
+
+    /// UserDefaults key where the last received directions payload is persisted, so a
+    /// watch app relaunch mid-drive doesn't lose them (transferUserInfo is one-shot).
+    private static let persistedDirectionsKey = "persistedDirections"
 
     // MARK: - Trip State
 
@@ -17,13 +22,19 @@ class WatchSessionManager: NSObject, ObservableObject, WCSessionDelegate {
         var currentSegment: String
         var isPaused: Bool
         var tripType: String
+        /// Trip start reference from the phone. When present (and not paused) the UI
+        /// computes elapsed time locally so the timer ticks between coalesced
+        /// applicationContext pushes; `elapsedTime` is the static fallback.
+        var startDate: Date?
 
-        var formattedTime: String {
-            let h = Int(elapsedTime) / 3600
-            let m = (Int(elapsedTime) % 3600) / 60
-            let s = Int(elapsedTime) % 60
+        static func format(_ elapsed: TimeInterval) -> String {
+            let h = Int(elapsed) / 3600
+            let m = (Int(elapsed) % 3600) / 60
+            let s = Int(elapsed) % 60
             return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
         }
+
+        var formattedTime: String { Self.format(elapsedTime) }
 
         var speedMPH: Double { speed * 2.23694 }
         var distanceMiles: Double { distance / 1609.34 }
@@ -64,6 +75,10 @@ class WatchSessionManager: NSObject, ObservableObject, WCSessionDelegate {
 
     private override init() {
         super.init()
+        // Restore persisted directions so a relaunch mid-drive keeps them.
+        if let saved = UserDefaults.standard.dictionary(forKey: Self.persistedDirectionsKey) {
+            directions = Self.parseDirections(saved)
+        }
         if WCSession.isSupported() {
             WCSession.default.delegate = self
             WCSession.default.activate()
@@ -74,7 +89,7 @@ class WatchSessionManager: NSObject, ObservableObject, WCSessionDelegate {
 
     func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
         if let error {
-            print("[WatchSession] Activation error: \(error)")
+            SentrySDK.capture(error: error)
         }
         // Check for existing context on launch
         if activationState == .activated {
@@ -112,7 +127,8 @@ class WatchSessionManager: NSObject, ObservableObject, WCSessionDelegate {
                 pointCount: context["pointCount"] as? Int ?? 0,
                 currentSegment: context["currentSegment"] as? String ?? "",
                 isPaused: context["isPaused"] as? Bool ?? false,
-                tripType: context["tripType"] as? String ?? "road"
+                tripType: context["tripType"] as? String ?? "road",
+                startDate: (context["startDate"] as? TimeInterval).map { Date(timeIntervalSince1970: $0) }
             )
         } else {
             tripState = nil
@@ -123,22 +139,34 @@ class WatchSessionManager: NSObject, ObservableObject, WCSessionDelegate {
         let type = info["type"] as? String ?? ""
 
         if type == "directions" {
-            let stepDicts = info["steps"] as? [[String: Any]] ?? []
-            let steps = stepDicts.map { dict in
-                DirectionStep(
-                    instruction: dict["instruction"] as? String ?? "",
-                    distance: dict["distance"] as? Double ?? 0,
-                    notice: dict["notice"] as? String
-                )
-            }
-            directions = DirectionsData(
-                routeName: info["routeName"] as? String ?? "",
-                totalDistance: info["totalDistance"] as? Double ?? 0,
-                totalTime: info["totalTime"] as? TimeInterval ?? 0,
-                steps: steps
-            )
+            directions = Self.parseDirections(info)
+            // Persist for relaunch. The payload is plist-compatible (strings, doubles,
+            // arrays of dictionaries), so it can go into UserDefaults as-is.
+            UserDefaults.standard.set(info, forKey: Self.persistedDirectionsKey)
         } else if type == "clearDirections" {
             directions = nil
+            UserDefaults.standard.removeObject(forKey: Self.persistedDirectionsKey)
+        } else if type == "username" {
+            if let username = info["username"] as? String, !username.isEmpty {
+                UserDefaults.standard.set(username, forKey: "watchUsername")
+            }
         }
+    }
+
+    private static func parseDirections(_ info: [String: Any]) -> DirectionsData {
+        let stepDicts = info["steps"] as? [[String: Any]] ?? []
+        let steps = stepDicts.map { dict in
+            DirectionStep(
+                instruction: dict["instruction"] as? String ?? "",
+                distance: dict["distance"] as? Double ?? 0,
+                notice: dict["notice"] as? String
+            )
+        }
+        return DirectionsData(
+            routeName: info["routeName"] as? String ?? "",
+            totalDistance: info["totalDistance"] as? Double ?? 0,
+            totalTime: info["totalTime"] as? TimeInterval ?? 0,
+            steps: steps
+        )
     }
 }

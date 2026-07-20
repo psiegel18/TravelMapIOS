@@ -4,6 +4,9 @@ import SwiftUI
 
 /// In-memory cache for stats data so navigating away and back doesn't reload.
 /// Invalidated after 1 hour or on pull-to-refresh.
+/// @MainActor so the entries dictionary is never touched off the main actor —
+/// prefetch's network awaits hop off, but all cache reads/writes stay isolated.
+@MainActor
 final class StatsCache {
     static let shared = StatsCache()
     private var entries: [String: CachedStats] = [:]
@@ -116,6 +119,13 @@ final class StatsCache {
            let pos = snapshot.position(of: username) {
             rankInfo = (pos.rank, snapshot.userCount, pos.percentile)
         }
+
+        // Don't cache an all-empty result after a total failure — that would pin
+        // the empty state for the full 1h TTL and defeat the real load later.
+        let producedRealData = !allRoutes.isEmpty
+            || regionStats.contains(where: { $0.clinchedMileage > 0 || $0.totalMileage > 0 })
+            || railTotals.routeCount > 0
+        guard producedRealData else { return }
 
         set(for: username, stats: CachedStats(
             regionStats: regionStats,
@@ -543,7 +553,7 @@ struct StatisticsView: View {
                     Image(systemName: "trophy.fill")
                         .foregroundStyle(.yellow)
                         .font(.caption)
-                    Text(String(format: "Ranked #%d of %d · Top %.1f%%", rank.rank, rank.total, rank.percentile))
+                    Text("Ranked #\(rank.rank.formatted()) of \(rank.total.formatted()) · Top \(String(format: "%.1f", rank.percentile))%")
                         .font(.caption.bold())
                         .foregroundStyle(.secondary)
                 }
@@ -810,14 +820,21 @@ struct StatisticsView: View {
         isLoadingRail = false
         isLoadingMileage = false
 
-        // Cache for instant reload on re-navigation
-        StatsCache.shared.set(for: username, stats: .init(
-            regionStats: regionStats,
-            allRoutes: allRoutes,
-            railTotals: railTotals,
-            rankInfo: rankInfo,
-            date: Date()
-        ))
+        // Cache for instant reload on re-navigation — but only if the load produced
+        // real data. Caching an all-zero result after a total failure would pin the
+        // empty state for the full 1h TTL; on failure the error/empty UI shows instead.
+        let producedRealData = !allRoutes.isEmpty
+            || regionStats.contains(where: { $0.clinchedMileage > 0 || $0.totalMileage > 0 })
+            || railTotals.routeCount > 0
+        if producedRealData {
+            StatsCache.shared.set(for: username, stats: .init(
+                regionStats: regionStats,
+                allRoutes: allRoutes,
+                railTotals: railTotals,
+                rankInfo: rankInfo,
+                date: Date()
+            ))
+        }
         SentrySDK.reportFullyDisplayed()
     }
 

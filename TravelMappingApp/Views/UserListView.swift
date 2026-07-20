@@ -29,9 +29,11 @@ struct UserListView: View {
 
     var body: some View {
         Group {
-            if dataService.isLoading {
+            // Only show the full-screen states when there's no data yet — a pull-refresh
+            // with existing data keeps the List alive instead of tearing it down.
+            if dataService.isLoading && dataService.users.isEmpty {
                 ProgressView("Loading users...")
-            } else if let error = dataService.errorMessage {
+            } else if let error = dataService.errorMessage, dataService.users.isEmpty {
                 ErrorView(message: error) {
                     await MainActor.run {
                         dataService.loadUserList()
@@ -39,7 +41,7 @@ struct UserListView: View {
                 }
             } else {
                 List {
-                    if !primaryUser.isEmpty, let user = dataService.users.first(where: { $0.username == primaryUser }) {
+                    if !primaryUser.isEmpty, let user = dataService.users.first(where: { $0.username.lowercased() == primaryUser.lowercased() }) {
                         Section {
                             NavigationLink(value: user) {
                                 HStack {
@@ -116,6 +118,11 @@ struct UserListView: View {
         }
         .refreshable {
             dataService.loadUserList()
+            // loadUserList kicks off an internal Task — wait for it to finish so
+            // the pull-to-refresh spinner reflects the actual reload.
+            while dataService.isLoading {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
         }
     }
 }

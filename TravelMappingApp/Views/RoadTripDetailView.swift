@@ -10,6 +10,7 @@ struct RoadTripDetailView: View {
     @State private var isPlaying = false
     @State private var playTimer: Timer?
     @State private var notesText: String = ""
+    @State private var lastSavedNotes: String = ""
     @FocusState private var notesFocused: Bool
     @State private var mapPosition: MapCameraPosition = .automatic
     @State private var visibleRegion: MKCoordinateRegion?
@@ -52,12 +53,21 @@ struct RoadTripDetailView: View {
         .task {
             exportURL = try? await TripStorageService.shared.exportListFile(for: trip)
         }
+        .onChange(of: notesFocused) {
+            if !notesFocused {
+                saveNotes()
+            }
+        }
+        .onDisappear {
+            stopPlay()
+            saveNotes()
+        }
     }
 
     private func shareImage() {
         Task {
             if let image = await renderTripShareImage(trip: trip) {
-                shareContent = .trip(image: image)
+                shareContent = .trip(image: image, tripID: trip.id)
             }
         }
     }
@@ -235,6 +245,7 @@ struct RoadTripDetailView: View {
                 .focused($notesFocused)
                 .onAppear {
                     notesText = trip.notes
+                    lastSavedNotes = trip.notes
                 }
         }
         .padding()
@@ -255,6 +266,8 @@ struct RoadTripDetailView: View {
     }
 
     private func saveNotes() {
+        guard notesText != lastSavedNotes else { return }
+        lastSavedNotes = notesText
         trip.notes = notesText
         let updatedTrip = trip
         Task {
