@@ -6,6 +6,7 @@ struct LeaderboardView: View {
     @State private var errorMessage: String?
     @State private var lastUpdated: Date?
     @State private var searchText = ""
+    @State private var podiumSelection: PodiumSelection?
     @StateObject private var dataService = DataService()
     @ObservedObject private var settings = SyncedSettingsService.shared
 
@@ -37,7 +38,8 @@ struct LeaderboardView: View {
                         Section {
                             PodiumView(
                                 users: Array(snapshot.users.prefix(3)),
-                                useMiles: settings.useMiles
+                                useMiles: settings.useMiles,
+                                onSelect: { podiumSelection = PodiumSelection(username: $0) }
                             )
                             .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 4, trailing: 16))
                             .listRowSeparator(.hidden)
@@ -93,6 +95,9 @@ struct LeaderboardView: View {
         .navigationDestination(for: String.self) { username in
             LeaderboardUserDetailView(username: username, dataService: dataService)
         }
+        .navigationDestination(item: $podiumSelection) { selection in
+            LeaderboardUserDetailView(username: selection.username, dataService: dataService)
+        }
         .refreshable {
             await load(forceRefresh: true)
         }
@@ -116,6 +121,14 @@ struct LeaderboardView: View {
     }
 }
 
+/// Programmatic podium navigation target — the podium's three columns share one
+/// List row, so value-based NavigationLinks there all collapse into a single row
+/// tap that fires the last link (rank 3).
+struct PodiumSelection: Identifiable, Hashable {
+    let username: String
+    var id: String { username }
+}
+
 /// Shared miles/km display used by podium, rows, and the pinned bar.
 private func formattedDistance(miles: Double, useMiles: Bool) -> String {
     let value = Int(useMiles ? miles : miles * 1.60934)
@@ -127,6 +140,7 @@ private func formattedDistance(miles: Double, useMiles: Bool) -> String {
 struct PodiumView: View {
     let users: [TMStatsService.UserRegionStats]
     let useMiles: Bool
+    let onSelect: (String) -> Void
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 10) {
@@ -139,13 +153,15 @@ struct PodiumView: View {
     }
 
     private func podiumColumn(place: Int, user: TMStatsService.UserRegionStats) -> some View {
-        // Content with a hidden NavigationLink overlay — a bare NavigationLink row
-        // child would get the List's disclosure chevron drawn over the podium art.
-        podiumColumnContent(place: place, user: user)
-            .overlay {
-                NavigationLink(value: user.username) { EmptyView() }
-                    .opacity(0)
-            }
+        // Plain-style Button per column: three NavigationLinks in one List row all
+        // collapse into a single row tap that activates the last link, so a tap on
+        // rank 1 or 2 would open rank 3. .plain keeps each column its own hit target.
+        Button {
+            onSelect(user.username)
+        } label: {
+            podiumColumnContent(place: place, user: user)
+        }
+        .buttonStyle(.plain)
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.isButton)
             .accessibilityLabel("Rank \(place), \(user.username), \(formattedDistance(miles: user.totalMiles, useMiles: useMiles))")

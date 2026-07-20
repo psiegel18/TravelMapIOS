@@ -185,6 +185,29 @@ struct StatisticsView: View {
 
     @State private var allRoutes: [RouteInfo] = []
     @State private var rankInfo: (rank: Int, total: Int, percentile: Double)?
+
+    /// Profile-derived counts computed ONCE per (immutable) profile. Recomputing
+    /// these per body evaluation was O(15k segments) × ~100 incremental-load
+    /// re-renders — the main-thread cost behind the UserDetail app-hang issue.
+    struct ProfileCounts {
+        var regionCount = 0
+        var routeCount = 0
+        var segmentCount = 0
+        var roadRouteCount = 0
+        var railRouteCount = 0
+        var regionSegmentCounts: [String: Int] = [:]
+    }
+
+    /// allRoutes-derived card data, computed once when route loading finishes
+    /// (cards show skeletons until then) instead of per body evaluation.
+    struct DerivedRouteData {
+        var closestToClinched: [RouteInfo] = []
+        var longestClinched: [(route: RouteInfo, roots: [String])] = []
+        var clinchedRouteCount = 0
+    }
+
+    @State private var profileCounts = ProfileCounts()
+    @State private var derivedRoutes = DerivedRouteData()
     @ObservedObject private var catalog = CatalogService.shared
     private var regionCountryMap: [String: String] { catalog.regionCountryMap }
 
@@ -247,6 +270,7 @@ struct StatisticsView: View {
             // Reset state so loading indicators show
             regionStats = []
             allRoutes = []
+            derivedRoutes = .init()
             railTotals = .init()
             rankInfo = nil
             isLoadingMileage = true
@@ -257,6 +281,11 @@ struct StatisticsView: View {
             await loadMileageData()
         }
         .task {
+            // One pass over the (immutable) profile instead of O(segments) work in
+            // every body evaluation — see the app-hang note on ProfileCounts.
+            if profileCounts.segmentCount == 0 {
+                profileCounts = Self.computeProfileCounts(from: profile)
+            }
             if regionStats.isEmpty {
                 // Try cache first
                 if let cached = StatsCache.shared.get(for: profile.username) {
@@ -264,6 +293,7 @@ struct StatisticsView: View {
                     allRoutes = cached.allRoutes
                     railTotals = cached.railTotals
                     rankInfo = cached.rankInfo
+                    derivedRoutes = Self.computeDerivedRoutes(from: cached.allRoutes)
                     isLoadingMileage = false
                     isLoadingRoutes = false
                     isLoadingRail = false
@@ -312,21 +342,6 @@ struct StatisticsView: View {
 
     // MARK: - Overview
 
-    /// The user's own traveled routes in the given categories (matches the List tab
-    /// and hero strip) — NOT the region-wide route totals from the API.
-    private func traveledRouteCount(for categories: [RouteCategory]) -> Int {
-        var routes = Set<String>()
-        for category in categories {
-            for segment in profile.segments(for: category) {
-                routes.insert("\(segment.region1) \(segment.route)")
-                if let r2 = segment.region2, let route2 = segment.route2 {
-                    routes.insert("\(r2) \(route2)")
-                }
-            }
-        }
-        return routes.count
-    }
-
     private var categoryBreakdownCard: some View {
         let roadMi = regionStats.reduce(0.0) { $0 + $1.clinchedMileage }
         let roadTotal = regionStats.reduce(0.0) { $0 + $1.totalMileage }
@@ -338,7 +353,7 @@ struct StatisticsView: View {
                 icon: "car.fill",
                 tileBG: TMDesign.blueChipBG, tileFG: TMDesign.blueChipFG,
                 name: "Roads",
-                routeCount: traveledRouteCount(for: [.road, .ferry]),
+                routeCount: profileCounts.roadRouteCount,
                 clinched: roadMi, total: roadTotal,
                 barColor: TMDesign.accent,
                 percentColor: TMDesign.clinched,
@@ -351,7 +366,7 @@ struct StatisticsView: View {
                 icon: "tram.fill",
                 tileBG: TMDesign.redChipBG, tileFG: TMDesign.redChipFG,
                 name: "Rail & Transit",
-                routeCount: traveledRouteCount(for: [.rail]),
+                routeCount: profileCounts.railRouteCount,
                 clinched: railTotals.clinchedMileage, total: railTotals.totalMileage,
                 barColor: TMDesign.rail,
                 percentColor: TMDesign.frontier,
@@ -434,10 +449,7 @@ struct StatisticsView: View {
     // MARK: - Closest to Clinched
 
     private var closestToClinchedCard: some View {
-        let inProgress = allRoutes
-            .filter { $0.clinchedMileage > 0 && !$0.isClinched }
-            .sorted { $0.remainingMileage < $1.remainingMileage }
-            .prefix(5)
+        let inProgress = derivedRoutes.closestToClinched
 
         return VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -504,53 +516,15 @@ struct StatisticsView: View {
     // MARK: - Longest Clinched
 
     /// Extract the route name from a root like "il.i090" → "i090" or listName "IL I-90" → "I-90"
-    private func routeBaseName(from root: String) -> String {
+    private static func routeBaseName(from root: String) -> String {
         if let dotIndex = root.firstIndex(of: ".") {
             return String(root[root.index(after: dotIndex)...])
         }
         return root
     }
 
-    /// Aggregate routes across regions — I-90 in IL + WI + IN = one combined entry
-    private var aggregatedClinchedRoutes: [RouteInfo] {
-        // Group by route base name (the part after the dot in root)
-        let grouped = Dictionary(grouping: allRoutes) { routeBaseName(from: $0.root) }
-
-        return grouped.compactMap { (baseName, regionRoutes) -> RouteInfo? in
-            let totalMileage = regionRoutes.reduce(0) { $0 + $1.mileage }
-            let totalClinched = regionRoutes.reduce(0) { $0 + $1.clinchedMileage }
-            guard totalMileage > 0, totalClinched >= totalMileage else { return nil }
-
-            // Use the route name without region prefix for display
-            let routeName: String
-            if let firstName = regionRoutes.first?.listName {
-                let parts = firstName.split(separator: " ", maxSplits: 1)
-                routeName = parts.count > 1 ? String(parts[1]) : firstName
-            } else {
-                routeName = baseName
-            }
-
-            // Collect all roots for cross-region detail view
-            let allRoots = regionRoutes.map(\.root).sorted()
-            let regions = regionRoutes.compactMap { r -> String? in
-                let parts = r.listName.split(separator: " ", maxSplits: 1)
-                return parts.count > 0 ? String(parts[0]) : nil
-            }
-            let displayName = regions.count > 1 ? routeName : (regionRoutes.first?.listName ?? routeName)
-
-            return RouteInfo(
-                id: baseName,
-                root: allRoots.first ?? baseName,
-                listName: displayName,
-                mileage: totalMileage,
-                clinchedMileage: totalClinched
-            )
-        }
-        .sorted { $0.mileage > $1.mileage }
-    }
-
     private var longestClinchedCard: some View {
-        let clinched = Array(aggregatedClinchedRoutes.prefix(5))
+        let clinched = derivedRoutes.longestClinched
 
         return VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -567,12 +541,10 @@ struct StatisticsView: View {
                     .font(.system(size: 15))
                     .foregroundStyle(TMDesign.secondaryText)
             } else {
-                ForEach(clinched) { route in
-                    let baseName = routeBaseName(from: route.root)
-                    let allRoots = allRoutes.filter { routeBaseName(from: $0.root) == baseName }.map(\.root)
+                ForEach(clinched, id: \.route.id) { route, roots in
                     NavigationLink {
                         RouteDetailView(
-                            roots: allRoots,
+                            roots: roots,
                             listName: route.listName,
                             username: profile.username
                         )
@@ -597,7 +569,7 @@ struct StatisticsView: View {
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel("\(route.listName), clinched, \(formatNumber(convert(route.mileage))) \(useMiles ? "miles" : "kilometers")")
                 }
-                Text("\(formatInt(aggregatedClinchedRoutes.count)) routes fully clinched")
+                Text("\(formatInt(derivedRoutes.clinchedRouteCount)) routes fully clinched")
                     .font(.system(size: 13))
                     .monospacedDigit()
                     .foregroundStyle(TMDesign.secondaryText)
@@ -647,11 +619,11 @@ struct StatisticsView: View {
             Rectangle().fill(TMDesign.hairline).frame(height: 1)
 
             HStack(spacing: 0) {
-                heroCountStat(value: formatInt(profile.allRegions.count), label: "regions")
+                heroCountStat(value: formatInt(profileCounts.regionCount), label: "regions")
                 // The user's own traveled routes (matches the List tab) — NOT the sum of
                 // per-region routeCount, which counts every route the regions contain.
-                heroCountStat(value: formatInt(profile.allRoutes.count), label: "routes")
-                heroCountStat(value: formatInt(profile.totalSegments), label: "segments")
+                heroCountStat(value: formatInt(profileCounts.routeCount), label: "routes")
+                heroCountStat(value: formatInt(profileCounts.segmentCount), label: "segments")
             }
         }
         .padding(20)
@@ -796,7 +768,7 @@ struct StatisticsView: View {
 
     private var regionSegmentsView: some View {
         Group {
-            let regionCounts = computeRegionCounts()
+            let regionCounts = profileCounts.regionSegmentCounts
             let topRegions = regionCounts.sorted { $0.value > $1.value }
             let grouped = groupedByCountry(topRegions.map { (region: $0.key, value: $0.value) })
 
@@ -871,6 +843,7 @@ struct StatisticsView: View {
 
         // Load road routes with incremental UI updates
         await loadRouteDetailsIncrementally(regions: allRegions, username: username, batchSize: batchSize)
+        derivedRoutes = Self.computeDerivedRoutes(from: allRoutes)
         isLoadingRoutes = false
 
         // Merge route counts into regionStats (CSV data preserved as mileage source)
@@ -1041,13 +1014,85 @@ struct StatisticsView: View {
         return stats
     }
 
-    private func computeRegionCounts() -> [String: Int] {
-        var counts: [String: Int] = [:]
+    static func computeProfileCounts(from profile: UserProfile) -> ProfileCounts {
+        var counts = ProfileCounts()
+        counts.regionCount = profile.allRegions.count
+        counts.routeCount = profile.allRoutes.count
+        counts.segmentCount = profile.totalSegments
+        counts.roadRouteCount = traveledRouteCount(in: profile, for: [.road, .ferry])
+        counts.railRouteCount = traveledRouteCount(in: profile, for: [.rail])
+        var regionCounts: [String: Int] = [:]
         for segments in profile.categories.values {
             for segment in segments {
-                counts[segment.primaryRegion, default: 0] += 1
+                regionCounts[segment.primaryRegion, default: 0] += 1
             }
         }
+        counts.regionSegmentCounts = regionCounts
         return counts
+    }
+
+    /// The user's own traveled routes in the given categories (matches the List tab
+    /// and hero strip) — NOT the region-wide route totals from the API.
+    private static func traveledRouteCount(in profile: UserProfile, for categories: [RouteCategory]) -> Int {
+        var routes = Set<String>()
+        for category in categories {
+            for segment in profile.segments(for: category) {
+                routes.insert("\(segment.region1) \(segment.route)")
+                if let r2 = segment.region2, let route2 = segment.route2 {
+                    routes.insert("\(r2) \(route2)")
+                }
+            }
+        }
+        return routes.count
+    }
+
+    static func computeDerivedRoutes(from allRoutes: [RouteInfo]) -> DerivedRouteData {
+        var derived = DerivedRouteData()
+
+        derived.closestToClinched = Array(
+            allRoutes
+                .filter { $0.clinchedMileage > 0 && !$0.isClinched }
+                .sorted { $0.remainingMileage < $1.remainingMileage }
+                .prefix(5)
+        )
+
+        // Aggregate routes across regions — I-90 in IL + WI + IN = one combined entry
+        let grouped = Dictionary(grouping: allRoutes) { routeBaseName(from: $0.root) }
+        let aggregated = grouped.compactMap { (baseName, regionRoutes) -> (route: RouteInfo, roots: [String])? in
+            let totalMileage = regionRoutes.reduce(0) { $0 + $1.mileage }
+            let totalClinched = regionRoutes.reduce(0) { $0 + $1.clinchedMileage }
+            guard totalMileage > 0, totalClinched >= totalMileage else { return nil }
+
+            // Use the route name without region prefix for display
+            let routeName: String
+            if let firstName = regionRoutes.first?.listName {
+                let parts = firstName.split(separator: " ", maxSplits: 1)
+                routeName = parts.count > 1 ? String(parts[1]) : firstName
+            } else {
+                routeName = baseName
+            }
+
+            // Collect all roots for cross-region detail view
+            let allRoots = regionRoutes.map(\.root).sorted()
+            let regions = regionRoutes.compactMap { r -> String? in
+                let parts = r.listName.split(separator: " ", maxSplits: 1)
+                return parts.count > 0 ? String(parts[0]) : nil
+            }
+            let displayName = regions.count > 1 ? routeName : (regionRoutes.first?.listName ?? routeName)
+
+            let route = RouteInfo(
+                id: baseName,
+                root: allRoots.first ?? baseName,
+                listName: displayName,
+                mileage: totalMileage,
+                clinchedMileage: totalClinched
+            )
+            return (route: route, roots: allRoots)
+        }
+        .sorted { $0.route.mileage > $1.route.mileage }
+
+        derived.clinchedRouteCount = aggregated.count
+        derived.longestClinched = Array(aggregated.prefix(5))
+        return derived
     }
 }
