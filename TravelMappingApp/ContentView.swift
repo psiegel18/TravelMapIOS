@@ -32,6 +32,15 @@ struct ContentView: View {
                 }
                 Self.updateScreenTag(for: selectedTab)
             }
+            .task {
+                // On iPadOS, presenting a sheet on the very first frame (from onAppear)
+                // can silently no-op — retry shortly after launch. Harmless when the
+                // first presentation succeeded (the binding is already true).
+                try? await Task.sleep(for: .milliseconds(600))
+                if !hasOnboarded && !showOnboarding {
+                    showOnboarding = true
+                }
+            }
             .onChange(of: selectedTab) {
                 Self.updateScreenTag(for: selectedTab)
             }

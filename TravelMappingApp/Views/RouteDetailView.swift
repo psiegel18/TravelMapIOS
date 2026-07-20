@@ -212,7 +212,7 @@ struct RouteDetailView: View {
             ForEach(mergedPolylines) { poly in
                 MapPolyline(coordinates: poly.coordinates)
                     .stroke(
-                        poly.clinched ? Color.blue : Color.gray.opacity(0.7),
+                        poly.clinched ? Color.blue : TMDesign.frontier.opacity(0.85),
                         style: StrokeStyle(
                             lineWidth: poly.clinched ? 4 : 2,
                             lineCap: .round
@@ -268,7 +268,7 @@ struct RouteDetailView: View {
                     .foregroundStyle(TMDesign.tertiaryText)
                 Spacer()
                 legendItem(color: .blue, label: "Traveled")
-                legendItem(color: .gray.opacity(0.7), label: "Remaining")
+                legendItem(color: TMDesign.frontier.opacity(0.85), label: "Remaining")
             }
         }
         .padding(16)

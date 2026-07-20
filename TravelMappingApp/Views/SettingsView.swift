@@ -10,6 +10,7 @@ struct SettingsView: View {
     @AppStorage("sendToWatch") private var sendToWatch = true
     @State private var versionTapCount = 0
     @State private var showSentryTestAlert = false
+    @State private var showTipJar = false
     @State private var isValidatingUser = false
     @State private var userValidationResult: Bool? = Self.cachedValidationResult
     @State private var lastValidatedUsername = Self.cachedValidatedUsername
@@ -92,8 +93,20 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                         .frame(width: 32)
                 }
+                HStack {
+                    Text("Untraveled Routes")
+                    Slider(value: $settings.untraveledVisibility, in: 0.25...1.0, step: 0.05)
+                    Text("\(Int((settings.untraveledVisibility * 100).rounded()))%")
+                        .font(.subheadline.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 44)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Untraveled route visibility, \(Int((settings.untraveledVisibility * 100).rounded())) percent")
             } header: {
                 TMDesign.sectionHeader("Appearance")
+            } footer: {
+                Text("Untraveled routes appear in amber on the map — raise the visibility if they're hard to see against the base map.")
             }
 
             Section {
@@ -185,14 +198,22 @@ struct SettingsView: View {
                 } label: {
                     Label("Report a Bug", systemImage: "ladybug")
                 }
+
+                // Tip jar lives behind a low-key row (not an in-your-face inline grid);
+                // the sheet is attached to the row itself, never chained with the
+                // Form's alert (chained presentations silently fail).
+                Button {
+                    showTipJar = true
+                } label: {
+                    Label("Leave a Tip", systemImage: "heart")
+                }
+                .sheet(isPresented: $showTipJar) {
+                    TipJarSheet()
+                        .presentationDetents([.medium, .large])
+                        .presentationDragIndicator(.visible)
+                }
             } header: {
                 TMDesign.sectionHeader("Support")
-            }
-
-            Section {
-                TipJarView()
-            } footer: {
-                Text("Travel Mapping is free and open source. Tips help support continued iOS app development.")
             }
 
             // MARK: About
@@ -535,10 +556,24 @@ struct TipJarView: View {
     ]
 
     private static let tipLabels: [String: String] = [
-        "com.psiegel18.TravelMapping.tip.small": "Coffee",
-        "com.psiegel18.TravelMapping.tip.medium": "Pizza",
-        "com.psiegel18.TravelMapping.tip.large": "Gas Tank"
+        "com.psiegel18.TravelMapping.tip.small": "Road Coffee",
+        "com.psiegel18.TravelMapping.tip.medium": "Rest-Stop Pizza",
+        "com.psiegel18.TravelMapping.tip.large": "Fill the Tank"
     ]
+
+    private static let tipSubtitles: [String: String] = [
+        "com.psiegel18.TravelMapping.tip.small": "Keeps the dev awake at the wheel",
+        "com.psiegel18.TravelMapping.tip.medium": "Fuel for late-night bug fixes",
+        "com.psiegel18.TravelMapping.tip.large": "You're basically a co-pilot now"
+    ]
+
+    private static let tipTints: [String: (bg: Color, fg: Color)] = [
+        "com.psiegel18.TravelMapping.tip.small": (TMDesign.amberChipBG, TMDesign.amberChipFG),
+        "com.psiegel18.TravelMapping.tip.medium": (TMDesign.redChipBG, TMDesign.redChipFG),
+        "com.psiegel18.TravelMapping.tip.large": (TMDesign.greenChipBG, TMDesign.greenChipFG)
+    ]
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Group {
@@ -553,37 +588,50 @@ struct TipJarView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                HStack(spacing: 10) {
-                    ForEach(products.sorted { $0.price < $1.price }) { product in
+                VStack(spacing: 12) {
+                    ForEach(Array(products.sorted { $0.price < $1.price }.enumerated()), id: \.element.id) { index, product in
+                        let tint = Self.tipTints[product.id] ?? (TMDesign.blueChipBG, TMDesign.blueChipFG)
                         Button {
                             Task { await purchase(product) }
                         } label: {
-                            VStack(spacing: 4) {
+                            HStack(spacing: 14) {
                                 Text(Self.tipEmojis[product.id] ?? "💰")
-                                    .font(.title2)
-                                Text(Self.tipLabels[product.id] ?? "Tip")
-                                    .font(.caption)
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.8)
+                                    .font(.system(size: 38))
+                                    .rotationEffect(.degrees(reduceMotion ? 0 : (index.isMultiple(of: 2) ? -6 : 6)))
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(Self.tipLabels[product.id] ?? "Tip")
+                                        .font(.system(size: 17, weight: .bold))
+                                        .foregroundStyle(.primary)
+                                    Text(Self.tipSubtitles[product.id] ?? "Every bit helps!")
+                                        .font(.system(size: 13))
+                                        .foregroundStyle(TMDesign.secondaryText)
+                                }
+                                Spacer()
                                 Text(product.displayPrice)
-                                    .font(.caption.bold())
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.8)
+                                    .font(.system(size: 15, weight: .heavy))
+                                    .monospacedDigit()
+                                    .foregroundStyle(tint.fg)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 7)
+                                    .background(tint.bg, in: Capsule())
                             }
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                            .padding(.horizontal, 8)
-                            .background(Color.blue.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+                            .padding(14)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                            .rotationEffect(.degrees(reduceMotion ? 0 : (index.isMultiple(of: 2) ? -0.7 : 0.7)))
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(TipSpringButtonStyle())
+                        .accessibilityLabel("\(Self.tipLabels[product.id] ?? "Tip"), \(product.displayPrice)")
                     }
                 }
 
                 if let message = purchaseMessage {
                     Text(message)
-                        .font(.caption)
+                        .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(purchaseState.color)
+                        .multilineTextAlignment(.center)
                         .frame(maxWidth: .infinity)
+                        .padding(.top, 4)
                 }
             }
         }
@@ -847,5 +895,72 @@ struct PrivacyPolicyView: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+}
+
+// MARK: - Tip Jar Sheet
+
+/// Whimsical modal home for the tip jar — reached from a low-key Settings row so
+/// tipping is opt-in rather than staring at everyone from the middle of Settings.
+struct TipJarSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 18) {
+                Text("🫙")
+                    .font(.system(size: 64))
+                    .padding(.top, 26)
+                    .accessibilityHidden(true)
+
+                VStack(spacing: 6) {
+                    Text("The Tip Jar")
+                        .font(.system(size: 28, weight: .heavy))
+                    Text("Travel Mapping is free and open source. Tips keep the wheels turning — every mile of development is fan-funded.")
+                        .font(.system(size: 15))
+                        .foregroundStyle(TMDesign.secondaryText)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                TipJarView()
+                    .padding(.horizontal, 20)
+
+                Text("No subscriptions, no unlocks — just gratitude. 💙")
+                    .font(.system(size: 13))
+                    .foregroundStyle(TMDesign.tertiaryText)
+                    .padding(.bottom, 20)
+            }
+            .frame(maxWidth: 560)
+            .frame(maxWidth: .infinity)
+        }
+        .background(TMDesign.secondarySurface)
+        .overlay(alignment: .topTrailing) {
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 26))
+                    .foregroundStyle(TMDesign.tertiaryText)
+                    .frame(width: 44, height: 44)
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 6)
+            .padding(.trailing, 10)
+            .accessibilityLabel("Close tip jar")
+        }
+    }
+}
+
+/// Springy press effect for the tip cards — playful without being noisy.
+/// Under Reduce Motion the scale change is skipped.
+struct TipSpringButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.95 : 1)
+            .animation(.spring(response: 0.28, dampingFraction: 0.5), value: configuration.isPressed)
     }
 }

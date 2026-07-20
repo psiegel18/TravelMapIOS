@@ -365,14 +365,21 @@ struct TravelMapView: View {
             Map(position: $mapPosition) {
                 UserAnnotation()
 
-                // Road segments
+                // Road segments. Untraveled routes render in Frontier Amber (the
+                // "remaining" semantic) at user-adjustable opacity and a width that
+                // scales with the road-width setting — the old fixed 1.5pt gray was
+                // nearly invisible on most base maps.
                 ForEach(displayedPolylines) { poly in
                     MapPolyline(coordinates: poly.coordinates)
                         .stroke(
-                            poly.isClinched ? colorForRoot(poly.root) : .gray.opacity(0.7),
+                            poly.isClinched
+                                ? colorForRoot(poly.root)
+                                : TMDesign.frontier.opacity(settings.untraveledVisibility),
                             style: MapStyleService.strokeStyle(
                                 for: MapStyleService.parse(settings.roadLineStyle),
-                                baseWidth: poly.isClinched ? settings.roadLineWidth : 1.5
+                                baseWidth: poly.isClinched
+                                    ? settings.roadLineWidth
+                                    : max(1.5, settings.roadLineWidth * 0.75)
                             )
                         )
                 }
@@ -381,10 +388,12 @@ struct TravelMapView: View {
                 // MapKit doesn't reliably render StrokeStyle dash patterns on MapPolyline.
                 // Outer stroke (wider, colored)
                 ForEach(displayedRailPolylines) { poly in
-                    let width = poly.isClinched ? settings.railLineWidth : 2.0
+                    let width = poly.isClinched ? settings.railLineWidth : max(2.0, settings.railLineWidth * 0.6)
                     MapPolyline(coordinates: poly.coordinates)
                         .stroke(
-                            poly.isClinched ? .red : .gray.opacity(0.6),
+                            poly.isClinched
+                                ? .red
+                                : TMDesign.frontier.opacity(settings.untraveledVisibility),
                             lineWidth: width
                         )
                 }
@@ -677,11 +686,15 @@ struct TravelMapView: View {
                         Divider().padding(.leading, 57)
                         layerToggleRow(
                             icon: "road.lanes",
-                            iconBG: TMDesign.neutralChipBG,
-                            iconFG: TMDesign.neutralChipFG,
+                            iconBG: TMDesign.amberChipBG,
+                            iconFG: TMDesign.amberChipFG,
                             title: "Remaining",
                             subtitle: "\((totalCount - clinchedCount).formatted()) segments",
-                            swatch: AnyView(lineSwatch(color: .gray.opacity(0.7), style: .solid, width: 1.5)),
+                            swatch: AnyView(lineSwatch(
+                                color: TMDesign.frontier.opacity(settings.untraveledVisibility),
+                                style: .solid,
+                                width: max(1.5, settings.roadLineWidth * 0.75)
+                            )),
                             isOn: $showUnclinched
                         )
                         Divider().padding(.leading, 57)
@@ -1129,8 +1142,8 @@ struct TravelMapView: View {
                 filterPill(
                     "Remaining \((totalCount - clinchedCount).formatted())",
                     isOn: showUnclinched,
-                    onBG: Color(tmLight: 0x57575E, dark: 0x4A4A50),
-                    offFG: TMDesign.secondaryText,
+                    onBG: TMDesign.frontier,
+                    offFG: TMDesign.amberChipFG,
                     accessibilityLabel: "Show remaining segments: \(showUnclinched ? "on" : "off"), \(totalCount - clinchedCount) segments"
                 ) { showUnclinched.toggle() }
 

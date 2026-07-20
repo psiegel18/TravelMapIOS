@@ -42,6 +42,11 @@ class SyncedSettingsService: ObservableObject {
     @Published var railLineWidth: Double {
         didSet { save("railLineWidth", railLineWidth) }
     }
+    /// Opacity of untraveled routes on the map (0.25–1.0). Untraveled lines used to be
+    /// faint gray and hard to see; this lets the user dial their prominence.
+    @Published var untraveledVisibility: Double {
+        didSet { save("untraveledVisibility", untraveledVisibility) }
+    }
     @Published var recentUsers: [String] {
         didSet { save("recentUsers", recentUsers) }
     }
@@ -58,6 +63,7 @@ class SyncedSettingsService: ObservableObject {
         railLineStyle = Self.load("railLineStyle") ?? "Dashed"
         roadLineWidth = Self.load("roadLineWidth") ?? 3.0
         railLineWidth = Self.load("railLineWidth") ?? 4.0
+        untraveledVisibility = Self.load("untraveledVisibility") ?? 0.8
         recentUsers = Self.load("recentUsers") ?? []
         favoriteRegions = Self.load("favoriteRegions") ?? []
 
@@ -162,6 +168,7 @@ class SyncedSettingsService: ObservableObject {
         if let v: String = Self.load("railLineStyle"), v != railLineStyle { railLineStyle = v }
         if let v: Double = Self.load("roadLineWidth"), v != roadLineWidth { roadLineWidth = v }
         if let v: Double = Self.load("railLineWidth"), v != railLineWidth { railLineWidth = v }
+        if let v: Double = Self.load("untraveledVisibility"), v != untraveledVisibility { untraveledVisibility = v }
         if let v: [String] = Self.load("recentUsers"), v != recentUsers { recentUsers = v }
         if let v: [String] = Self.load("favoriteRegions"), v != favoriteRegions { favoriteRegions = v }
         syncPreferencesContext()
