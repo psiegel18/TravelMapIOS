@@ -659,3 +659,383 @@ final class GitHubService: ObservableObject {
         SecItemDelete(keychainQuery as CFDictionary)
     }
 }
+
+// MARK: - AI assistant (bring your own key)
+
+/// AI providers the user can connect with their own API key. The app never ships a key
+/// and never pays for usage — requests go straight from the device to the provider and
+/// bill to the user's own account.
+enum AIProvider: String, CaseIterable, Codable, Identifiable {
+    case anthropic, openai, xai, custom
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .anthropic: return "Claude (Anthropic)"
+        case .openai: return "ChatGPT (OpenAI)"
+        case .xai: return "Grok (xAI)"
+        case .custom: return "Other (OpenAI-compatible)"
+        }
+    }
+
+    var companyName: String {
+        switch self {
+        case .anthropic: return "Anthropic"
+        case .openai: return "OpenAI"
+        case .xai: return "xAI"
+        case .custom: return "the service you entered"
+        }
+    }
+
+    /// API base including version path; custom providers supply their own
+    var defaultBaseURL: String? {
+        switch self {
+        case .anthropic: return "https://api.anthropic.com/v1"
+        case .openai: return "https://api.openai.com/v1"
+        case .xai: return "https://api.x.ai/v1"
+        case .custom: return nil
+        }
+    }
+
+    var keysPageURL: URL? {
+        switch self {
+        case .anthropic: return URL(string: "https://console.anthropic.com/settings/keys")
+        case .openai: return URL(string: "https://platform.openai.com/api-keys")
+        case .xai: return URL(string: "https://console.x.ai")
+        case .custom: return nil
+        }
+    }
+
+    var privacyPolicyURL: URL? {
+        switch self {
+        case .anthropic: return URL(string: "https://www.anthropic.com/legal/privacy")
+        case .openai: return URL(string: "https://openai.com/policies/privacy-policy/")
+        case .xai: return URL(string: "https://x.ai/legal/privacy-policy")
+        case .custom: return nil
+        }
+    }
+
+    /// Preselected after the key is verified; any model the key can use may be chosen
+    var suggestedModel: String? {
+        self == .anthropic ? "claude-opus-5-5" : nil
+    }
+}
+
+/// One AI request, kept on this device so the user can see exactly what was sent.
+struct AIActivityEntry: Codable, Identifiable {
+    let id: UUID
+    let date: Date
+    let feature: String
+    let provider: String
+    let host: String
+    let model: String
+    /// Plain-language description of what was sent
+    let sentSummary: String
+    let charactersSent: Int
+    var outcome: String
+}
+
+/// Bring-your-own-key AI client. AI features stay hidden unless the user has saved a key,
+/// agreed to the data-sharing disclosure for that exact provider and host, and left the
+/// master switch on (App Store Review Guideline 5.1.2(i): explicit permission before
+/// personal data goes to a third-party AI).
+@MainActor
+final class AIService: ObservableObject {
+    static let shared = AIService()
+
+    enum AIError: LocalizedError {
+        case notReady
+        case badBaseURL
+        case http(status: Int, message: String)
+        case refused(String?)
+        case emptyResponse
+
+        var errorDescription: String? {
+            switch self {
+            case .notReady: return "Turn on AI Assistant in Settings first."
+            case .badBaseURL: return "That API address isn't a valid https URL."
+            case .http(let status, let message):
+                if status == 401 || status == 403 { return "The provider rejected the API key (\(status)). Check it in Settings › AI Assistant." }
+                if status == 429 { return "Rate limited or out of credit with the provider (429): \(message)" }
+                return "The AI provider returned \(status): \(message)"
+            case .refused(let category): return "The model declined this request\(category.map { " (\($0))" } ?? "")."
+            case .emptyResponse: return "The AI returned an empty answer."
+            }
+        }
+    }
+
+    @Published private(set) var provider: AIProvider?
+    @Published private(set) var hasKey = false
+    @Published var model: String { didSet { defaults.set(model, forKey: "aiModel") } }
+    @Published var isEnabled: Bool { didSet { defaults.set(isEnabled, forKey: "aiEnabled") } }
+    @Published private(set) var consentDate: Date?
+    @Published private(set) var activity: [AIActivityEntry] = []
+
+    private let defaults = UserDefaults.standard
+    private var customBaseURL: String
+    private static let keychainService = "com.psiegel18.TravelMapping.ai"
+
+    /// Everything a feature needs before it may send anything
+    var isReady: Bool { isEnabled && hasKey && provider != nil && consentDate != nil && !model.isEmpty }
+
+    var baseURL: String? {
+        guard let provider else { return nil }
+        return provider == .custom ? customBaseURL : provider.defaultBaseURL
+    }
+
+    var host: String { baseURL.flatMap { URL(string: $0)?.host } ?? "" }
+
+    /// Short label for buttons: "Claude (Anthropic)" / host for custom
+    var providerLabel: String {
+        guard let provider else { return "AI" }
+        return provider == .custom ? host : provider.displayName
+    }
+
+    private init() {
+        provider = defaults.string(forKey: "aiProvider").flatMap(AIProvider.init(rawValue:))
+        customBaseURL = defaults.string(forKey: "aiBaseURL") ?? ""
+        model = defaults.string(forKey: "aiModel") ?? ""
+        isEnabled = defaults.object(forKey: "aiEnabled") as? Bool ?? true
+        hasKey = Self.readKey() != nil
+        // Consent is tied to the provider + host it was given for
+        if let stored = defaults.string(forKey: "aiConsentScope"), stored == consentScope,
+           let date = defaults.object(forKey: "aiConsentDate") as? Date {
+            consentDate = date
+        }
+        if let data = defaults.data(forKey: "aiActivity"),
+           let entries = try? JSONDecoder().decode([AIActivityEntry].self, from: data) {
+            activity = entries
+        }
+    }
+
+    private var consentScope: String { "\(provider?.rawValue ?? "")|\(host)" }
+
+    // MARK: Setup
+
+    /// Verifies the key by listing models, then stores it. Returns the model IDs the key can use.
+    func connect(provider: AIProvider, key: String, customBaseURL: String) async throws -> [String] {
+        let trimmedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = provider == .custom
+            ? customBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            : (provider.defaultBaseURL ?? "")
+        guard let url = URL(string: base), url.scheme == "https", url.host != nil else { throw AIError.badBaseURL }
+
+        let models = try await Self.listModels(provider: provider, baseURL: base, key: trimmedKey)
+
+        let scopeChanged = provider != self.provider || base != baseURL
+        self.provider = provider
+        self.customBaseURL = base
+        defaults.set(provider.rawValue, forKey: "aiProvider")
+        defaults.set(base, forKey: "aiBaseURL")
+        Self.saveKey(trimmedKey)
+        hasKey = true
+        if scopeChanged { revokeConsent() }
+        if model.isEmpty || !models.contains(model) || scopeChanged {
+            model = provider.suggestedModel.flatMap { models.contains($0) ? $0 : nil } ?? models.first ?? ""
+        }
+        return models
+    }
+
+    func availableModels() async throws -> [String] {
+        guard let provider, let baseURL, let key = Self.readKey() else { throw AIError.notReady }
+        return try await Self.listModels(provider: provider, baseURL: baseURL, key: key)
+    }
+
+    func grantConsent() {
+        consentDate = Date()
+        defaults.set(consentScope, forKey: "aiConsentScope")
+        defaults.set(consentDate, forKey: "aiConsentDate")
+    }
+
+    func revokeConsent() {
+        consentDate = nil
+        defaults.removeObject(forKey: "aiConsentScope")
+        defaults.removeObject(forKey: "aiConsentDate")
+    }
+
+    /// Removes the key and everything tied to it. AI features disappear immediately.
+    func removeKey() {
+        Self.deleteKey()
+        hasKey = false
+        provider = nil
+        customBaseURL = ""
+        model = ""
+        revokeConsent()
+        for key in ["aiProvider", "aiBaseURL", "aiModel"] { defaults.removeObject(forKey: key) }
+    }
+
+    func clearActivity() {
+        activity = []
+        defaults.removeObject(forKey: "aiActivity")
+    }
+
+    // MARK: Requests
+
+    /// Sends one prompt and returns the text answer. `sentSummary` is what the activity
+    /// log shows — describe the data in plain words. Cancelling the calling Task cancels
+    /// the request.
+    func complete(system: String, prompt: String, feature: String, sentSummary: String) async throws -> String {
+        guard isReady, let provider, let baseURL, let key = Self.readKey() else { throw AIError.notReady }
+        var entry = AIActivityEntry(id: UUID(), date: Date(), feature: feature, provider: provider.displayName,
+                                    host: host, model: model, sentSummary: sentSummary,
+                                    charactersSent: system.count + prompt.count, outcome: "Sending…")
+        record(entry)
+        do {
+            let text = provider == .anthropic
+                ? try await Self.anthropicMessage(baseURL: baseURL, key: key, model: model, system: system, prompt: prompt)
+                : try await Self.chatCompletion(baseURL: baseURL, key: key, model: model, system: system, prompt: prompt)
+            entry.outcome = "Answered"
+            record(entry)
+            return text
+        } catch {
+            entry.outcome = (error as? URLError)?.code == .cancelled || error is CancellationError ? "Cancelled" : "Failed"
+            record(entry)
+            throw error
+        }
+    }
+
+    private func record(_ entry: AIActivityEntry) {
+        if let i = activity.firstIndex(where: { $0.id == entry.id }) {
+            activity[i] = entry
+        } else {
+            activity.insert(entry, at: 0)
+            if activity.count > 50 { activity.removeLast(activity.count - 50) }
+        }
+        if let data = try? JSONEncoder().encode(activity) { defaults.set(data, forKey: "aiActivity") }
+    }
+
+    // MARK: Provider HTTP
+
+    private static let session: URLSession = {
+        let config = URLSessionConfiguration.ephemeral  // no disk cache of prompts or answers
+        config.timeoutIntervalForRequest = 180
+        return URLSession(configuration: config)
+    }()
+
+    private static func listModels(provider: AIProvider, baseURL: String, key: String) async throws -> [String] {
+        var request = URLRequest(url: URL(string: "\(baseURL)/models")!)
+        authorize(&request, provider: provider, key: key)
+        let data = try await send(request)
+        struct List: Decodable { struct Model: Decodable { let id: String }; let data: [Model] }
+        let ids = (try? JSONDecoder().decode(List.self, from: data))?.data.map(\.id) ?? []
+        return ids.sorted()
+    }
+
+    /// Claude Messages API. Opus 5.x / Fable 5.1 / Sonnet 5.5 get server-side refusal
+    /// fallbacks so a safety decline is retried on Anthropic's recommended model.
+    private static func anthropicMessage(baseURL: String, key: String, model: String, system: String, prompt: String) async throws -> String {
+        var request = URLRequest(url: URL(string: "\(baseURL)/messages")!)
+        request.httpMethod = "POST"
+        authorize(&request, provider: .anthropic, key: key)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = [
+            "model": model,
+            "max_tokens": 16000,
+            "system": system,
+            "messages": [["role": "user", "content": prompt]],
+        ]
+        let fallbackModels = ["claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5"]
+        if fallbackModels.contains(model) {
+            request.setValue("server-side-fallback-2026-07-01", forHTTPHeaderField: "anthropic-beta")
+            body["fallbacks"] = "default"
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let data = try await send(request)
+
+        struct Response: Decodable {
+            struct Block: Decodable { let type: String; let text: String? }
+            struct StopDetails: Decodable { let category: String? }
+            let content: [Block]
+            let stop_reason: String?
+            let stop_details: StopDetails?
+        }
+        let response = try JSONDecoder().decode(Response.self, from: data)
+        if response.stop_reason == "refusal" { throw AIError.refused(response.stop_details?.category) }
+        let text = response.content.filter { $0.type == "text" }.compactMap(\.text).joined()
+        guard !text.isEmpty else { throw AIError.emptyResponse }
+        return text
+    }
+
+    /// OpenAI-style Chat Completions — OpenAI, xAI, and compatible services.
+    private static func chatCompletion(baseURL: String, key: String, model: String, system: String, prompt: String) async throws -> String {
+        var request = URLRequest(url: URL(string: "\(baseURL)/chat/completions")!)
+        request.httpMethod = "POST"
+        authorize(&request, provider: .openai, key: key)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "model": model,
+            "messages": [
+                ["role": "system", "content": system],
+                ["role": "user", "content": prompt],
+            ],
+        ])
+        let data = try await send(request)
+        struct Response: Decodable {
+            struct Choice: Decodable { struct Message: Decodable { let content: String?; let refusal: String? }; let message: Message }
+            let choices: [Choice]
+        }
+        let message = try JSONDecoder().decode(Response.self, from: data).choices.first?.message
+        if let refusal = message?.refusal, !refusal.isEmpty { throw AIError.refused(nil) }
+        guard let text = message?.content, !text.isEmpty else { throw AIError.emptyResponse }
+        return text
+    }
+
+    private static func authorize(_ request: inout URLRequest, provider: AIProvider, key: String) {
+        if provider == .anthropic {
+            request.setValue(key, forHTTPHeaderField: "x-api-key")
+            request.setValue("2026-10-21", forHTTPHeaderField: "anthropic-version")
+        } else {
+            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        }
+    }
+
+    private static func send(_ request: URLRequest) async throws -> Data {
+        let (data, response) = try await session.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+        guard (200..<300).contains(status) else {
+            // Provider error bodies vary: {"error":{"message":…}} or {"error":"…"}
+            var message = HTTPURLResponse.localizedString(forStatusCode: status)
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                if let error = json["error"] as? [String: Any], let m = error["message"] as? String { message = m }
+                else if let m = json["error"] as? String { message = m }
+            }
+            // Deliberately not sent to Sentry: these are the user's own account/config
+            throw AIError.http(status: status, message: String(message.prefix(200)))
+        }
+        return data
+    }
+
+    // MARK: Keychain
+
+    private static var keychainQuery: [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: "api-key",
+        ]
+    }
+
+    private static func readKey() -> String? {
+        var query = keychainQuery
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    private static func saveKey(_ key: String) {
+        deleteKey()
+        var query = keychainQuery
+        query[kSecValueData as String] = Data(key.utf8)
+        // This device only — never synced to iCloud Keychain or restored elsewhere
+        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        SecItemAdd(query as CFDictionary, nil)
+    }
+
+    private static func deleteKey() {
+        SecItemDelete(keychainQuery as CFDictionary)
+    }
+}
