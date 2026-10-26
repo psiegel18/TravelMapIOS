@@ -67,6 +67,32 @@ struct RoadTripListView: View {
                 }
             }
 
+            if !settings.primaryUser.isEmpty {
+                Section {
+                    NavigationLink {
+                        ListCheckupView(username: settings.primaryUser)
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "stethoscope")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(TMDesign.blueChipFG)
+                                .frame(width: 34, height: 34)
+                                .background(TMDesign.blueChipBG, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                .accessibilityHidden(true)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("List checkup")
+                                    .font(.system(size: 17, weight: .bold))
+                                Text("Find lines that didn't count in TravelMapping's last update")
+                                    .font(.system(size: 15))
+                                    .foregroundStyle(TMDesign.secondaryText)
+                            }
+                        }
+                        .padding(.vertical, 6)
+                        .accessibilityElement(children: .combine)
+                    }
+                }
+            }
+
             // Past trips
             Section {
                 if isLoading {
@@ -675,4 +701,425 @@ struct ListUpdatePRRow: View {
 
 extension TripType: Identifiable {
     public var id: String { rawValue }
+}
+
+// MARK: - List checkup
+
+/// Lines of the user's list file that TravelMapping's last nightly update couldn't use,
+/// with fixes checked against current route data. AI suggestions are optional and only
+/// run with the user's own key and permission.
+struct ListCheckupView: View {
+    let username: String
+
+    @ObservedObject private var ai = AIService.shared
+    @State private var category: RouteCategory = .road
+    @State private var result: ListCheckup.Result?
+    @State private var isLoading = true
+    @State private var errorMessage: String?
+    @State private var excluded: Set<String> = []
+    @State private var aiTask: Task<Void, Never>?
+    @State private var aiMessage: String?
+    @State private var showConsent = false
+    @State private var showUpdate = false
+    @State private var pickerFix: CheckupFix?
+    /// Lines whose fix was sent, so they don't show as open until the next nightly update
+    @AppStorage("checkupSentLines") private var sentLinesData = Data()
+
+    private var fixes: [CheckupFix] { result?.fixes ?? [] }
+
+    private var sentLines: [String: Date] {
+        (try? JSONDecoder().decode([String: Date].self, from: sentLinesData)) ?? [:]
+    }
+
+    private var selectedFixes: [CheckupFix] {
+        fixes.filter { $0.replacement != nil && !excluded.contains($0.id) && sentLines[$0.issue.line] == nil }
+    }
+
+    /// Fixes AI could help with: no fix yet, but the route's waypoints are known
+    private var needsSuggestion: [CheckupFix] {
+        fixes.filter { $0.replacement == nil && $0.canPickWaypoints && sentLines[$0.issue.line] == nil }
+    }
+
+    var body: some View {
+        List {
+            Section {
+                Picker("List", selection: $category) {
+                    Text("Roads").tag(RouteCategory.road)
+                    Text("Rail & Transit").tag(RouteCategory.rail)
+                }
+                .pickerStyle(.segmented)
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets())
+            }
+
+            if isLoading {
+                Section {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                        Text("Reading TravelMapping's report for \(username)…")
+                            .foregroundStyle(TMDesign.secondaryText)
+                    }
+                }
+            } else if let errorMessage {
+                Section {
+                    Text(errorMessage)
+                    Button("Try Again") { Task { await load() } }
+                }
+            } else if fixes.isEmpty {
+                Section {
+                    Label("Every line counted in the last update.", systemImage: "checkmark.seal.fill")
+                        .foregroundStyle(TMDesign.greenChipFG)
+                } footer: {
+                    if let updated = result?.fileUpdated { Text(updated) }
+                }
+            } else {
+                Section {
+                    ForEach(fixes) { fix in
+                        CheckupFixRow(
+                            fix: fix,
+                            isIncluded: !excluded.contains(fix.id),
+                            sentDate: sentLines[fix.issue.line],
+                            onToggle: {
+                                if excluded.contains(fix.id) { excluded.remove(fix.id) } else { excluded.insert(fix.id) }
+                            },
+                            onPick: { pickerFix = fix },
+                            onCommentOut: { setReplacement(fix.id, "#" + fix.issue.line, .manual, "Commented out — kept in your file for reference.") }
+                        )
+                    }
+                } header: {
+                    Text("\(fixes.count) line\(fixes.count == 1 ? "" : "s") didn't count")
+                } footer: {
+                    Text("TravelMapping checks your list every night. These lines were skipped in the last update\(result?.fileUpdated.map { " (\($0))" } ?? ""), so those miles aren't in your stats.")
+                }
+
+                if !needsSuggestion.isEmpty {
+                    aiSection
+                }
+
+                Section {
+                    Button {
+                        Haptics.light()
+                        showUpdate = true
+                    } label: {
+                        Label("Update my .\(category.fileExtension) (\(selectedFixes.count) fix\(selectedFixes.count == 1 ? "" : "es"))",
+                              systemImage: "square.and.pencil")
+                            .font(.system(size: 16, weight: .semibold))
+                    }
+                    .disabled(selectedFixes.isEmpty)
+                } footer: {
+                    Text("You'll see every change before anything is sent.")
+                }
+            }
+        }
+        .navigationTitle("List Checkup")
+        .navigationBarTitleDisplayMode(.inline)
+        .sentryScreen("ListCheckup")
+        .task(id: category) { await load() }
+        .refreshable { await load() }
+        .onDisappear { aiTask?.cancel() }
+        .sheet(item: $pickerFix) { fix in
+            WaypointPickerSheet(fix: fix) { line in
+                setReplacement(fix.id, line, .manual, nil)
+            }
+        }
+        .sheet(isPresented: $showConsent) {
+            AIConsentSheet()
+        }
+        .sheet(isPresented: $showUpdate) {
+            ListUpdateSheet(
+                lines: [],
+                username: username,
+                category: category,
+                blockTitle: "",
+                tripNames: [],
+                replacements: Dictionary(selectedFixes.compactMap { fix in fix.replacement.map { (fix.issue.line, $0) } },
+                                         uniquingKeysWith: { a, _ in a }),
+                onFixesSent: { applied in markSent(selectedFixes.filter { applied.contains($0.issue.line) }) },
+                onSubmitted: { _ in }
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var aiSection: some View {
+        Section {
+            if ai.isReady {
+                if aiTask != nil {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                        Text("Asking \(ai.providerLabel)…")
+                        Spacer()
+                        Button("Cancel") {
+                            aiTask?.cancel()
+                            aiTask = nil
+                        }
+                    }
+                } else {
+                    Button {
+                        if ai.consentDate == nil { showConsent = true } else { suggest() }
+                    } label: {
+                        Label("Suggest fixes with \(ai.providerLabel)", systemImage: "sparkles")
+                    }
+                }
+            } else if ai.hasKey && ai.consentDate == nil && ai.isEnabled {
+                Button {
+                    showConsent = true
+                } label: {
+                    Label("Allow \(ai.providerLabel) to suggest fixes…", systemImage: "sparkles")
+                }
+            } else {
+                NavigationLink {
+                    AISettingsView()
+                } label: {
+                    Label(!ai.hasKey ? "Get suggested fixes with your own AI key"
+                          : (ai.model.isEmpty ? "Choose an AI model to get suggestions" : "AI Assistant is off"),
+                          systemImage: "sparkles")
+                }
+            }
+            if let aiMessage {
+                Text(aiMessage)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .sentryReplayMask()
+            }
+        } header: {
+            Text("Need help?")
+        } footer: {
+            if ai.isReady {
+                Text("Sends the \(needsSuggestion.count) line\(needsSuggestion.count == 1 ? "" : "s") above that need waypoints, TravelMapping's notes, and public route data to \(ai.host). Suggestions use only real waypoints and change nothing until you send them. You can also pick waypoints yourself.")
+            } else {
+                Text("Pick new waypoints yourself with “Choose waypoints”, or connect your own AI key in Settings for suggestions.")
+            }
+        }
+    }
+
+    private func load() async {
+        isLoading = true
+        errorMessage = nil
+        aiMessage = nil
+        do {
+            result = try await ListCheckup.run(username: username, category: category)
+            pruneSentLines()
+        } catch {
+            errorMessage = category == .rail
+                ? "Couldn't read TravelMapping's rail report. If you don't have a .rlist file, there's nothing to check."
+                : "Couldn't read TravelMapping's report for \(username). Check your connection and try again."
+        }
+        isLoading = false
+    }
+
+    private func suggest() {
+        let pending = needsSuggestion
+        let updates = result?.updates ?? []
+        aiMessage = nil
+        aiTask = Task {
+            defer { aiTask = nil }
+            do {
+                let suggestions = try await ListCheckup.suggestFixes(pending, updates: updates)
+                guard !Task.isCancelled else { return }
+                for (id, suggestion) in suggestions {
+                    setReplacement(id, suggestion.line, .ai, suggestion.reason)
+                }
+                let missed = pending.count - suggestions.count
+                aiMessage = suggestions.isEmpty
+                    ? "\(ai.providerLabel) didn't suggest any fix that uses real waypoints. Choose waypoints yourself instead."
+                    : (missed > 0 ? "\(missed) line\(missed == 1 ? "" : "s") still need you to choose waypoints." : nil)
+            } catch is CancellationError {
+                aiMessage = "Cancelled — nothing else was sent."
+            } catch let error as URLError where error.code == .cancelled {
+                aiMessage = "Cancelled — nothing else was sent."
+            } catch {
+                aiMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func setReplacement(_ id: String, _ line: String, _ source: CheckupFix.Source, _ note: String?) {
+        guard var current = result, let i = current.fixes.firstIndex(where: { $0.id == id }) else { return }
+        current.fixes[i].replacement = line
+        current.fixes[i].source = source
+        current.fixes[i].note = note
+        result = current
+        excluded.remove(id)
+    }
+
+    private func markSent(_ sent: [CheckupFix]) {
+        var lines = sentLines
+        for fix in sent { lines[fix.issue.line] = Date() }
+        sentLinesData = (try? JSONEncoder().encode(lines)) ?? Data()
+    }
+
+    /// Forget sent lines once the log no longer reports them (or after three weeks)
+    private func pruneSentLines() {
+        let current = Set(fixes.map(\.issue.line))
+        let cutoff = Date().addingTimeInterval(-21 * 86_400)
+        let kept = sentLines.filter { current.contains($0.key) && $0.value > cutoff }
+        sentLinesData = (try? JSONEncoder().encode(kept)) ?? Data()
+    }
+}
+
+struct CheckupFixRow: View {
+    let fix: CheckupFix
+    let isIncluded: Bool
+    let sentDate: Date?
+    let onToggle: () -> Void
+    let onPick: () -> Void
+    let onCommentOut: () -> Void
+
+    private var title: String {
+        switch fix.issue.kind {
+        case .missingWaypoints(let labels):
+            let route = fix.target.map { fix.routes[$0.routeKey1]?.listName ?? "\($0.region1) \($0.route1)" } ?? "the route"
+            return labels.count == 1
+                ? "Waypoint \(labels[0]) isn't on \(route) anymore"
+                : "Waypoints \(labels.joined(separator: " and ")) aren't on \(route) anymore"
+        case .deprecatedRoute(let old, let canonical):
+            return "\(old) was renamed \(canonical)"
+        case .unknownRoute:
+            return "TravelMapping doesn't recognize this route"
+        case .zeroDistance:
+            return "Both waypoints are the same point"
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.system(size: 16, weight: .semibold))
+            Text(fix.issue.line)
+                .font(.system(size: 14, design: .monospaced))
+                .foregroundStyle(fix.replacement == nil ? .primary : TMDesign.tertiaryText)
+                .strikethrough(fix.replacement != nil)
+            ForEach(fix.issue.routeNotes, id: \.self) { note in
+                Text(note)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let sentDate {
+                TMChip(text: "Fix sent \(sentDate.formatted(date: .abbreviated, time: .omitted)) · waiting for nightly update",
+                       icon: "paperplane", bg: TMDesign.purpleChipBG, fg: TMDesign.purpleChipFG)
+            } else if let replacement = fix.replacement {
+                Button(action: onToggle) {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: isIncluded ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 18))
+                            .foregroundStyle(isIncluded ? TMDesign.accent : TMDesign.chevron)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(replacement)
+                                .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(.primary)
+                            HStack(spacing: 6) {
+                                TMChip(text: fix.source?.rawValue ?? "Fix",
+                                       icon: fix.source == .ai ? "sparkles" : "checkmark",
+                                       bg: fix.source == .ai ? TMDesign.purpleChipBG : TMDesign.greenChipBG,
+                                       fg: fix.source == .ai ? TMDesign.purpleChipFG : TMDesign.greenChipFG,
+                                       fontSize: 11)
+                            }
+                            if let note = fix.note {
+                                Text(note)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityValue(isIncluded ? "Included" : "Excluded")
+            }
+
+            if sentDate == nil {
+                HStack(spacing: 16) {
+                    if fix.canPickWaypoints {
+                        Button(fix.replacement == nil ? "Choose waypoints…" : "Change…", action: onPick)
+                    }
+                    if fix.replacement == nil, case .unknownRoute = fix.issue.kind {
+                        Button("Comment it out", action: onCommentOut)
+                    } else if fix.replacement == nil, case .zeroDistance = fix.issue.kind {
+                        Button("Comment it out", action: onCommentOut)
+                    }
+                }
+                .font(.system(size: 14, weight: .semibold))
+                .buttonStyle(.borderless)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+/// Pick replacement waypoints from the route's current list, in route order.
+struct WaypointPickerSheet: View {
+    let fix: CheckupFix
+    let onSave: (String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var start = ""
+    @State private var end = ""
+
+    private var route1: RouteWaypoints? { fix.target.flatMap { fix.routes[$0.routeKey1] } }
+    private var route2: RouteWaypoints? { fix.target.flatMap { fix.routes[$0.routeKey2] } }
+
+    private var newLine: String? {
+        guard var entry = fix.target, !start.isEmpty, !end.isEmpty, start != end || entry.multiRegion else { return nil }
+        entry.waypoint1 = start
+        entry.waypoint2 = end
+        return entry.text
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text(fix.issue.line)
+                        .font(.system(size: 14, design: .monospaced))
+                        .strikethrough()
+                        .foregroundStyle(.secondary)
+                    if let newLine {
+                        Text(newLine)
+                            .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                    }
+                }
+                if let route1 {
+                    Section("From (\(route1.listName))") {
+                        Picker("From", selection: $start) {
+                            Text("Choose…").tag("")
+                            ForEach(route1.labels, id: \.self) { Text($0).tag($0) }
+                        }
+                        .pickerStyle(.wheel)
+                    }
+                }
+                if let route2 {
+                    Section("To (\(route2.listName))") {
+                        Picker("To", selection: $end) {
+                            Text("Choose…").tag("")
+                            ForEach(route2.labels, id: \.self) { Text($0).tag($0) }
+                        }
+                        .pickerStyle(.wheel)
+                    }
+                }
+            }
+            .navigationTitle("Choose Waypoints")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Use") {
+                        if let newLine { onSave(newLine) }
+                        dismiss()
+                    }
+                    .disabled(newLine == nil)
+                }
+            }
+            .onAppear {
+                // Keep labels that still exist; anything gone starts blank — defaulting to
+                // the route's ends would silently claim the whole route as traveled
+                let target = fix.target
+                start = route1?.labels.first { $0 == target?.waypoint1 } ?? ""
+                end = route2?.labels.first { $0 == target?.waypoint2 } ?? ""
+            }
+        }
+        .sentryScreen("WaypointPicker")
+    }
 }

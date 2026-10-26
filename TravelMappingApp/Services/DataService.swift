@@ -250,6 +250,69 @@ class DataService: ObservableObject {
     }
 }
 
+// MARK: - Keychain
+
+/// A generic-password Keychain item that either stays on this device or syncs, end-to-end
+/// encrypted, to the user's other devices through iCloud Keychain.
+struct KeychainItem {
+    let service: String
+    let account: String
+
+    private var base: [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+    }
+
+    /// Finds the item whether it was saved device-only or synced.
+    func read() -> (value: String, synced: Bool)? {
+        var query = base
+        query[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny
+        query[kSecReturnData as String] = true
+        query[kSecReturnAttributes as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let attributes = item as? [String: Any],
+              let data = attributes[kSecValueData as String] as? Data,
+              let value = String(data: data, encoding: .utf8) else { return nil }
+        let synced = (attributes[kSecAttrSynchronizable as String] as? NSNumber)?.boolValue ?? false
+        return (value, synced)
+    }
+
+    /// Replaces any existing copy. Returns whether the item ended up synced — iCloud
+    /// Keychain can be unavailable (signed out, or turned off), in which case it falls
+    /// back to device-only rather than losing the value.
+    @discardableResult
+    func save(_ value: String, synced: Bool) -> Bool {
+        delete()
+        if synced, add(value, synced: true) == errSecSuccess { return true }
+        _ = add(value, synced: false)
+        return false
+    }
+
+    /// Deletes this device's copy and, when synced, the copy on every other device.
+    func delete() {
+        var query = base
+        query[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny
+        SecItemDelete(query as CFDictionary)
+    }
+
+    private func add(_ value: String, synced: Bool) -> OSStatus {
+        var query = base
+        query[kSecValueData as String] = Data(value.utf8)
+        query[kSecAttrSynchronizable as String] = synced
+        // Synced items can't use a ThisDeviceOnly class; device-only items never leave
+        // this device, not even in backups restored to another one.
+        query[kSecAttrAccessible as String] = synced
+            ? kSecAttrAccessibleAfterFirstUnlock
+            : kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        return SecItemAdd(query as CFDictionary, nil)
+    }
+}
+
 // MARK: - GitHub (in-app .list pull requests)
 
 /// A pull request the app opened against TravelMapping/UserData.
@@ -285,6 +348,10 @@ final class GitHubService: ObservableObject {
     var isSignedIn: Bool { token != nil }
 
     @Published private var token: String?
+    /// Whether the token syncs to the user's other devices via iCloud Keychain (opt-in)
+    @Published private(set) var syncsAcrossDevices = false
+
+    private static let tokenItem = KeychainItem(service: keychainService, account: "oauth-token")
 
     enum GitHubError: LocalizedError {
         case notConfigured
@@ -321,7 +388,10 @@ final class GitHubService: ObservableObject {
     }
 
     private init() {
-        token = Self.readToken()
+        if let stored = Self.tokenItem.read() {
+            token = stored.value
+            syncsAcrossDevices = stored.synced
+        }
         if token != nil {
             login = UserDefaults.standard.string(forKey: "githubLogin")
         }
@@ -364,7 +434,7 @@ final class GitHubService: ObservableObject {
             let response = try JSONDecoder().decode(TokenResponse.self, from: data)
             if let accessToken = response.access_token {
                 token = accessToken
-                Self.saveToken(accessToken)
+                syncsAcrossDevices = Self.tokenItem.save(accessToken, synced: syncsAcrossDevices)
                 try? await refreshLogin()  // login is re-fetched lazily if this fails
                 let crumb = Breadcrumb(level: .info, category: "github")
                 crumb.message = "Signed in with GitHub"
@@ -385,7 +455,8 @@ final class GitHubService: ObservableObject {
     func signOut() {
         token = nil
         login = nil
-        Self.deleteToken()
+        Self.tokenItem.delete()
+        syncsAcrossDevices = false
         UserDefaults.standard.removeObject(forKey: "githubLogin")
     }
 
@@ -413,6 +484,7 @@ final class GitHubService: ObservableObject {
         blockTitle: String,
         appendOnly: Bool,
         tripNames: [String],
+        replacements: [String: String] = [:],
         appendingTo openPR: ListUpdatePR?
     ) async throws -> (pr: ListUpdatePR, merge: ListFileMerger.Result) {
         guard isSignedIn else { throw GitHubError.notSignedIn }
@@ -431,10 +503,11 @@ final class GitHubService: ObservableObject {
         }
         if let openPR, let fork = openPR.fork, let branch = openPR.branch, let headSHA = openBranchSHA {
             let file = try await readFile(repo: fork, sha: headSHA, path: path)
-            let merge = await Self.merge(file.text, lines, blockTitle, appendOnly)
-            guard !merge.placements.isEmpty else { throw GitHubError.nothingNew }
+            let (fixedText, fixed) = ListFileMerger.applyReplacements(file.text, replacements)
+            let merge = await Self.merge(fixedText, lines, blockTitle, appendOnly)
+            guard !merge.placements.isEmpty || !fixed.isEmpty else { throw GitHubError.nothingNew }
             try await commit(repo: fork, branch: branch, path: path, text: merge.text, fileSHA: file.sha,
-                             message: "Add \(merge.placements.count) more segment\(merge.placements.count == 1 ? "" : "s") from \(names)")
+                             message: Self.commitSummary(added: merge.placements.count, fixed: fixed.count, from: names, more: true))
             var updated = openPR
             updated.lineCount += merge.placements.count
             breadcrumb("Added \(merge.placements.count) lines to PR #\(openPR.number)")
@@ -444,8 +517,9 @@ final class GitHubService: ObservableObject {
         // 1. Upstream head + current file at that exact commit (no CDN staleness)
         let baseSHA = try await refSHA(repo: Self.upstream, branch: "master")
         let file = try await readFile(repo: Self.upstream, sha: baseSHA, path: path)
-        let merge = await Self.merge(file.text, lines, blockTitle, appendOnly)
-        guard !merge.placements.isEmpty else { throw GitHubError.nothingNew }
+        let (fixedText, fixed) = ListFileMerger.applyReplacements(file.text, replacements)
+        let merge = await Self.merge(fixedText, lines, blockTitle, appendOnly)
+        guard !merge.placements.isEmpty || !fixed.isEmpty else { throw GitHubError.nothingNew }
 
         // 2. Fork (idempotent — returns the existing fork if there is one)
         struct Repo: Decodable {
@@ -486,20 +560,26 @@ final class GitHubService: ObservableObject {
 
         // 4. Commit the merged file
         try await commit(repo: fork, branch: branch, path: path, text: merge.text, fileSHA: file.sha,
-                         message: "Update \(username).\(category.fileExtension): \(merge.placements.count) segment\(merge.placements.count == 1 ? "" : "s") from \(names)")
+                         message: "Update \(username).\(category.fileExtension): " + Self.commitSummary(added: merge.placements.count, fixed: fixed.count, from: names, more: false))
 
         // 5. Pull request — head owner from the fork itself (survives GitHub renames)
-        let lineList = merge.placements.map { "- `\($0.line.text)`" }.joined(separator: "\n")
-        let prBody = """
-        Adds \(merge.placements.count) segment\(merge.placements.count == 1 ? "" : "s") recorded with GPS in the Travel Mapping iOS app (\(names)).
-
-        \(lineList)
-
-        Existing lines are unchanged; new lines were placed alongside similar routes.
-        """
+        var sections: [String] = []
+        if !merge.placements.isEmpty {
+            sections.append("Adds \(merge.placements.count) segment\(merge.placements.count == 1 ? "" : "s") recorded with GPS in the Travel Mapping iOS app (\(names)):\n\n"
+                + merge.placements.map { "- `\($0.line.text)`" }.joined(separator: "\n")
+                + "\n\nNew lines were placed alongside similar routes.")
+        }
+        if !fixed.isEmpty {
+            sections.append("Fixes \(fixed.count) line\(fixed.count == 1 ? "" : "s") flagged in the TravelMapping site-update log:\n\n"
+                + fixed.map { old in
+                    let new = replacements.first { ListFileMerger.normalizedLine($0.key) == old }?.value ?? ""
+                    return "- `\(old)` → `\(new)`"
+                }.joined(separator: "\n"))
+        }
+        let prBody = sections.joined(separator: "\n\n")
         struct PR: Decodable { let number: Int; let html_url: URL }
         let pr = try JSONDecoder().decode(PR.self, from: try await api("POST", "/repos/\(Self.upstream)/pulls", body: [
-            "title": "\(username): add \(merge.placements.count) recorded segment\(merge.placements.count == 1 ? "" : "s")",
+            "title": "\(username): " + Self.commitSummary(added: merge.placements.count, fixed: fixed.count, from: nil, more: false),
             "head": "\(forkRepo.owner.login):\(branch)",
             "base": "master",
             "body": prBody,
@@ -511,6 +591,15 @@ final class GitHubService: ObservableObject {
         breadcrumb("Opened list update PR #\(pr.number) (\(merge.placements.count) lines)")
         return (ListUpdatePR(number: pr.number, url: pr.html_url, createdAt: Date(), lineCount: merge.placements.count,
                              branch: branch, fork: fork), merge)
+    }
+
+    private static func commitSummary(added: Int, fixed: Int, from names: String?, more: Bool) -> String {
+        var parts: [String] = []
+        if added > 0 { parts.append("add \(added)\(more ? " more" : "") recorded segment\(added == 1 ? "" : "s")") }
+        if fixed > 0 { parts.append("fix \(fixed) line\(fixed == 1 ? "" : "s")") }
+        var summary = parts.joined(separator: ", ")
+        if let names, added > 0, !names.isEmpty { summary += " from \(names)" }
+        return summary.prefix(1).uppercased() + summary.dropFirst()
     }
 
     private func refSHA(repo: String, branch: String, quiet: Bool = false) async throws -> String {
@@ -626,36 +715,426 @@ final class GitHubService: ObservableObject {
         return formatter.string(from: Date())
     }
 
-    // MARK: Keychain
+    /// Moves the token into (or out of) iCloud Keychain. Turning sync off signs the
+    /// other devices out, since the synced copy is removed everywhere.
+    func setSyncsAcrossDevices(_ on: Bool) {
+        guard let token else { syncsAcrossDevices = false; return }
+        syncsAcrossDevices = Self.tokenItem.save(token, synced: on)
+    }
+}
 
-    private static var keychainQuery: [String: Any] {
-        [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: keychainService,
-            kSecAttrAccount as String: "oauth-token",
+// MARK: - AI assistant (bring your own key)
+
+/// AI providers the user can connect with their own API key. The app never ships a key
+/// and never pays for usage — requests go straight from the device to the provider and
+/// bill to the user's own account.
+enum AIProvider: String, CaseIterable, Codable, Identifiable {
+    case anthropic, openai, xai, custom
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .anthropic: return "Claude (Anthropic)"
+        case .openai: return "ChatGPT (OpenAI)"
+        case .xai: return "Grok (xAI)"
+        case .custom: return "Other (OpenAI-compatible)"
+        }
+    }
+
+    var companyName: String {
+        switch self {
+        case .anthropic: return "Anthropic"
+        case .openai: return "OpenAI"
+        case .xai: return "xAI"
+        case .custom: return "the service you entered"
+        }
+    }
+
+    /// API base including version path; custom providers supply their own
+    var defaultBaseURL: String? {
+        switch self {
+        case .anthropic: return "https://api.anthropic.com/v1"
+        case .openai: return "https://api.openai.com/v1"
+        case .xai: return "https://api.x.ai/v1"
+        case .custom: return nil
+        }
+    }
+
+    var keysPageURL: URL? {
+        switch self {
+        case .anthropic: return URL(string: "https://console.anthropic.com/settings/keys")
+        case .openai: return URL(string: "https://platform.openai.com/api-keys")
+        case .xai: return URL(string: "https://console.x.ai")
+        case .custom: return nil
+        }
+    }
+
+    var privacyPolicyURL: URL? {
+        switch self {
+        case .anthropic: return URL(string: "https://www.anthropic.com/legal/privacy")
+        case .openai: return URL(string: "https://openai.com/policies/privacy-policy/")
+        case .xai: return URL(string: "https://x.ai/legal/privacy-policy")
+        case .custom: return nil
+        }
+    }
+
+    /// Preselected after the key is verified; any model the key can use may be chosen
+    var suggestedModel: String? {
+        self == .anthropic ? "claude-opus-5-5" : nil
+    }
+}
+
+/// One AI request, kept on this device so the user can see exactly what was sent.
+struct AIActivityEntry: Codable, Identifiable {
+    let id: UUID
+    let date: Date
+    let feature: String
+    let provider: String
+    let host: String
+    let model: String
+    /// Plain-language description of what was sent
+    let sentSummary: String
+    let charactersSent: Int
+    var outcome: String
+}
+
+/// Bring-your-own-key AI client. AI features stay hidden unless the user has saved a key,
+/// agreed to the data-sharing disclosure for that exact provider and host, and left the
+/// master switch on (App Store Review Guideline 5.1.2(i): explicit permission before
+/// personal data goes to a third-party AI).
+@MainActor
+final class AIService: ObservableObject {
+    static let shared = AIService()
+
+    enum AIError: LocalizedError {
+        case notReady
+        case badBaseURL
+        case http(status: Int, message: String)
+        case refused(String?)
+        case emptyResponse
+
+        var errorDescription: String? {
+            switch self {
+            case .notReady: return "Turn on AI Assistant in Settings first."
+            case .badBaseURL: return "That API address isn't a valid https URL."
+            case .http(let status, let message):
+                if status == 401 || status == 403 { return "The provider rejected the API key (\(status)). Check the key and that your account has API access." }
+                if status == 429 { return "Rate limited or out of credit with the provider (429): \(message)" }
+                return "The AI provider returned \(status): \(message)"
+            case .refused(let category): return "The model declined this request\(category.map { " (\($0))" } ?? "")."
+            case .emptyResponse: return "The AI returned an empty answer."
+            }
+        }
+    }
+
+    @Published private(set) var provider: AIProvider?
+    @Published private(set) var hasKey = false
+    @Published var model: String {
+        didSet {
+            defaults.set(model, forKey: "aiModel")
+            if hasKey { saveConfig() }
+        }
+    }
+    @Published var isEnabled: Bool { didSet { defaults.set(isEnabled, forKey: "aiEnabled") } }
+    @Published private(set) var consentDate: Date?
+    @Published private(set) var activity: [AIActivityEntry] = []
+
+    /// Whether the key (and provider/model) sync to the user's other devices (opt-in)
+    @Published private(set) var syncsAcrossDevices = false
+
+    private let defaults = UserDefaults.standard
+    private var customBaseURL: String
+    private static let keychainService = "com.psiegel18.TravelMapping.ai"
+    private static let keyItem = KeychainItem(service: keychainService, account: "api-key")
+    /// Provider / address / model, synced alongside the key so another device can use it
+    private static let configItem = KeychainItem(service: keychainService, account: "api-config")
+
+    private struct SyncedConfig: Codable {
+        let provider: String
+        let baseURL: String
+        let model: String
+    }
+
+    /// Everything a feature needs before it may send anything
+    var isReady: Bool { isEnabled && hasKey && provider != nil && consentDate != nil && !model.isEmpty }
+
+    var baseURL: String? {
+        guard let provider else { return nil }
+        return provider == .custom ? customBaseURL : provider.defaultBaseURL
+    }
+
+    var host: String { baseURL.flatMap { URL(string: $0)?.host } ?? "" }
+
+    /// Short label for buttons: "Claude (Anthropic)" / host for custom
+    var providerLabel: String {
+        guard let provider else { return "AI" }
+        return provider == .custom ? host : provider.displayName
+    }
+
+    private init() {
+        provider = defaults.string(forKey: "aiProvider").flatMap(AIProvider.init(rawValue:))
+        customBaseURL = defaults.string(forKey: "aiBaseURL") ?? ""
+        model = defaults.string(forKey: "aiModel") ?? ""
+        isEnabled = defaults.object(forKey: "aiEnabled") as? Bool ?? true
+        if let stored = Self.keyItem.read() {
+            hasKey = true
+            syncsAcrossDevices = stored.synced
+            // Key arrived from another device through iCloud Keychain: adopt its settings.
+            // Permission to share data is still asked on this device.
+            if provider == nil, let json = Self.configItem.read()?.value,
+               let config = try? JSONDecoder().decode(SyncedConfig.self, from: Data(json.utf8)),
+               let syncedProvider = AIProvider(rawValue: config.provider) {
+                provider = syncedProvider
+                customBaseURL = config.baseURL
+                model = config.model
+                defaults.set(config.provider, forKey: "aiProvider")
+                defaults.set(config.baseURL, forKey: "aiBaseURL")
+            }
+        }
+        // Consent is tied to the provider + host it was given for
+        if let stored = defaults.string(forKey: "aiConsentScope"), stored == consentScope,
+           let date = defaults.object(forKey: "aiConsentDate") as? Date {
+            consentDate = date
+        }
+        if let data = defaults.data(forKey: "aiActivity"),
+           let entries = try? JSONDecoder().decode([AIActivityEntry].self, from: data) {
+            activity = entries
+        }
+    }
+
+    private var consentScope: String { "\(provider?.rawValue ?? "")|\(host)" }
+
+    /// True for requests to an AI provider — Sentry drops their failed-request events, since
+    /// they concern the user's own account and must never carry prompts or keys to us.
+    nonisolated static func isAIProviderURL(_ urlString: String) -> Bool {
+        guard let host = URL(string: urlString)?.host else { return false }
+        var hosts: Set<String> = ["api.anthropic.com", "api.openai.com", "api.x.ai"]
+        if let custom = UserDefaults.standard.string(forKey: "aiBaseURL").flatMap({ URL(string: $0)?.host }) {
+            hosts.insert(custom)
+        }
+        return hosts.contains(host)
+    }
+
+    // MARK: Setup
+
+    /// Verifies the key by listing models, then stores it. Returns the model IDs the key can use.
+    func connect(provider: AIProvider, key: String, customBaseURL: String) async throws -> [String] {
+        let trimmedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = provider == .custom
+            ? customBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            : (provider.defaultBaseURL ?? "")
+        guard let url = URL(string: base), url.scheme == "https", url.host != nil else { throw AIError.badBaseURL }
+
+        let models = try await Self.listModels(provider: provider, baseURL: base, key: trimmedKey)
+
+        let scopeChanged = provider != self.provider || base != baseURL
+        self.provider = provider
+        self.customBaseURL = base
+        defaults.set(provider.rawValue, forKey: "aiProvider")
+        defaults.set(base, forKey: "aiBaseURL")
+        syncsAcrossDevices = Self.keyItem.save(trimmedKey, synced: syncsAcrossDevices)
+        hasKey = true
+        if scopeChanged { revokeConsent() }
+        if model.isEmpty || !models.contains(model) || scopeChanged {
+            // Only Claude gets a default; other providers list many non-chat models
+            // (embeddings, audio, legacy completions), so the user picks one
+            model = provider.suggestedModel.flatMap { models.contains($0) ? $0 : nil } ?? ""
+        }
+        saveConfig()
+        return models
+    }
+
+    func availableModels() async throws -> [String] {
+        guard let provider, let baseURL, let key = Self.keyItem.read()?.value else { throw AIError.notReady }
+        return try await Self.listModels(provider: provider, baseURL: baseURL, key: key)
+    }
+
+    /// Moves the key and its settings into (or out of) iCloud Keychain. Turning sync off
+    /// removes the synced copy, so other devices lose the key.
+    func setSyncsAcrossDevices(_ on: Bool) {
+        guard let key = Self.keyItem.read()?.value else { syncsAcrossDevices = false; return }
+        syncsAcrossDevices = Self.keyItem.save(key, synced: on)
+        saveConfig()
+    }
+
+    private func saveConfig() {
+        guard let provider,
+              let data = try? JSONEncoder().encode(SyncedConfig(provider: provider.rawValue, baseURL: baseURL ?? "", model: model)),
+              let json = String(data: data, encoding: .utf8) else { return }
+        Self.configItem.save(json, synced: syncsAcrossDevices)
+    }
+
+    func grantConsent() {
+        consentDate = Date()
+        defaults.set(consentScope, forKey: "aiConsentScope")
+        defaults.set(consentDate, forKey: "aiConsentDate")
+    }
+
+    func revokeConsent() {
+        consentDate = nil
+        defaults.removeObject(forKey: "aiConsentScope")
+        defaults.removeObject(forKey: "aiConsentDate")
+    }
+
+    /// Removes the key and everything tied to it. AI features disappear immediately.
+    func removeKey() {
+        Self.keyItem.delete()
+        Self.configItem.delete()
+        hasKey = false
+        syncsAcrossDevices = false
+        provider = nil
+        customBaseURL = ""
+        model = ""
+        revokeConsent()
+        for key in ["aiProvider", "aiBaseURL", "aiModel"] { defaults.removeObject(forKey: key) }
+    }
+
+    func clearActivity() {
+        activity = []
+        defaults.removeObject(forKey: "aiActivity")
+    }
+
+    // MARK: Requests
+
+    /// Sends one prompt and returns the text answer. `sentSummary` is what the activity
+    /// log shows — describe the data in plain words. Cancelling the calling Task cancels
+    /// the request.
+    func complete(system: String, prompt: String, feature: String, sentSummary: String) async throws -> String {
+        guard isReady, let provider, let baseURL, let key = Self.keyItem.read()?.value else { throw AIError.notReady }
+        var entry = AIActivityEntry(id: UUID(), date: Date(), feature: feature, provider: provider.displayName,
+                                    host: host, model: model, sentSummary: sentSummary,
+                                    charactersSent: system.count + prompt.count, outcome: "Sending…")
+        record(entry)
+        do {
+            let text = provider == .anthropic
+                ? try await Self.anthropicMessage(baseURL: baseURL, key: key, model: model, system: system, prompt: prompt)
+                : try await Self.chatCompletion(baseURL: baseURL, key: key, model: model, system: system, prompt: prompt)
+            entry.outcome = "Answered"
+            record(entry)
+            return text
+        } catch {
+            entry.outcome = (error as? URLError)?.code == .cancelled || error is CancellationError ? "Cancelled" : "Failed"
+            record(entry)
+            throw error
+        }
+    }
+
+    private func record(_ entry: AIActivityEntry) {
+        if let i = activity.firstIndex(where: { $0.id == entry.id }) {
+            activity[i] = entry
+        } else {
+            activity.insert(entry, at: 0)
+            if activity.count > 50 { activity.removeLast(activity.count - 50) }
+        }
+        if let data = try? JSONEncoder().encode(activity) { defaults.set(data, forKey: "aiActivity") }
+    }
+
+    // MARK: Provider HTTP
+
+    private static let session: URLSession = {
+        let config = URLSessionConfiguration.ephemeral  // no disk cache of prompts or answers
+        config.timeoutIntervalForRequest = 180
+        return URLSession(configuration: config)
+    }()
+
+    private static func listModels(provider: AIProvider, baseURL: String, key: String) async throws -> [String] {
+        // Anthropic pages /v1/models at 20 by default
+        let path = provider == .anthropic ? "/models?limit=1000" : "/models"
+        var request = URLRequest(url: URL(string: "\(baseURL)\(path)")!)
+        authorize(&request, provider: provider, key: key)
+        let data = try await send(request)
+        struct List: Decodable { struct Model: Decodable { let id: String }; let data: [Model] }
+        let ids = (try? JSONDecoder().decode(List.self, from: data))?.data.map(\.id) ?? []
+        return ids.sorted()
+    }
+
+    /// Claude Messages API. Opus 5.x / Fable 5.1 / Sonnet 5.5 get server-side refusal
+    /// fallbacks so a safety decline is retried on Anthropic's recommended model.
+    private static func anthropicMessage(baseURL: String, key: String, model: String, system: String, prompt: String) async throws -> String {
+        var request = URLRequest(url: URL(string: "\(baseURL)/messages")!)
+        request.httpMethod = "POST"
+        authorize(&request, provider: .anthropic, key: key)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = [
+            "model": model,
+            "max_tokens": 16000,
+            "system": system,
+            "messages": [["role": "user", "content": prompt]],
         ]
+        let fallbackModels = ["claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5"]
+        if fallbackModels.contains(model) {
+            request.setValue("server-side-fallback-2026-07-01", forHTTPHeaderField: "anthropic-beta")
+            body["fallbacks"] = "default"
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let data = try await send(request)
+
+        struct Response: Decodable {
+            struct Block: Decodable { let type: String; let text: String? }
+            struct StopDetails: Decodable { let category: String? }
+            let content: [Block]
+            let stop_reason: String?
+            let stop_details: StopDetails?
+        }
+        let response = try JSONDecoder().decode(Response.self, from: data)
+        if response.stop_reason == "refusal" { throw AIError.refused(response.stop_details?.category) }
+        let text = response.content.filter { $0.type == "text" }.compactMap(\.text).joined()
+        guard !text.isEmpty else { throw AIError.emptyResponse }
+        return text
     }
 
-    private static func readToken() -> String? {
-        var query = keychainQuery
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-              let data = item as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+    /// OpenAI-style Chat Completions — OpenAI, xAI, and compatible services.
+    private static func chatCompletion(baseURL: String, key: String, model: String, system: String, prompt: String) async throws -> String {
+        var request = URLRequest(url: URL(string: "\(baseURL)/chat/completions")!)
+        request.httpMethod = "POST"
+        authorize(&request, provider: .openai, key: key)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "model": model,
+            "messages": [
+                ["role": "system", "content": system],
+                ["role": "user", "content": prompt],
+            ],
+        ])
+        let data = try await send(request)
+        struct Response: Decodable {
+            struct Choice: Decodable { struct Message: Decodable { let content: String?; let refusal: String? }; let message: Message }
+            let choices: [Choice]
+        }
+        let message = try JSONDecoder().decode(Response.self, from: data).choices.first?.message
+        if let refusal = message?.refusal, !refusal.isEmpty { throw AIError.refused(nil) }
+        guard let text = message?.content, !text.isEmpty else { throw AIError.emptyResponse }
+        return text
     }
 
-    private static func saveToken(_ token: String) {
-        deleteToken()
-        var query = keychainQuery
-        query[kSecValueData as String] = Data(token.utf8)
-        // This device only — never synced to iCloud Keychain or restored to another device
-        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        SecItemAdd(query as CFDictionary, nil)
+    private static func authorize(_ request: inout URLRequest, provider: AIProvider, key: String) {
+        if provider == .anthropic {
+            request.setValue(key, forHTTPHeaderField: "x-api-key")
+            request.setValue("2026-10-21", forHTTPHeaderField: "anthropic-version")
+        } else {
+            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        }
     }
 
-    private static func deleteToken() {
-        SecItemDelete(keychainQuery as CFDictionary)
+    private static func send(_ request: URLRequest) async throws -> Data {
+        let (data, response) = try await session.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+        guard (200..<300).contains(status) else {
+            // Provider error bodies vary: {"error":{"message":…}} or {"error":"…"}
+            var message = HTTPURLResponse.localizedString(forStatusCode: status)
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                if let error = json["error"] as? [String: Any], let m = error["message"] as? String { message = m }
+                else if let m = json["error"] as? String { message = m }
+            }
+            // Providers echo part of a rejected key ("Incorrect API key provided: sk-proj-ab…yz");
+            // keep it out of on-screen text (and so out of session replays)
+            message = message.replacingOccurrences(
+                of: #"(sk|xai|key)[-_][A-Za-z0-9_\-\.\*…]{4,}"#, with: "[key]", options: .regularExpression)
+            // Deliberately not sent to Sentry: these are the user's own account/config
+            throw AIError.http(status: status, message: String(message.prefix(200)))
+        }
+        return data
     }
+
 }

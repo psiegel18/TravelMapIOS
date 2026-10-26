@@ -109,6 +109,10 @@ struct TravelMappingApp: App {
 
             // -- HTTP Client Errors --
             options.enableCaptureFailedRequests = true
+            // Trace headers only go to our own data sources — never to AI providers or
+            // other third parties the user's requests reach.
+            options.tracePropagationTargets = ["travelmapping.net", "tmrail.teresco.org"]
+
 
             // -- Session Replay (all unmasked — no private info) --
             // TestFlight gets full coverage for beta debugging; App Store is sampled to conserve quota.
@@ -176,6 +180,8 @@ struct TravelMappingApp: App {
 
             // -- Filter out expected noise (cancellations, denied permissions) --
             options.beforeSend = { event in
+                // AI requests use the user's own key and account; their errors are theirs
+                if let url = event.request?.url, AIService.isAIProviderURL(url) { return nil }
                 if let exceptions = event.exceptions {
                     for exception in exceptions {
                         // NSURLError noise we don't want pinged for: -999 cancelled (user

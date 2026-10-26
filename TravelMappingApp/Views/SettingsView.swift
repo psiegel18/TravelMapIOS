@@ -13,7 +13,9 @@ struct SettingsView: View {
     @State private var showTipJar = false
     @State private var showGitHubSignIn = false
     @State private var feedbackKind: FeedbackSheet.Kind?
+    @State private var githubSyncUnavailable = false
     @ObservedObject private var github = GitHubService.shared
+    @ObservedObject private var ai = AIService.shared
     @AppStorage("listAppendOnly") private var listAppendOnly = false
     @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var isValidatingUser = false
@@ -62,12 +64,36 @@ struct SettingsView: View {
                 Text("iCloud syncs favorites across devices. Apple Watch receives live trip status and route directions.")
             }
 
+            // MARK: AI Assistant (bring your own key)
+            Section {
+                NavigationLink {
+                    AISettingsView()
+                } label: {
+                    LabeledContent {
+                        Text(ai.isReady ? ai.providerLabel : (ai.hasKey && !ai.isEnabled ? "Off" : "Not set up"))
+                    } label: {
+                        Label("AI Assistant", systemImage: "sparkles")
+                    }
+                }
+            } header: {
+                TMDesign.sectionHeader("AI")
+            } footer: {
+                Text("Optional. Use your own Claude, ChatGPT, Grok, or compatible API key for help fixing your .list file. Nothing is sent until you allow it.")
+            }
+
             // MARK: GitHub (.list updates)
             Section {
                 if github.isConfigured {
                     if github.isSignedIn {
                         LabeledContent("Signed in as", value: github.login.map { "@\($0)" } ?? "GitHub")
-                        Button("Sign Out of GitHub", role: .destructive) {
+                        Toggle("Stay Signed In on My Other Devices", isOn: Binding(
+                            get: { github.syncsAcrossDevices },
+                            set: { on in
+                                github.setSyncsAcrossDevices(on)
+                                githubSyncUnavailable = on && !github.syncsAcrossDevices
+                            }
+                        ))
+                        Button(github.syncsAcrossDevices ? "Sign Out on All Devices" : "Sign Out of GitHub", role: .destructive) {
                             github.signOut()
                         }
                     } else {
@@ -85,9 +111,16 @@ struct SettingsView: View {
             } header: {
                 TMDesign.sectionHeader("GitHub")
             } footer: {
+                if githubSyncUnavailable {
+                    Text("iCloud Keychain isn't available, so you're signed in on this device only. Turn it on in Settings › [your name] › iCloud › Passwords and Keychain.")
+                        .foregroundStyle(TMDesign.rail)
+                } else {
                 Text(github.isConfigured
-                     ? "Lets the app open .list update pull requests for your recorded trips. Your GitHub token stays in this device's Keychain."
+                     ? (github.syncsAcrossDevices
+                        ? "Lets the app open .list update pull requests for your recorded trips. Your GitHub token is in your iCloud Keychain (end-to-end encrypted) and syncs to your other devices."
+                        : "Lets the app open .list update pull requests for your recorded trips. Your GitHub token stays in this device's Keychain.")
                      : "How recorded-trip segments are added to your .list file.")
+                }
             }
 
             // MARK: Appearance
@@ -226,7 +259,7 @@ struct SettingsView: View {
                 Button {
                     showTipJar = true
                 } label: {
-                    Label("Leave a Tip", systemImage: "heart")
+                    Label("Tip the App Developer", systemImage: "heart")
                 }
                 .sheet(isPresented: $showTipJar) {
                     // Medium detent is right for iPhone, but on iPad it renders as a
@@ -242,6 +275,8 @@ struct SettingsView: View {
                 }
             } header: {
                 TMDesign.sectionHeader("Support")
+            } footer: {
+                Text("Tips go to the independent developer of this iPhone app — not to the Travel Mapping project, which runs the website and route data.")
             }
 
             // MARK: About
@@ -953,13 +988,37 @@ struct TipJarSheet: View {
                 VStack(spacing: 6) {
                     Text("The Tip Jar")
                         .font(.system(size: 28, weight: .heavy))
-                    Text("Travel Mapping is free and open source. Tips keep the wheels turning — every mile of development is fan-funded.")
+                    Text("Tips support this iPhone app, which is built and maintained by one independent developer.")
                         .font(.system(size: 15))
                         .foregroundStyle(TMDesign.secondaryText)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 24)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+
+                // Credit where it's due: the app is a client for someone else's project
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Who does what", systemImage: "info.circle.fill")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(TMDesign.accent)
+                    Text("The Travel Mapping website, route data, and every traveler's stats are the work of the Travel Mapping project and its volunteers. The app's developer didn't build any of that and isn't part of that team — this app just shows their data on your iPhone.")
+                        .font(.system(size: 14))
+                        .foregroundStyle(TMDesign.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("Tips go only to the app's developer, for work on the iPhone, iPad, Apple Watch, and widget apps — not to the Travel Mapping project.")
+                        .font(.system(size: 14))
+                        .foregroundStyle(TMDesign.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Link(destination: URL(string: "https://travelmapping.net")!) {
+                        Label("Visit the Travel Mapping project", systemImage: "arrow.up.forward.app")
+                            .font(.system(size: 14, weight: .semibold))
+                    }
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .padding(.horizontal, 20)
+                .accessibilityElement(children: .combine)
 
                 TipJarView()
                     .padding(.horizontal, 20)
@@ -1197,5 +1256,348 @@ struct FeedbackSheet: View {
         ])
         Haptics.success()
         dismiss()
+    }
+}
+
+// MARK: - AI Assistant
+
+/// What AI features may send and do — shown in the consent sheet and in Settings so the
+/// two never drift apart (App Store Review Guideline 5.1.2(i)).
+enum AIDisclosure {
+    static let sends = [
+        "Lines from your .list file that TravelMapping flagged as not counting, with its notes about them",
+        "Public TravelMapping route data for those routes (waypoint names and coordinates)",
+    ]
+    static let neverSends = [
+        "Your recorded GPS trips or current location",
+        "The rest of your .list file",
+        "Your email, GitHub account, or any other keys",
+    ]
+    static let control = [
+        "The AI only suggests. Your .list file doesn't change until you review a fix and send it yourself.",
+        "Every request is listed under Settings › AI Assistant › Activity.",
+        "Turn AI off, revoke permission, or remove your key here at any time.",
+    ]
+}
+
+struct AISettingsView: View {
+    @ObservedObject private var ai = AIService.shared
+    @State private var provider: AIProvider = AIService.shared.provider ?? .anthropic
+    @State private var keyText = ""
+    @State private var customBaseURL = UserDefaults.standard.string(forKey: "aiBaseURL") ?? ""
+    @State private var models: [String] = []
+    @State private var isConnecting = false
+    @State private var errorMessage: String?
+    @State private var showConsent = false
+    @State private var confirmRemove = false
+
+    private var editingNewProvider: Bool { provider != ai.provider || !ai.hasKey }
+
+    var body: some View {
+        Form {
+            if ai.hasKey {
+                Section {
+                    Toggle("AI features", isOn: $ai.isEnabled)
+                } footer: {
+                    Text(ai.isEnabled
+                         ? "Turning this off stops all AI requests right away. Your key stays saved on this device."
+                         : "AI is off. No data is sent to any AI provider.")
+                }
+            }
+
+            Section {
+                Picker("Provider", selection: $provider) {
+                    ForEach(AIProvider.allCases) { Text($0.displayName).tag($0) }
+                }
+                if provider == .custom {
+                    TextField("API address (https://…/v1)", text: $customBaseURL)
+                        .keyboardType(.URL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+                if editingNewProvider {
+                    SecureField("API key", text: $keyText)
+                        .textContentType(.password)  // offers Passwords AutoFill on the keyboard
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .sentryReplayMask()
+                    if let url = provider.keysPageURL {
+                        Link("Get an API key from \(provider.companyName)", destination: url)
+                            .font(.subheadline)
+                    }
+                    Button {
+                        Task { await connect() }
+                    } label: {
+                        HStack {
+                            Text(isConnecting ? "Checking key…" : "Verify & Save Key")
+                            if isConnecting { Spacer(); ProgressView() }
+                        }
+                    }
+                    .disabled(isConnecting || keyText.trimmingCharacters(in: .whitespaces).isEmpty
+                              || (provider == .custom && customBaseURL.isEmpty))
+                } else {
+                    LabeledContent("API key", value: ai.syncsAcrossDevices ? "Saved in iCloud Keychain" : "Saved on this device")
+                    Toggle("Use on My Other Devices", isOn: Binding(
+                        get: { ai.syncsAcrossDevices },
+                        set: { on in
+                            ai.setSyncsAcrossDevices(on)
+                            if on && !ai.syncsAcrossDevices {
+                                errorMessage = "iCloud Keychain isn't available. Turn it on in Settings › [your name] › iCloud › Passwords and Keychain."
+                            }
+                        }
+                    ))
+                }
+                if let errorMessage {
+                    Text(errorMessage)
+                        .font(.footnote)
+                        .foregroundStyle(TMDesign.rail)
+                        .sentryReplayMask()
+                }
+            } header: {
+                Text("Provider")
+            } footer: {
+                Text(providerFooter)
+            }
+
+            if editingNewProvider {
+                Section {
+                    Label {
+                        Text("Save your key in the **Passwords** app (as a password for \(provider == .custom ? "the service" : URL(string: provider.keysPageURL?.absoluteString ?? "")?.host ?? provider.companyName)). Then tap the key field and choose **Passwords** above the keyboard to fill it in on any device.")
+                            .font(.footnote)
+                    } icon: {
+                        Image(systemName: "key.fill")
+                            .foregroundStyle(TMDesign.goldChipFG)
+                    }
+                } header: {
+                    Text("Tip")
+                }
+            }
+
+
+            if ai.hasKey && !editingNewProvider {
+                Section {
+                    if models.isEmpty {
+                        LabeledContent("Model", value: ai.model.isEmpty ? "Not chosen" : ai.model)
+                    } else {
+                        Picker("Model", selection: $ai.model) {
+                            Text("Choose…").tag("")
+                            ForEach(models, id: \.self) { Text($0).tag($0) }
+                        }
+                    }
+                } header: {
+                    Text("Model")
+                } footer: {
+                    if ai.model.isEmpty {
+                        Text("Choose a chat model. AI features stay off until you do.")
+                    }
+                }
+            }
+
+            Section {
+                disclosureList("Can read", items: AIDisclosure.sends, icon: "eye", tint: TMDesign.accent)
+                disclosureList("Never sent", items: AIDisclosure.neverSends, icon: "eye.slash", tint: TMDesign.clinched)
+                disclosureList("You stay in control", items: AIDisclosure.control, icon: "hand.raised", tint: TMDesign.frontier)
+            } header: {
+                Text("What the AI can see and do")
+            }
+
+            if ai.hasKey {
+                Section {
+                    if let date = ai.consentDate {
+                        LabeledContent("Allowed", value: date.formatted(date: .abbreviated, time: .omitted))
+                        Button("Revoke Permission", role: .destructive) { ai.revokeConsent() }
+                    } else {
+                        Button("Review & Allow Data Sharing…") { showConsent = true }
+                    }
+                } header: {
+                    Text("Permission")
+                } footer: {
+                    Text("Sharing with \(ai.providerLabel) needs your permission. Revoking it stops AI features until you allow it again.")
+                }
+
+                Section {
+                    NavigationLink {
+                        AIActivityView()
+                    } label: {
+                        LabeledContent("Activity", value: "\(ai.activity.count) request\(ai.activity.count == 1 ? "" : "s")")
+                    }
+                    Button("Remove API Key", role: .destructive) { confirmRemove = true }
+                }
+            }
+        }
+        .navigationTitle("AI Assistant")
+        .navigationBarTitleDisplayMode(.inline)
+        .sentryScreen("AISettings")
+        .sheet(isPresented: $showConsent) {
+            AIConsentSheet()
+        }
+        .confirmationDialog("Remove your API key?", isPresented: $confirmRemove, titleVisibility: .visible) {
+            Button("Remove Key", role: .destructive) {
+                ai.removeKey()
+                keyText = ""
+                models = []
+            }
+        } message: {
+            Text(ai.syncsAcrossDevices
+                 ? "AI features turn off and the key is deleted from this device and from your other devices through iCloud Keychain. Your activity history stays until you clear it."
+                 : "AI features turn off and the key is deleted from this device. Your activity history stays until you clear it.")
+        }
+        .task {
+            guard ai.hasKey, !editingNewProvider else { return }
+            models = (try? await ai.availableModels()) ?? []
+        }
+    }
+
+    private var providerFooter: String {
+        let host = provider == .custom
+            ? (URL(string: customBaseURL)?.host ?? "the address above")
+            : (URL(string: provider.defaultBaseURL ?? "")?.host ?? provider.companyName)
+        let storage = ai.hasKey && !editingNewProvider && ai.syncsAcrossDevices
+            ? "Your key is in your iCloud Keychain (end-to-end encrypted) and syncs to devices signed in to your Apple Account. Turning this off removes it from your other devices."
+            : "Your key is stored only in this device's Keychain."
+        return "\(storage) It's sent only to \(host), and usage is billed to your own \(provider.companyName) account — the app's developer never sees your key or your requests."
+    }
+
+    private func connect() async {
+        isConnecting = true
+        errorMessage = nil
+        defer { isConnecting = false }
+        do {
+            models = try await ai.connect(provider: provider, key: keyText, customBaseURL: customBaseURL)
+            keyText = ""
+            Haptics.success()
+            if ai.consentDate == nil { showConsent = true }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func disclosureList(_ title: String, items: [String], icon: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(title, systemImage: icon)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(tint)
+            ForEach(items, id: \.self) { item in
+                Text("• \(item)")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+/// Explicit permission before anything goes to a third-party AI (Guideline 5.1.2(i)).
+struct AIConsentSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var ai = AIService.shared
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 36))
+                        .foregroundStyle(TMDesign.accent)
+                    Text("Share data with \(ai.providerLabel)?")
+                        .font(.system(size: 24, weight: .heavy))
+                    Text("When you ask for a suggested fix, the app sends the data below to \(ai.host) using your API key. \(ai.provider?.companyName.capitalized ?? "The provider") processes it under its own terms and privacy policy.")
+                        .foregroundStyle(TMDesign.secondaryText)
+
+                    block("What's sent", items: AIDisclosure.sends, icon: "arrow.up.right.circle.fill", tint: TMDesign.accent)
+                    block("Never sent", items: AIDisclosure.neverSends, icon: "lock.circle.fill", tint: TMDesign.clinched)
+                    block("You stay in control", items: AIDisclosure.control, icon: "hand.raised.circle.fill", tint: TMDesign.frontier)
+
+                    if let url = ai.provider?.privacyPolicyURL {
+                        Link("\(ai.provider?.companyName ?? "Provider") privacy policy", destination: url)
+                            .font(.subheadline)
+                    }
+                }
+                .padding(20)
+            }
+            .safeAreaInset(edge: .bottom) {
+                VStack(spacing: 10) {
+                    Button {
+                        ai.grantConsent()
+                        Haptics.success()
+                        dismiss()
+                    } label: {
+                        Text("Allow")
+                            .font(.system(size: 17, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .background(TMDesign.accent, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    Button("Don't Allow") { dismiss() }
+                        .font(.system(size: 16, weight: .semibold))
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                .background(.bar)
+            }
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .interactiveDismissDisabled()
+        .sentryScreen("AIConsent")
+    }
+
+    private func block(_ title: String, items: [String], icon: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(title, systemImage: icon)
+                .font(.headline)
+                .foregroundStyle(tint)
+            ForEach(items, id: \.self) { item in
+                HStack(alignment: .top, spacing: 8) {
+                    Text("•")
+                    Text(item)
+                }
+                .font(.subheadline)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+}
+
+/// Every AI request made from this device: when, what feature, which provider/model,
+/// and a plain description of what was sent.
+struct AIActivityView: View {
+    @ObservedObject private var ai = AIService.shared
+
+    var body: some View {
+        List {
+            if ai.activity.isEmpty {
+                Text("No AI requests yet.")
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(ai.activity) { entry in
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(entry.feature).font(.headline)
+                        Spacer()
+                        Text(entry.outcome)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(entry.outcome == "Answered" ? TMDesign.clinched : .secondary)
+                    }
+                    Text("\(entry.date.formatted(date: .abbreviated, time: .shortened)) · \(entry.provider) · \(entry.model)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("Sent: \(entry.sentSummary) (\(entry.charactersSent.formatted()) characters) to \(entry.host)")
+                        .font(.footnote)
+                }
+                .padding(.vertical, 2)
+            }
+        }
+        .navigationTitle("AI Activity")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if !ai.activity.isEmpty {
+                Button("Clear") { ai.clearActivity() }
+            }
+        }
+        .sentryScreen("AIActivity")
     }
 }
