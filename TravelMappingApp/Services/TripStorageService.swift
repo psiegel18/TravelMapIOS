@@ -56,7 +56,7 @@ actor TripStorageService {
     func listTrips() async throws -> [RoadTrip] {
         let dir = await tripsDirectory()
         let files = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey])
-            .filter { $0.pathExtension == "json" }
+            .filter { $0.pathExtension == "json" && $0.lastPathComponent != "list-submissions.json" }
             .sorted { a, b in
                 let dateA = (try? a.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
                 let dateB = (try? b.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
@@ -92,13 +92,7 @@ actor TripStorageService {
     /// trip saved by an older app version on another device) can't drop the marks.
     func listSubmissions() async -> [ListSubmission] {
         let url = await tripsDirectory().appendingPathComponent(Self.submissionsFile)
-        guard let data = try? Data(contentsOf: url) else { return [] }
-        do {
-            return try JSONDecoder().decode([ListSubmission].self, from: data)
-        } catch {
-            SentrySDK.capture(error: error)
-            return []
-        }
+        return readSubmissions(at: url) ?? []
     }
 
     /// Hop keys currently waiting on TravelMapping for a list type ("list" / "rlist").
@@ -108,7 +102,13 @@ actor TripStorageService {
 
     /// Records a submission. Lines added to an already-recorded PR merge into its entry.
     func recordSubmission(fileExtension: String, hopKeys: [String], lines: [String], pr: ListUpdatePR?) async {
-        var all = await listSubmissions()
+        let url = await tripsDirectory().appendingPathComponent(Self.submissionsFile)
+        // No suspension point from here to the write, so concurrent calls on this actor
+        // can't interleave their read-modify-write and drop an update.
+        guard var all = readSubmissions(at: url) else {
+            SentrySDK.logger.warn("List submission not recorded: submissions file unreadable (iCloud download pending)")
+            return
+        }
         if let pr, let i = all.firstIndex(where: { $0.pr?.number == pr.number }) {
             all[i].hopKeys = Array(Set(all[i].hopKeys).union(hopKeys))
             all[i].lines += lines.filter { !all[i].lines.contains($0) }
@@ -117,19 +117,46 @@ actor TripStorageService {
             all.append(ListSubmission(id: UUID(), date: Date(), fileExtension: fileExtension,
                                       hopKeys: hopKeys, lines: lines, pr: pr))
         }
-        await saveSubmissions(all)
+        writeSubmissions(all, to: url)
     }
 
     func removeSubmissions(where shouldRemove: @Sendable (ListSubmission) -> Bool) async {
-        let all = await listSubmissions()
+        let url = await tripsDirectory().appendingPathComponent(Self.submissionsFile)
+        guard let all = readSubmissions(at: url) else { return }
         let kept = all.filter { !shouldRemove($0) }
-        if kept.count != all.count { await saveSubmissions(kept) }
+        if kept.count != all.count { writeSubmissions(kept, to: url) }
     }
 
-    private static let submissionsFile = "list-submissions.json"
+    /// Not ".json": `listTrips()` here and in 1.2 decodes every .json in this folder as a trip.
+    private static let submissionsFile = "list-submissions.tmsubmissions"
 
-    private func saveSubmissions(_ submissions: [ListSubmission]) async {
-        let url = await tripsDirectory().appendingPathComponent(Self.submissionsFile)
+    /// nil when the file exists but can't be read yet (e.g. an iCloud placeholder still
+    /// downloading on this device) — writers must not overwrite it with a partial list.
+    private func readSubmissions(at url: URL) -> [ListSubmission]? {
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: url.path) {
+            // iCloud keeps not-yet-downloaded files as hidden ".name.icloud" placeholders
+            let placeholder = url.deletingLastPathComponent()
+                .appendingPathComponent(".\(url.lastPathComponent).icloud")
+            if fm.fileExists(atPath: placeholder.path) {
+                try? fm.startDownloadingUbiquitousItem(at: url)
+                return nil
+            }
+            return []
+        }
+        guard let data = try? Data(contentsOf: url) else {
+            try? fm.startDownloadingUbiquitousItem(at: url)
+            return nil
+        }
+        do {
+            return try JSONDecoder().decode([ListSubmission].self, from: data)
+        } catch {
+            SentrySDK.capture(error: error)
+            return nil
+        }
+    }
+
+    private func writeSubmissions(_ submissions: [ListSubmission], to url: URL) {
         do {
             try JSONEncoder().encode(submissions).write(to: url, options: .atomic)
         } catch {

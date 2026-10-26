@@ -275,6 +275,7 @@ struct RoadTripListView: View {
 
         var lines = 0
         var tripIDs = Set<UUID>()
+        var loggedKeys = Set<String>()
         for type in [TripType.road, .rail] {
             let typed = candidates.filter { $0.tripType == type }
             guard !typed.isEmpty,
@@ -283,9 +284,13 @@ struct RoadTripListView: View {
                     submittedKeys: type == .rail ? railKeys : roadKeys) else { continue }
             lines += analysis.newRanges.count
             tripIDs.formUnion(analysis.newRanges.flatMap(\.tripIDs))
+            loggedKeys.formUnion(analysis.loggedRanges.flatMap(\.hopKeys))
         }
         guard !Task.isCancelled else { return }
-        pendingSummary = (lines, tripIDs.count, waiting)
+        // Clear submissions the nightly update has picked up, so "waiting" goes away on its own
+        await storage.removeSubmissions { !$0.hopKeys.isEmpty && $0.hopKeys.allSatisfy(loggedKeys.contains) }
+        let stillWaiting = await storage.listSubmissions().reduce(0) { $0 + $1.lines.count }
+        pendingSummary = (lines, tripIDs.count, stillWaiting)
         summarySignature = signature
     }
 

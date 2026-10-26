@@ -419,8 +419,17 @@ final class GitHubService: ObservableObject {
         let path = "\(category.directoryName)/\(username).\(category.fileExtension)"
         let names = tripNames.prefix(3).joined(separator: ", ") + (tripNames.count > 3 ? " +\(tripNames.count - 3) more" : "")
 
-        if let openPR, let fork = openPR.fork, let branch = openPR.branch,
-           let headSHA = try? await refSHA(repo: fork, branch: branch, quiet: true) {
+        // A transient failure here must surface, not fall through to a second PR; only a
+        // deleted branch (404) means the open PR can no longer take commits.
+        var openBranchSHA: String?
+        if let openPR, let fork = openPR.fork, let branch = openPR.branch {
+            do {
+                openBranchSHA = try await refSHA(repo: fork, branch: branch, quiet: true)
+            } catch GitHubError.api(let status, _) where status == 404 {
+                openBranchSHA = nil
+            }
+        }
+        if let openPR, let fork = openPR.fork, let branch = openPR.branch, let headSHA = openBranchSHA {
             let file = try await readFile(repo: fork, sha: headSHA, path: path)
             let merge = await Self.merge(file.text, lines, blockTitle, appendOnly)
             guard !merge.placements.isEmpty else { throw GitHubError.nothingNew }

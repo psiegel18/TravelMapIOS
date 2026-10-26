@@ -538,7 +538,7 @@ enum ListFileMerger {
     }
 
     private static func headerLine(title: String, styledLike entries: [Entry]) -> String {
-        let headers = entries.filter { if case .header = $0.kind { return true } else { return false } }.map(\.raw)
+        let headers = entries.filter { if case .header = $0.kind { return true } else { return false } }.map { stripCR($0.raw) }
         if headers.contains(where: { $0.hasPrefix("##") && $0.hasSuffix("##") }) { return "##\(title)##" }
         if headers.contains(where: { $0.hasPrefix("# ") }) || headers.isEmpty { return "# \(title)" }
         return "#\(title)"

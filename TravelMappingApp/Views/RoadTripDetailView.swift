@@ -856,6 +856,8 @@ struct ListUpdateSheet: View {
     @State private var isOpeningPR = false
     @State private var prError: String?
     @State private var openedPR: ListUpdatePR?
+    /// Lines this send added (an appended PR's lineCount is its running total)
+    @State private var sentLineCount = 0
     @State private var showSignIn = false
     @State private var showManualSteps = false
     /// The user's still-open app PR for this list, if any — new lines go into it
@@ -1052,7 +1054,7 @@ struct ListUpdateSheet: View {
                       systemImage: "checkmark.circle.fill")
                     .font(.system(size: 17, weight: .bold))
                     .foregroundStyle(TMDesign.greenChipFG)
-                Text("\(pr.lineCount.formatted()) new line\(pr.lineCount == 1 ? " is" : "s are") waiting for the TravelMapping team to merge. Once they do, the next nightly update adds them to your stats.")
+                Text("\(sentLineCount.formatted()) new line\(sentLineCount == 1 ? " is" : "s are") waiting for the TravelMapping team to merge. Once they do, the next nightly update adds them to your stats.")
                     .font(.system(size: 15))
                     .foregroundStyle(TMDesign.secondaryText)
             }
@@ -1101,7 +1103,7 @@ struct ListUpdateSheet: View {
         prError = nil
         defer { isOpeningPR = false }
         do {
-            let (pr, _) = try await github.submitListUpdate(
+            let (pr, merge) = try await github.submitListUpdate(
                 username: username,
                 category: category,
                 lines: lines,
@@ -1110,6 +1112,8 @@ struct ListUpdateSheet: View {
                 tripNames: tripNames,
                 appendingTo: openPR
             )
+            sentLineCount = merge.placements.count
+            if pr.number != openPR?.number { openPR = nil }  // a new PR was opened after all
             openedPR = pr
             onSubmitted(pr)
             Haptics.success()
