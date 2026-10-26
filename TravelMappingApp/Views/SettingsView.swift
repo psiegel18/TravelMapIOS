@@ -189,6 +189,7 @@ struct SettingsView: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(TMDesign.tertiaryText)
                 TextField("username", text: $settings.primaryUser)
+                    .sentryReplayMask()
                     .font(.system(size: 17, weight: .semibold))
                     .textFieldStyle(.plain)
                     .autocorrectionDisabled()
@@ -203,13 +204,10 @@ struct SettingsView: View {
                         SentrySDK.configureScope { scope in
                             let isSet = !settings.primaryUser.isEmpty
                             scope.setTag(value: isSet ? "true" : "false", key: "primary_user_set")
-                            if isSet {
-                                scope.setUser(User(userId: settings.primaryUser))
-                                scope.setTag(value: settings.primaryUser, key: "tm.username")
-                            } else {
-                                scope.setUser(nil)
-                                scope.removeTag(key: "tm.username")
-                            }
+                            // The username itself never goes to Sentry (see SentryPrivacy);
+                            // clear what earlier builds set.
+                            scope.setUser(nil)
+                            scope.removeTag(key: "tm.username")
                         }
                     }
             }
@@ -265,12 +263,11 @@ struct SettingsView: View {
               !data.isEmpty,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let routes = json["routes"] as? [Any] else {
-            SentrySDK.logger.debug("Username validation request failed", attributes: ["username": username])
+            SentrySDK.logger.debug("Username validation request failed")
             return nil  // Request failed — don't treat as "not found"
         }
         let found = !routes.isEmpty
         SentrySDK.logger.debug("Username validation", attributes: [
-            "username": username,
             "found": found,
             "routeCount": routes.count,
         ])
@@ -920,8 +917,9 @@ struct PrivacyPolicyView: View {
                     bullet("Performance metrics (CPU profiles, slow frames, app hangs)")
                     bullet("Screenshot, view hierarchy, and short session replay at the moment of an error")
                     bullet("Breadcrumbs & logs of app events (trip start/stop, navigation)")
-                    bullet("Your TravelMapping username if set")
                     bullet("General device state (memory, battery)")
+                    bullet("Not your TravelMapping username or GitHub login — they're removed from error reports, traces and logs, and hidden in replays wherever shown as yours, along with Route Planner addresses and maps")
+                    bullet("Bug reports and feedback are anonymous — no name or email")
                     HStack(spacing: 4) {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundStyle(.green)
@@ -963,7 +961,7 @@ struct PrivacyPolicyView: View {
 
                 // Footer
                 VStack(spacing: 4) {
-                    Text("Last updated: October 25, 2026")
+                    Text("Last updated: October 26, 2026")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                     Link("View web version", destination: URL(string: "https://travel.psiegel.org/PRIVACY")!)
@@ -1267,9 +1265,6 @@ struct FeedbackSheet: View {
     let kind: Kind
 
     @Environment(\.dismiss) private var dismiss
-    // Remembered on this device so repeat reporters don't retype them
-    @AppStorage("feedbackName") private var name = ""
-    @AppStorage("feedbackEmail") private var email = ""
     @State private var message = ""
     @FocusState private var messageFocused: Bool
 
@@ -1295,22 +1290,10 @@ struct FeedbackSheet: View {
                         }
                 } footer: {
                     if kind == .bug {
-                        Text("App diagnostics (version, device, recent screens) are attached to help find the problem — never your trips or location.")
+                        Text("Reports are anonymous. App diagnostics (version, device, recent screens) are attached to help find the problem — never your trips or location.")
+                    } else {
+                        Text("Feedback is anonymous, so there's no way to reply to it directly.")
                     }
-                }
-
-                Section {
-                    TextField("Name", text: $name)
-                        .textContentType(.name)
-                    TextField("Email", text: $email)
-                        .textContentType(.emailAddress)
-                        .keyboardType(.emailAddress)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                } header: {
-                    Text("Contact (optional)")
-                } footer: {
-                    Text("Only used to follow up on this \(kind == .bug ? "report" : "feedback").")
                 }
             }
             .scrollDismissesKeyboard(.interactively)
@@ -1339,18 +1322,14 @@ struct FeedbackSheet: View {
                 scope.setTag(value: "bug_report", key: "feedback_type")
             }
         }
-        let trimmedName = name.trimmingCharacters(in: .whitespaces)
-        let trimmedEmail = email.trimmingCharacters(in: .whitespaces)
         SentrySDK.capture(feedback: SentryFeedback(
             message: trimmedMessage,
-            name: trimmedName.isEmpty ? nil : trimmedName,
-            email: trimmedEmail.isEmpty ? nil : trimmedEmail,
+            name: nil,
+            email: nil,
             source: .custom,
             associatedEventId: eventId
         ))
         SentrySDK.logger.info("User feedback submitted", attributes: [
-            "hasName": !trimmedName.isEmpty,
-            "hasEmail": !trimmedEmail.isEmpty,
             "feedback_type": kind == .bug ? "bug_report" : "feedback",
         ])
         Haptics.success()

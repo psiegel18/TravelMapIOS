@@ -762,6 +762,7 @@ struct ListCheckupView: View {
                     HStack(spacing: 10) {
                         ProgressView()
                         Text("Reading TravelMapping's report for \(username)…")
+                            .sentryReplayMask()
                             .foregroundStyle(TMDesign.secondaryText)
                     }
                 }

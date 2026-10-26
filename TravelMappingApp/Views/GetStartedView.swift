@@ -32,6 +32,7 @@ struct GetStartedView: View {
                     bullet("Avoid diacritical marks or non-English characters")
 
                     TextField("Enter your desired username", text: $desiredUsername)
+                        .sentryReplayMask()
                         .textFieldStyle(.roundedBorder)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
@@ -46,6 +47,7 @@ struct GetStartedView: View {
                 ) {
                     Text("Your file is a plain text file named:")
                     Text(desiredUsername.isEmpty ? "yourusername.list" : "\(desiredUsername).list")
+                        .sentryReplayMask()
                         .font(.system(.subheadline, design: .monospaced))
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)

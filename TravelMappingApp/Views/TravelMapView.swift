@@ -271,6 +271,15 @@ struct TravelMapView: View {
         }
         .navigationTitle("\(username)'s Map")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            // Shown in place of the plain title so replays can mask the username
+            ToolbarItem(placement: .principal) {
+                Text("\(username)'s Map")
+                    .font(.headline)
+                    .lineLimit(1)
+                    .sentryReplayMask()
+            }
+        }
         .background {
             // .searchable applied conditionally above the Map would swap the view
             // tree on every tab switch and tear down the MapKit layer (the 5-7s
