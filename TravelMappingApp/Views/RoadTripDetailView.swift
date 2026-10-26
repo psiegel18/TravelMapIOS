@@ -658,13 +658,15 @@ struct TripMapLayer: MapContent {
     let ranges: [TripLogRange]
 
     var body: some MapContent {
-        ForEach(ranges) { range in
-            MapPolyline(coordinates: range.coordinates)
-                .stroke(range.status.color.opacity(0.85), lineWidth: 7)
-        }
+        // GPS trace underneath, so route status colors read clearly where the drive
+        // matched a route and the trace still shows wherever it didn't
         if replayCoordinates.count > 1 {
             MapPolyline(coordinates: replayCoordinates)
-                .stroke(TMDesign.accent, lineWidth: ranges.isEmpty ? 3 : 2.5)
+                .stroke(TMDesign.accent, lineWidth: 3)
+        }
+        ForEach(ranges) { range in
+            MapPolyline(coordinates: range.coordinates)
+                .stroke(range.status.color, lineWidth: 6)
         }
         // Start pin
         if let first = trip.rawPoints.first {
