@@ -278,7 +278,9 @@ struct RoadTripListView: View {
 
     private func loadTrips() async {
         let loaded = (try? await TripStorageService.shared.listTrips()) ?? []
-        trips = loaded.filter { $0.status != .recording }
+        // Newest trip first by when it happened — file modification order changes
+        // whenever a trip is re-saved (notes edits, iCloud sync)
+        trips = loaded.filter { $0.status != .recording }.sorted { $0.startDate > $1.startDate }
         isLoading = false
         await loadPendingSummary()
     }
