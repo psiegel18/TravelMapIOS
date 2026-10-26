@@ -257,7 +257,7 @@ final class GitHubService: ObservableObject {
 
     /// Client ID of the "Travel Mapping iOS" GitHub OAuth App (device flow enabled).
     /// Client IDs are public; device flow needs no secret. Empty disables in-app PRs.
-    static let clientID = ""
+    static let clientID = "Ov23liCQLY5nbrtgtRSu"
 
     private static let upstream = "TravelMapping/UserData"
     private static let keychainService = "com.psiegel18.TravelMapping.github"
