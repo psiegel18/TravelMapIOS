@@ -20,6 +20,9 @@ struct TravelMapView: View {
     @State private var showClinched = true
     @State private var showUnclinched = false
     @State private var showRail = true
+    /// Mode filter, independent of the Traveled/Remaining status filter — without it
+    /// there was no way to see only rail (turning Traveled off hid traveled rail too)
+    @State private var showRoads = true
     @State private var railSegments: [TravelMappingAPI.MapSegment] = []
     @State private var railMetadata: [TravelMappingAPI.RouteMetadata] = []
     @State private var mapPosition: MapCameraPosition = .automatic
@@ -90,7 +93,8 @@ struct TravelMapView: View {
     @State private var mergedRailPolylines: [MergedPolyline] = []
 
     private var displayedPolylines: [MergedPolyline] {
-        mergedPolylines.filter { poly in
+        guard showRoads else { return [] }
+        return mergedPolylines.filter { poly in
             if showClinched && poly.isClinched { return true }
             if showUnclinched && !poly.isClinched { return true }
             return false
@@ -106,8 +110,11 @@ struct TravelMapView: View {
         }
     }
 
-    private var clinchedCount: Int { segments.filter(\.isClinched).count + railSegments.filter(\.isClinched).count }
-    private var totalCount: Int { segments.count + railSegments.count }
+    /// Counts cover the modes currently shown, so Traveled/Remaining match the map
+    private var clinchedCount: Int {
+        (showRoads ? segments.filter(\.isClinched).count : 0) + (showRail ? railSegments.filter(\.isClinched).count : 0)
+    }
+    private var totalCount: Int { (showRoads ? segments.count : 0) + (showRail ? railSegments.count : 0) }
 
     /// Merge consecutive 2-point segments on the same route into multi-point polylines.
     /// Runs the expensive sort/merge on a background thread to avoid main-thread hangs.
@@ -480,7 +487,7 @@ struct TravelMapView: View {
         }
 
         var visibleSegs: [TravelMappingAPI.MapSegment] = []
-        for seg in segments where inBounds(seg) {
+        for seg in segments where showRoads && inBounds(seg) {
             if showClinched && seg.isClinched { visibleSegs.append(seg) }
             else if showUnclinched && !seg.isClinched { visibleSegs.append(seg) }
         }
@@ -708,6 +715,22 @@ struct TravelMapView: View {
                                 width: max(1.5, settings.roadLineWidth * 0.75)
                             )),
                             isOn: $showUnclinched
+                        )
+                        Divider().padding(.leading, 57)
+                        layerToggleRow(
+                            icon: "car.fill",
+                            iconBG: TMDesign.blueChipBG,
+                            iconFG: TMDesign.blueChipFG,
+                            title: "Roads",
+                            subtitle: "\(segments.count.formatted()) segments",
+                            swatch: AnyView(
+                                lineSwatch(
+                                    color: TMDesign.accent,
+                                    style: MapStyleService.parse(settings.roadLineStyle),
+                                    width: min(settings.roadLineWidth, 5)
+                                )
+                            ),
+                            isOn: $showRoads
                         )
                         Divider().padding(.leading, 57)
                         layerToggleRow(
@@ -1139,10 +1162,29 @@ struct TravelMapView: View {
     }
 
     /// Bottom filter pills with live counts — filled = on (audit §6). These drive
-    /// the same showClinched/showUnclinched/showRail state as the Layers sheet.
+    /// the same showRoads/showRail (mode) and showClinched/showUnclinched (status)
+    /// state as the Layers sheet. Mode pills come first: "only rail" = Roads off.
     private var filterPills: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
+                filterPill(
+                    "Roads \(segments.count.formatted())",
+                    icon: "car.fill",
+                    isOn: showRoads,
+                    onBG: TMDesign.neutralChipFG,
+                    offFG: TMDesign.neutralChipFG,
+                    accessibilityLabel: "Show roads: \(showRoads ? "on" : "off"), \(segments.count) segments"
+                ) { showRoads.toggle() }
+
+                filterPill(
+                    "Rail \(railSegments.count.formatted())",
+                    icon: "tram.fill",
+                    isOn: showRail,
+                    onBG: TMDesign.rail,
+                    offFG: TMDesign.redChipFG,
+                    accessibilityLabel: "Show rail: \(showRail ? "on" : "off"), \(railSegments.count) segments"
+                ) { showRail.toggle() }
+
                 filterPill(
                     "Traveled \(clinchedCount.formatted())",
                     isOn: showClinched,
@@ -1158,15 +1200,6 @@ struct TravelMapView: View {
                     offFG: TMDesign.amberChipFG,
                     accessibilityLabel: "Show remaining segments: \(showUnclinched ? "on" : "off"), \(totalCount - clinchedCount) segments"
                 ) { showUnclinched.toggle() }
-
-                filterPill(
-                    "Rail \(railSegments.count.formatted())",
-                    icon: "tram.fill",
-                    isOn: showRail,
-                    onBG: TMDesign.rail,
-                    offFG: TMDesign.redChipFG,
-                    accessibilityLabel: "Show rail: \(showRail ? "on" : "off"), \(railSegments.count) segments"
-                ) { showRail.toggle() }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 2)
