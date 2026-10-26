@@ -937,7 +937,9 @@ final class AIService: ObservableObject {
         hasKey = true
         if scopeChanged { revokeConsent() }
         if model.isEmpty || !models.contains(model) || scopeChanged {
-            model = provider.suggestedModel.flatMap { models.contains($0) ? $0 : nil } ?? models.first ?? ""
+            // Only Claude gets a default; other providers list many non-chat models
+            // (embeddings, audio, legacy completions), so the user picks one
+            model = provider.suggestedModel.flatMap { models.contains($0) ? $0 : nil } ?? ""
         }
         saveConfig()
         return models
@@ -1037,7 +1039,9 @@ final class AIService: ObservableObject {
     }()
 
     private static func listModels(provider: AIProvider, baseURL: String, key: String) async throws -> [String] {
-        var request = URLRequest(url: URL(string: "\(baseURL)/models")!)
+        // Anthropic pages /v1/models at 20 by default
+        let path = provider == .anthropic ? "/models?limit=1000" : "/models"
+        var request = URLRequest(url: URL(string: "\(baseURL)\(path)")!)
         authorize(&request, provider: provider, key: key)
         let data = try await send(request)
         struct List: Decodable { struct Model: Decodable { let id: String }; let data: [Model] }
@@ -1123,6 +1127,10 @@ final class AIService: ObservableObject {
                 if let error = json["error"] as? [String: Any], let m = error["message"] as? String { message = m }
                 else if let m = json["error"] as? String { message = m }
             }
+            // Providers echo part of a rejected key ("Incorrect API key provided: sk-proj-ab…yz");
+            // keep it out of on-screen text (and so out of session replays)
+            message = message.replacingOccurrences(
+                of: #"(sk|xai|key)[-_][A-Za-z0-9_\-\.\*…]{4,}"#, with: "[key]", options: .regularExpression)
             // Deliberately not sent to Sentry: these are the user's own account/config
             throw AIError.http(status: status, message: String(message.prefix(200)))
         }

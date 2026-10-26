@@ -93,7 +93,7 @@ struct SettingsView: View {
                                 githubSyncUnavailable = on && !github.syncsAcrossDevices
                             }
                         ))
-                        Button("Sign Out of GitHub", role: .destructive) {
+                        Button(github.syncsAcrossDevices ? "Sign Out on All Devices" : "Sign Out of GitHub", role: .destructive) {
                             github.signOut()
                         }
                     } else {
@@ -1351,6 +1351,7 @@ struct AISettingsView: View {
                     Text(errorMessage)
                         .font(.footnote)
                         .foregroundStyle(TMDesign.rail)
+                        .sentryReplayMask()
                 }
             } header: {
                 Text("Provider")
@@ -1374,13 +1375,20 @@ struct AISettingsView: View {
 
 
             if ai.hasKey && !editingNewProvider {
-                Section("Model") {
+                Section {
                     if models.isEmpty {
-                        LabeledContent("Model", value: ai.model)
+                        LabeledContent("Model", value: ai.model.isEmpty ? "Not chosen" : ai.model)
                     } else {
                         Picker("Model", selection: $ai.model) {
+                            Text("Choose…").tag("")
                             ForEach(models, id: \.self) { Text($0).tag($0) }
                         }
+                    }
+                } header: {
+                    Text("Model")
+                } footer: {
+                    if ai.model.isEmpty {
+                        Text("Choose a chat model. AI features stay off until you do.")
                     }
                 }
             }
@@ -1430,7 +1438,9 @@ struct AISettingsView: View {
                 models = []
             }
         } message: {
-            Text("AI features turn off and the key is deleted from this device. Your activity history stays until you clear it.")
+            Text(ai.syncsAcrossDevices
+                 ? "AI features turn off and the key is deleted from this device and from your other devices through iCloud Keychain. Your activity history stays until you clear it."
+                 : "AI features turn off and the key is deleted from this device. Your activity history stays until you clear it.")
         }
         .task {
             guard ai.hasKey, !editingNewProvider else { return }

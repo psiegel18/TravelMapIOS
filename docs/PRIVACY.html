@@ -58,7 +58,7 @@ a { color: #0066cc; }
 <ul>
 <li>Sign-in uses GitHub's device authorization flow — you approve access on github.com; your GitHub password never passes through the app.</li>
 <li>The app requests the <code>public_repo</code> scope only, and uses it solely to fork <strong>TravelMapping/UserData</strong> to your account, commit your updated list file to a new branch, and open a pull request.</li>
-<li>The access token is stored in this device's Keychain and sent only to api.github.com. It stays on that device unless you turn on "Stay Signed In on My Other Devices", which syncs it end-to-end encrypted through your iCloud Keychain. Signing out deletes it.</li>
+<li>The access token is stored in this device's Keychain and sent only to api.github.com. It stays on that device unless you turn on "Stay Signed In on My Other Devices", which syncs it end-to-end encrypted through your iCloud Keychain. Signing out deletes it (from all your devices, if syncing is on).</li>
 <li>Pull requests, and the route segments they add, are public on GitHub like any other contribution to TravelMapping/UserData.</li>
 </ul>
 
@@ -70,7 +70,7 @@ a { color: #0066cc; }
 <li><strong>What is never sent:</strong> your recorded GPS trips or location, the rest of your list file, your email, your GitHub account, or other keys.</li>
 <li>Requests go directly from your device to the provider you chose, under your own account and that provider's terms and privacy policy. We never receive your key, your requests, or the AI's answers.</li>
 <li>Your key is stored in your device's Keychain. It stays on that device unless you turn on "Use on My Other Devices", which syncs it end-to-end encrypted through your iCloud Keychain. AI suggestions never change your list file on their own — you review every change before sending it.</li>
-<li>A log of each request (date, provider, model, and a description of what was sent) is kept on your device. You can turn AI off, revoke permission, clear the log, or remove your key at any time in Settings &gt; AI Assistant. AI request errors are not sent to our crash reporting.</li>
+<li>A log of each request (date, provider, model, and a description of what was sent) is kept on your device. You can turn AI off, revoke permission, clear the log, or remove your key at any time in Settings &gt; AI Assistant (removing a synced key removes it from all your devices). AI request errors are not sent to our crash reporting.</li>
 </ul>
 
 <h2>Crash Reporting &amp; Diagnostics</h2>

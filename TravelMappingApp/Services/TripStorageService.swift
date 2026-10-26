@@ -134,6 +134,15 @@ actor TripStorageService {
     /// downloading on this device) — writers must not overwrite it with a partial list.
     private func readSubmissions(at url: URL) -> [ListSubmission]? {
         let fm = FileManager.default
+        // Early 1.3 betas used list-submissions.json — adopt it once, then remove it so
+        // listTrips() (here and in 1.2) stops tripping over it
+        let legacy = url.deletingLastPathComponent().appendingPathComponent("list-submissions.json")
+        if !fm.fileExists(atPath: url.path), let data = try? Data(contentsOf: legacy),
+           let old = try? JSONDecoder().decode([ListSubmission].self, from: data) {
+            writeSubmissions(old, to: url)
+            try? fm.removeItem(at: legacy)
+            return old
+        }
         if !fm.fileExists(atPath: url.path) {
             // iCloud keeps not-yet-downloaded files as hidden ".name.icloud" placeholders
             let placeholder = url.deletingLastPathComponent()
@@ -151,8 +160,13 @@ actor TripStorageService {
         do {
             return try JSONDecoder().decode([ListSubmission].self, from: data)
         } catch {
+            // Corrupt (e.g. a botched iCloud merge): set it aside and start fresh rather
+            // than refusing every future write
             SentrySDK.capture(error: error)
-            return nil
+            let aside = url.deletingLastPathComponent()
+                .appendingPathComponent("list-submissions-corrupt-\(Int(Date().timeIntervalSince1970)).bak")
+            try? fm.moveItem(at: url, to: aside)
+            return []
         }
     }
 

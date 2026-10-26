@@ -843,6 +843,8 @@ struct ListUpdateSheet: View {
     let tripNames: [String]
     /// Existing lines to rewrite (list checkup fixes): logged line → corrected line
     var replacements: [String: String] = [:]
+    /// Called on send with the replacement keys that actually matched a line in the file
+    var onFixesSent: (([String]) -> Void)? = nil
     /// Called once the update is on its way — with the PR when the app opened one
     let onSubmitted: (ListUpdatePR?) -> Void
 
@@ -1049,6 +1051,7 @@ struct ListUpdateSheet: View {
             openURL(DataService.listFileEditURL(username: username, category: category))
         }
         stepButton(number: 3, title: "Mark as submitted", icon: "paperplane") {
+            onFixesSent?(sentFixKeys)
             onSubmitted(nil)
             Haptics.success()
             dismiss()
@@ -1077,6 +1080,11 @@ struct ListUpdateSheet: View {
         } footer: {
             Text("If you'd rather place them yourself.")
         }
+    }
+
+    /// Replacement keys (as passed in) whose line was found and changed
+    private var sentFixKeys: [String] {
+        replacements.keys.filter { appliedFixes.contains(ListFileMerger.normalizedLine($0)) }
     }
 
     private var sentSummary: String {
@@ -1156,6 +1164,7 @@ struct ListUpdateSheet: View {
             sentLineCount = merge.placements.count
             if pr.number != openPR?.number { openPR = nil }  // a new PR was opened after all
             openedPR = pr
+            onFixesSent?(sentFixKeys)
             onSubmitted(pr)
             Haptics.success()
         } catch {

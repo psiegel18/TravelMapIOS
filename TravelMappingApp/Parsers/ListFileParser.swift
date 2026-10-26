@@ -182,14 +182,22 @@ enum ListLogParser {
 
             guard let range = line.range(of: " in line: ") else { continue }
             let head = String(line[..<range.lowerBound])
-            let listLine = String(line[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+            // TM quotes the line with its trailing "# comment"; keep only the entry so it
+            // parses and matches the file line (whose comment the fix preserves)
+            var listLine = String(line[range.upperBound...])
+            if let hash = listLine.firstIndex(of: "#") { listLine = String(listLine[..<hash]) }
+            listLine = listLine.trimmingCharacters(in: .whitespaces)
+            guard !listLine.isEmpty else { continue }
 
             if head.hasPrefix("Waypoint label ") && head.hasSuffix(" not found") {
                 let label = head.dropFirst("Waypoint label ".count).dropLast(" not found".count)
                 issues.append(ListLogIssue(kind: .missingWaypoints([String(label)]), line: listLine, message: line))
             } else if head.hasPrefix("Waypoint labels ") && head.hasSuffix(" not found") {
+                // "A and B", or "A, B, and C"
                 let labels = head.dropFirst("Waypoint labels ".count).dropLast(" not found".count)
-                    .components(separatedBy: " and ")
+                    .replacingOccurrences(of: ", and ", with: ", ")
+                    .replacingOccurrences(of: " and ", with: ", ")
+                    .components(separatedBy: ", ")
                 issues.append(ListLogIssue(kind: .missingWaypoints(labels), line: listLine, message: line))
             } else if head.hasPrefix("Waypoint ") && head.hasSuffix(" not found") {
                 // Multi-region form: "Waypoint NY I-81 27 not found"
@@ -210,7 +218,10 @@ enum ListLogParser {
                 issues.append(ListLogIssue(kind: .zeroDistance, line: listLine, message: line))
             }
         }
-        return (issues, updates)
+        // TM repeats some notes once per region of a multi-region line; identical issues
+        // would collide as SwiftUI identities
+        var seen = Set<String>()
+        return (issues.filter { seen.insert($0.id).inserted }, updates)
     }
 
     /// `"ESP-EX A66"` → `A66`; `I-481` → `I-481`

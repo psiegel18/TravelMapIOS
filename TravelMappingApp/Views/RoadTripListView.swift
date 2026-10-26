@@ -834,7 +834,8 @@ struct ListCheckupView: View {
                 tripNames: [],
                 replacements: Dictionary(selectedFixes.compactMap { fix in fix.replacement.map { (fix.issue.line, $0) } },
                                          uniquingKeysWith: { a, _ in a }),
-                onSubmitted: { _ in markSent(selectedFixes) }
+                onFixesSent: { applied in markSent(selectedFixes.filter { applied.contains($0.issue.line) }) },
+                onSubmitted: { _ in }
             )
         }
     }
@@ -870,13 +871,16 @@ struct ListCheckupView: View {
                 NavigationLink {
                     AISettingsView()
                 } label: {
-                    Label(ai.hasKey ? "AI Assistant is off" : "Get suggested fixes with your own AI key", systemImage: "sparkles")
+                    Label(!ai.hasKey ? "Get suggested fixes with your own AI key"
+                          : (ai.model.isEmpty ? "Choose an AI model to get suggestions" : "AI Assistant is off"),
+                          systemImage: "sparkles")
                 }
             }
             if let aiMessage {
                 Text(aiMessage)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                    .sentryReplayMask()
             }
         } header: {
             Text("Need help?")
