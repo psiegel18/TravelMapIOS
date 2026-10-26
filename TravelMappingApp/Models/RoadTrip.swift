@@ -83,6 +83,8 @@ struct RoadTrip: Identifiable, Codable {
     /// Hop keys ("root|start|end") the user has marked as sent in a .list update. They
     /// drop out of the pending queue until the TM database reports them clinched.
     var submittedHopKeys: [String] = []
+    /// Pull requests the app opened for this trip's segments
+    var listUpdatePRs: [ListUpdatePR] = []
 
     var duration: TimeInterval? {
         guard let end = endDate else { return nil }
@@ -113,6 +115,7 @@ struct RoadTrip: Identifiable, Codable {
         matchedSegments = try container.decode([MatchedSegment].self, forKey: .matchedSegments)
         activeDuration = try container.decodeIfPresent(TimeInterval.self, forKey: .activeDuration) ?? 0
         submittedHopKeys = try container.decodeIfPresent([String].self, forKey: .submittedHopKeys) ?? []
+        listUpdatePRs = try container.decodeIfPresent([ListUpdatePR].self, forKey: .listUpdatePRs) ?? []
     }
 
     init(name: String? = nil, tripType: TripType = .road) {

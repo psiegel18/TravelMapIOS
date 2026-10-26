@@ -81,7 +81,8 @@ struct RoadTripDetailView: View {
                 username: settings.primaryUser,
                 category: isRail ? .rail : .road,
                 blockTitle: "\(trip.startDate.formatted(.iso8601.year().month().day())) \(trip.name)",
-                onMarkSubmitted: { markSubmitted(includedNewRanges) }
+                tripNames: [trip.name],
+                onSubmitted: { pr in markSubmitted(includedNewRanges, pr: pr) }
             )
         }
         .fullScreenCover(isPresented: $showFullMap) {
@@ -357,9 +358,10 @@ struct RoadTripDetailView: View {
         }
     }
 
-    private func markSubmitted(_ ranges: [TripLogRange]) {
+    private func markSubmitted(_ ranges: [TripLogRange], pr: ListUpdatePR?) {
         let keys = ranges.flatMap(\.hopKeys)
         trip.submittedHopKeys = Array(Set(trip.submittedHopKeys).union(keys))
+        if let pr { trip.listUpdatePRs.append(pr) }
         let updatedTrip = trip
         let crumb = Breadcrumb(level: .info, category: "list_update")
         crumb.message = "Marked \(ranges.count) ranges submitted from trip detail"
@@ -443,6 +445,14 @@ struct RoadTripDetailView: View {
                         }
                         .buttonStyle(.plain)
                         .disabled(includedNewRanges.isEmpty)
+                    }
+                }
+
+                ForEach(trip.listUpdatePRs) { pr in
+                    Link(destination: pr.url) {
+                        Label("Pull request #\(pr.number) · \(pr.lineCount.formatted()) line\(pr.lineCount == 1 ? "" : "s")",
+                              systemImage: "arrow.triangle.pull")
+                            .font(.system(size: 14, weight: .semibold))
                     }
                 }
 
@@ -809,91 +819,58 @@ struct ListLineToggleRow: View {
 }
 
 /// Merges new lines into the user's current list file the way they organize it,
-/// previews where each line lands, and hands off to GitHub's web editor.
+/// previews where each line lands, then opens a pull request (signed in to GitHub)
+/// or hands off to GitHub's web editor.
 struct ListUpdateSheet: View {
     let lines: [ListLine]
     let username: String
     let category: RouteCategory
     let blockTitle: String
-    let onMarkSubmitted: () -> Void
+    let tripNames: [String]
+    /// Called once the update is on its way — with the PR when the app opened one
+    let onSubmitted: (ListUpdatePR?) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
+    @ObservedObject private var github = GitHubService.shared
+    @AppStorage("listAppendOnly") private var appendOnly = false
     @State private var result: ListFileMerger.Result?
     @State private var hasExistingFile = true
     @State private var errorMessage: String?
     @State private var copiedFile = false
     @State private var copiedLines = false
+    @State private var isOpeningPR = false
+    @State private var prError: String?
+    @State private var openedPR: ListUpdatePR?
+    @State private var showSignIn = false
+    @State private var showManualSteps = false
 
     private var fileName: String { "\(username).\(category.fileExtension)" }
 
     var body: some View {
         NavigationStack {
             List {
-                if let result {
-                    Section {
-                        ForEach(result.placements) { placement in
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(placement.line.text)
-                                    .font(.system(size: 14, weight: .medium, design: .monospaced))
-                                Text(placementDetail(placement))
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(TMDesign.tertiaryText)
+                if let openedPR {
+                    prOpenedSection(openedPR)
+                } else if let result {
+                    placementSections(result)
+                    if github.isConfigured {
+                        pullRequestSection
+                        Section {
+                            DisclosureGroup("Do it yourself in GitHub's editor", isExpanded: $showManualSteps) {
+                                manualSteps(result)
                             }
                         }
-                    } header: {
-                        Text("Where your new lines go")
-                    } footer: {
-                        Text(hasExistingFile
-                             ? "Placed next to similar routes, following how your \(fileName) is organized. Nothing already in your file is changed."
-                             : "You don't have a \(fileName) yet — submit your first file from Get Started, then use this for updates.")
-                    }
-
-                    if !result.duplicates.isEmpty {
-                        Section("Already in your file") {
-                            ForEach(result.duplicates) { line in
-                                Text(line.text)
-                                    .font(.system(size: 14, design: .monospaced))
-                                    .foregroundStyle(TMDesign.tertiaryText)
-                            }
+                    } else {
+                        Section {
+                            manualSteps(result)
+                        } header: {
+                            Text("Send the update")
+                        } footer: {
+                            manualFooter
                         }
                     }
-
-                    Section {
-                        stepButton(number: 1, title: copiedFile ? "Copied updated file" : "Copy updated \(fileName)",
-                                   icon: copiedFile ? "checkmark" : "doc.on.doc") {
-                            UIPasteboard.general.string = result.text
-                            copiedFile = true
-                            breadcrumb("Copied merged list file (\(result.placements.count) new lines)")
-                            Haptics.success()
-                        }
-                        stepButton(number: 2, title: "Open \(fileName) on GitHub", icon: "arrow.up.forward.app") {
-                            breadcrumb("Opened GitHub editor")
-                            openURL(DataService.listFileEditURL(username: username, category: category))
-                        }
-                        stepButton(number: 3, title: "Mark as submitted", icon: "paperplane") {
-                            onMarkSubmitted()
-                            Haptics.success()
-                            dismiss()
-                        }
-                    } header: {
-                        Text("Send the update")
-                    } footer: {
-                        Text("In GitHub's editor, select all of the file's text and paste, then tap Commit/Propose changes and open the pull request. Submitted segments stay hidden here until TravelMapping's nightly update picks them up.")
-                    }
-
-                    Section {
-                        Button {
-                            UIPasteboard.general.string = result.placements.map(\.line.text).joined(separator: "\n")
-                            copiedLines = true
-                            breadcrumb("Copied new list lines only")
-                            Haptics.success()
-                        } label: {
-                            Label(copiedLines ? "Copied" : "Copy only the new lines", systemImage: copiedLines ? "checkmark" : "text.badge.plus")
-                        }
-                    } footer: {
-                        Text("If you'd rather place them yourself.")
-                    }
+                    copyLinesSection(result)
                 } else if let errorMessage {
                     Section {
                         Text(errorMessage)
@@ -916,10 +893,156 @@ struct ListUpdateSheet: View {
                     Button("Done") { dismiss() }
                 }
             }
+            .sheet(isPresented: $showSignIn) {
+                GitHubSignInSheet()
+            }
             .task { await load() }
+            .interactiveDismissDisabled(isOpeningPR)
         }
         .sentryScreen("ListUpdate")
     }
+
+    // MARK: Sections
+
+    @ViewBuilder
+    private func placementSections(_ result: ListFileMerger.Result) -> some View {
+        Section {
+            ForEach(result.placements) { placement in
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(placement.line.text)
+                        .font(.system(size: 14, weight: .medium, design: .monospaced))
+                    Text(placementDetail(placement))
+                        .font(.system(size: 12))
+                        .foregroundStyle(TMDesign.tertiaryText)
+                }
+            }
+        } header: {
+            Text("Where your new lines go")
+        } footer: {
+            if !hasExistingFile {
+                Text("You don't have a \(fileName) yet — submit your first file from Get Started, then use this for updates.")
+            } else if appendOnly {
+                Text("Added as one block at the end of your \(fileName) (change in Settings › GitHub). Nothing already in your file is changed.")
+            } else {
+                Text("Placed next to similar routes, following how your \(fileName) is organized. Nothing already in your file is changed.")
+            }
+        }
+
+        if !result.duplicates.isEmpty {
+            Section("Already in your file") {
+                ForEach(result.duplicates) { line in
+                    Text(line.text)
+                        .font(.system(size: 14, design: .monospaced))
+                        .foregroundStyle(TMDesign.tertiaryText)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var pullRequestSection: some View {
+        Section {
+            if github.isSignedIn {
+                Button {
+                    Task { await openPullRequest() }
+                } label: {
+                    HStack(spacing: 10) {
+                        if isOpeningPR {
+                            ProgressView()
+                        } else {
+                            Image(systemName: "arrow.triangle.pull")
+                        }
+                        Text(isOpeningPR ? "Opening pull request…" : "Open pull request")
+                            .font(.system(size: 16, weight: .semibold))
+                    }
+                }
+                .disabled(isOpeningPR || (result?.placements.isEmpty ?? true) || !hasExistingFile)
+            } else {
+                Button {
+                    showSignIn = true
+                } label: {
+                    Label("Sign in with GitHub", systemImage: "person.badge.key")
+                        .font(.system(size: 16, weight: .semibold))
+                }
+            }
+            if let prError {
+                Text(prError)
+                    .font(.system(size: 13))
+                    .foregroundStyle(TMDesign.rail)
+            }
+        } header: {
+            Text("Send the update")
+        } footer: {
+            if let login = github.login, github.isSignedIn {
+                Text("As @\(login): forks TravelMapping/UserData to your account (first time only), commits the updated file to a new branch, and opens a pull request for the TM team to review.")
+            } else {
+                Text("Sign in once and the app opens the pull request for you — no copying and pasting.")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func manualSteps(_ result: ListFileMerger.Result) -> some View {
+        stepButton(number: 1, title: copiedFile ? "Copied updated file" : "Copy updated \(fileName)",
+                   icon: copiedFile ? "checkmark" : "doc.on.doc") {
+            UIPasteboard.general.string = result.text
+            copiedFile = true
+            breadcrumb("Copied merged list file (\(result.placements.count) new lines)")
+            Haptics.success()
+        }
+        stepButton(number: 2, title: "Open \(fileName) on GitHub", icon: "arrow.up.forward.app") {
+            breadcrumb("Opened GitHub editor")
+            openURL(DataService.listFileEditURL(username: username, category: category))
+        }
+        stepButton(number: 3, title: "Mark as submitted", icon: "paperplane") {
+            onSubmitted(nil)
+            Haptics.success()
+            dismiss()
+        }
+        if github.isConfigured {
+            manualFooter
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var manualFooter: Text {
+        Text("In GitHub's editor, select all of the file's text and paste, then tap Commit/Propose changes and open the pull request. Submitted segments stay hidden here until TravelMapping's nightly update picks them up.")
+    }
+
+    private func copyLinesSection(_ result: ListFileMerger.Result) -> some View {
+        Section {
+            Button {
+                UIPasteboard.general.string = result.placements.map(\.line.text).joined(separator: "\n")
+                copiedLines = true
+                breadcrumb("Copied new list lines only")
+                Haptics.success()
+            } label: {
+                Label(copiedLines ? "Copied" : "Copy only the new lines", systemImage: copiedLines ? "checkmark" : "text.badge.plus")
+            }
+        } footer: {
+            Text("If you'd rather place them yourself.")
+        }
+    }
+
+    private func prOpenedSection(_ pr: ListUpdatePR) -> some View {
+        Section {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Pull request #\(pr.number) opened", systemImage: "checkmark.circle.fill")
+                    .font(.system(size: 17, weight: .bold))
+                    .foregroundStyle(TMDesign.greenChipFG)
+                Text("\(pr.lineCount.formatted()) new line\(pr.lineCount == 1 ? "" : "s") are waiting for the TravelMapping team to merge. Once they do, the next nightly update adds them to your stats.")
+                    .font(.system(size: 15))
+                    .foregroundStyle(TMDesign.secondaryText)
+            }
+            .padding(.vertical, 4)
+            Link(destination: pr.url) {
+                Label("View on GitHub", systemImage: "arrow.up.forward.app")
+            }
+        }
+    }
+
+    // MARK: Actions
 
     private func load() async {
         errorMessage = nil
@@ -929,14 +1052,38 @@ struct ListUpdateSheet: View {
             let text = existing ?? ""
             let lines = lines
             let blockTitle = blockTitle
+            let appendOnly = appendOnly
             result = await Task.detached(priority: .userInitiated) {
-                ListFileMerger.merge(existing: text, newLines: lines, blockTitle: blockTitle)
+                ListFileMerger.merge(existing: text, newLines: lines, blockTitle: blockTitle, appendOnly: appendOnly)
             }.value
         } catch {
             SentrySDK.capture(error: error)
             errorMessage = "Couldn't download your current \(fileName) from GitHub. Check your connection and try again."
         }
     }
+
+    private func openPullRequest() async {
+        isOpeningPR = true
+        prError = nil
+        defer { isOpeningPR = false }
+        do {
+            let (pr, _) = try await github.openListUpdatePR(
+                username: username,
+                category: category,
+                lines: lines,
+                blockTitle: blockTitle,
+                appendOnly: appendOnly,
+                tripNames: tripNames
+            )
+            openedPR = pr
+            onSubmitted(pr)
+            Haptics.success()
+        } catch {
+            prError = error.localizedDescription
+        }
+    }
+
+    // MARK: Helpers
 
     private func placementDetail(_ placement: ListFileMerger.Placement) -> String {
         var detail = "Line \(placement.lineNumber.formatted())"

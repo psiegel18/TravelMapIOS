@@ -23,7 +23,7 @@ a { color: #0066cc; }
 </head>
 <body>
 <h1>Travel Mapping iOS App Privacy Policy</h1>
-<p class="meta"><strong>Last updated:</strong> April 13, 2026</p>
+<p class="meta"><strong>Last updated:</strong> October 25, 2026</p>
 
 <h2>Overview</h2>
 <p>Travel Mapping is an iOS app for browsing and tracking road and rail travel data from travelmapping.net. This privacy policy describes what information the app collects and how it is used.</p>
@@ -51,7 +51,16 @@ a { color: #0066cc; }
 <li><strong>tmrail.teresco.org</strong> — rail route data</li>
 <li><strong>github.com/TravelMapping/UserData</strong> — user travel list files</li>
 </ul>
-<p>No personal information is transmitted. The app does not have user accounts or login.</p>
+<p>No personal information is transmitted. The app does not have its own user accounts.</p>
+
+<h3>Optional GitHub Sign-In</h3>
+<p>If you choose to sign in with GitHub (Settings &gt; GitHub) so the app can open .list update pull requests for your recorded trips:</p>
+<ul>
+<li>Sign-in uses GitHub's device authorization flow — you approve access on github.com; your GitHub password never passes through the app.</li>
+<li>The app requests the <code>public_repo</code> scope only, and uses it solely to fork <strong>TravelMapping/UserData</strong> to your account, commit your updated list file to a new branch, and open a pull request.</li>
+<li>The access token is stored only in this device's Keychain (not synced to iCloud) and is sent only to api.github.com. Signing out deletes it.</li>
+<li>Pull requests, and the route segments they add, are public on GitHub like any other contribution to TravelMapping/UserData.</li>
+</ul>
 
 <h2>Crash Reporting &amp; Diagnostics</h2>
 <p>The app uses <a href="https://sentry.io">Sentry</a> to collect anonymous diagnostic data that helps us identify and fix bugs and performance issues. Data collected may include:</p>

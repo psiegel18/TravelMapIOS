@@ -236,7 +236,8 @@ enum ListFileMerger {
     ///   - newLines: lines to add
     ///   - blockTitle: header text used when appending a trip block (chronological files,
     ///     or lines with nowhere better to go)
-    static func merge(existing: String, newLines: [ListLine], blockTitle: String) -> Result {
+    ///   - appendOnly: skip placement and always append one block (user preference)
+    static func merge(existing: String, newLines: [ListLine], blockTitle: String, appendOnly: Bool = false) -> Result {
         let lineEnding = existing.contains("\r\n") ? "\r\n" : "\n"
         var rawLines = existing.components(separatedBy: lineEnding)
         let hadTrailingNewline = rawLines.last == ""
@@ -265,7 +266,7 @@ enum ListFileMerger {
         toInsert.sort { sortKey($0.region, $0.route) < sortKey($1.region, $1.route) }
 
         var leftovers: [ListLine] = []
-        if isChronological(entries) {
+        if appendOnly || isChronological(entries) {
             leftovers = toInsert
         } else {
             for line in toInsert {

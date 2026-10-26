@@ -11,6 +11,9 @@ struct SettingsView: View {
     @State private var versionTapCount = 0
     @State private var showSentryTestAlert = false
     @State private var showTipJar = false
+    @State private var showGitHubSignIn = false
+    @ObservedObject private var github = GitHubService.shared
+    @AppStorage("listAppendOnly") private var listAppendOnly = false
     @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var isValidatingUser = false
     @State private var userValidationResult: Bool? = Self.cachedValidationResult
@@ -56,6 +59,34 @@ struct SettingsView: View {
                 Toggle("Show on Apple Watch", isOn: $sendToWatch)
             } footer: {
                 Text("iCloud syncs favorites across devices. Apple Watch receives live trip status and route directions.")
+            }
+
+            // MARK: GitHub (.list updates)
+            Section {
+                if github.isConfigured {
+                    if github.isSignedIn {
+                        LabeledContent("Signed in as", value: github.login.map { "@\($0)" } ?? "GitHub")
+                        Button("Sign Out of GitHub", role: .destructive) {
+                            github.signOut()
+                        }
+                    } else {
+                        Button {
+                            showGitHubSignIn = true
+                        } label: {
+                            Label("Sign in with GitHub", systemImage: "person.badge.key")
+                        }
+                    }
+                }
+                Picker("New lines go", selection: $listAppendOnly) {
+                    Text("Where they fit in my file").tag(false)
+                    Text("In a block at the end").tag(true)
+                }
+            } header: {
+                TMDesign.sectionHeader("GitHub")
+            } footer: {
+                Text(github.isConfigured
+                     ? "Lets the app open .list update pull requests for your recorded trips. Your GitHub token stays in this device's Keychain."
+                     : "How recorded-trip segments are added to your .list file.")
             }
 
             // MARK: Appearance
@@ -264,6 +295,9 @@ struct SettingsView: View {
             }
         }
         .navigationTitle("Settings")
+        .sheet(isPresented: $showGitHubSignIn) {
+            GitHubSignInSheet()
+        }
         .alert("Send Test Event", isPresented: $showSentryTestAlert) {
             Button("Send", role: .destructive) {
                 SentrySDK.capture(error: NSError(
@@ -970,5 +1004,97 @@ struct TipSpringButtonStyle: ButtonStyle {
         configuration.label
             .scaleEffect(configuration.isPressed && !reduceMotion ? 0.95 : 1)
             .animation(.spring(response: 0.28, dampingFraction: 0.5), value: configuration.isPressed)
+    }
+}
+
+// MARK: - GitHub sign-in (device flow)
+
+/// Shows the one-time code from GitHub's device flow and waits for the user to
+/// approve it on github.com. No password ever passes through the app.
+struct GitHubSignInSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
+    @ObservedObject private var github = GitHubService.shared
+    @State private var code: GitHubService.DeviceCode?
+    @State private var errorMessage: String?
+    @State private var attempt = 0
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 22) {
+                Image(systemName: "person.badge.key.fill")
+                    .font(.system(size: 44))
+                    .foregroundStyle(TMDesign.accent)
+                    .padding(.top, 24)
+
+                if let code {
+                    Text("Enter this code on GitHub")
+                        .font(.system(size: 20, weight: .heavy))
+                    Text(code.user_code)
+                        .font(.system(size: 34, weight: .bold, design: .monospaced))
+                        .textSelection(.enabled)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 12)
+                        .background(TMDesign.secondarySurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    Button {
+                        UIPasteboard.general.string = code.user_code
+                        if let url = URL(string: code.verification_uri) { openURL(url) }
+                    } label: {
+                        Label("Copy Code & Open GitHub", systemImage: "arrow.up.forward.app")
+                            .font(.system(size: 17, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .background(TMDesign.accent, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text("Waiting for you to approve…")
+                            .foregroundStyle(TMDesign.secondaryText)
+                    }
+                    Text("The app asks for access to public repositories only, so it can fork TravelMapping/UserData and open pull requests for you.")
+                        .font(.system(size: 13))
+                        .foregroundStyle(TMDesign.tertiaryText)
+                        .multilineTextAlignment(.center)
+                } else if let errorMessage {
+                    Text(errorMessage)
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(TMDesign.secondaryText)
+                    Button("Try Again") {
+                        self.errorMessage = nil
+                        attempt += 1
+                    }
+                    .font(.system(size: 17, weight: .semibold))
+                } else {
+                    ProgressView()
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 24)
+            .navigationTitle("Sign in with GitHub")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+            .task(id: attempt) {
+                do {
+                    code = nil
+                    let deviceCode = try await github.startDeviceFlow()
+                    code = deviceCode
+                    try await github.completeDeviceFlow(deviceCode)
+                    Haptics.success()
+                    dismiss()
+                } catch is CancellationError {
+                    // Sheet dismissed mid-poll
+                } catch {
+                    code = nil
+                    errorMessage = error.localizedDescription
+                }
+            }
+        }
+        .sentryScreen("GitHubSignIn")
     }
 }

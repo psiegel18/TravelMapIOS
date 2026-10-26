@@ -393,6 +393,14 @@ struct PendingListUpdatesView: View {
     @State private var excludedRangeIDs: Set<String> = []
     @State private var sheetType: TripType?
     @State private var localTrips: [RoadTrip] = []
+    @State private var prStates: [Int: GitHubService.PRState] = [:]
+
+    /// PRs opened from any trip in the last 60 days, newest first
+    private var recentPRs: [ListUpdatePR] {
+        let cutoff = Date().addingTimeInterval(-60 * 86_400)
+        let all = Set(localTrips.flatMap(\.listUpdatePRs)).filter { $0.createdAt > cutoff }
+        return all.sorted { $0.createdAt > $1.createdAt }
+    }
 
     var body: some View {
         List {
@@ -423,6 +431,13 @@ struct PendingListUpdatesView: View {
                     }
                 }
             }
+            if !recentPRs.isEmpty {
+                Section("Pull requests") {
+                    ForEach(recentPRs) { pr in
+                        ListUpdatePRRow(pr: pr, state: prStates[pr.number])
+                    }
+                }
+            }
         }
         .navigationTitle("Pending .list Updates")
         .navigationBarTitleDisplayMode(.inline)
@@ -433,12 +448,14 @@ struct PendingListUpdatesView: View {
                 username: username,
                 category: type == .rail ? .rail : .road,
                 blockTitle: "\(Date().formatted(.iso8601.year().month().day())) recorded trips",
-                onMarkSubmitted: { markSubmitted(included(type == .rail ? rail : road)) }
+                tripNames: tripNames(in: included(type == .rail ? rail : road)),
+                onSubmitted: { pr in markSubmitted(included(type == .rail ? rail : road), pr: pr) }
             )
         }
         .task {
             localTrips = trips
             await analyze()
+            await refreshPRStates()
         }
     }
 
@@ -495,6 +512,12 @@ struct PendingListUpdatesView: View {
         localTrips.filter { range.tripIDs.contains($0.id) }.map(\.name).joined(separator: ", ")
     }
 
+    private func refreshPRStates() async {
+        for pr in recentPRs where prStates[pr.number] == nil {
+            prStates[pr.number] = try? await GitHubService.shared.pullRequestState(pr.number)
+        }
+    }
+
     private func analyze() async {
         errorMessage = nil
         let candidates = localTrips.filter { $0.status == .completed && !$0.matchedSegments.isEmpty }
@@ -510,12 +533,18 @@ struct PendingListUpdatesView: View {
         isLoading = false
     }
 
-    private func markSubmitted(_ ranges: [TripLogRange]) {
+    private func tripNames(in ranges: [TripLogRange]) -> [String] {
+        let ids = Set(ranges.flatMap(\.tripIDs))
+        return localTrips.filter { ids.contains($0.id) }.sorted { $0.startDate < $1.startDate }.map(\.name)
+    }
+
+    private func markSubmitted(_ ranges: [TripLogRange], pr: ListUpdatePR?) {
         var changed: [RoadTrip] = []
         for i in localTrips.indices {
             let keys = ranges.filter { $0.tripIDs.contains(localTrips[i].id) }.flatMap(\.hopKeys)
             guard !keys.isEmpty else { continue }
             localTrips[i].submittedHopKeys = Array(Set(localTrips[i].submittedHopKeys).union(keys))
+            if let pr { localTrips[i].listUpdatePRs.append(pr) }
             changed.append(localTrips[i])
         }
         let crumb = Breadcrumb(level: .info, category: "list_update")
@@ -528,6 +557,40 @@ struct PendingListUpdatesView: View {
             await analyze()
             await onTripsChanged()
         }
+    }
+}
+
+struct ListUpdatePRRow: View {
+    let pr: ListUpdatePR
+    let state: GitHubService.PRState?
+
+    var body: some View {
+        Link(destination: pr.url) {
+            HStack(spacing: 12) {
+                Image(systemName: "arrow.triangle.pull")
+                    .foregroundStyle(TMDesign.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("#\(pr.number) · \(pr.lineCount.formatted()) line\(pr.lineCount == 1 ? "" : "s")")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.primary)
+                    Text(pr.createdAt.formatted(date: .abbreviated, time: .omitted))
+                        .font(.system(size: 13))
+                        .foregroundStyle(TMDesign.tertiaryText)
+                }
+                Spacer()
+                if let state {
+                    switch state {
+                    case .open:
+                        TMChip(text: "Open", bg: TMDesign.blueChipBG, fg: TMDesign.blueChipFG)
+                    case .merged:
+                        TMChip(text: "Merged", icon: "checkmark", bg: TMDesign.purpleChipBG, fg: TMDesign.purpleChipFG)
+                    case .closed:
+                        TMChip(text: "Closed", bg: TMDesign.redChipBG, fg: TMDesign.redChipFG)
+                    }
+                }
+            }
+        }
+        .accessibilityLabel("Pull request \(pr.number), \(pr.lineCount) lines, \(state?.rawValue ?? "")")
     }
 }
 
