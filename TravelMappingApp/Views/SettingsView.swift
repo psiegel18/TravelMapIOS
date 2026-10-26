@@ -490,7 +490,7 @@ struct AboutSettingsView: View {
                     Label("Travel Mapping (Rail)", systemImage: "tram.fill")
                 }
                 Link(destination: URL(string: "https://github.com/TravelMapping/UserData")!) {
-                    Label("User Data on GitHub", systemImage: "chevron.left.forwardslash.chevron.right")
+                    Label { Text("User Data on GitHub") } icon: { GitHubMark() }
                 }
                 Link(destination: URL(string: "https://github.com/psiegel18/TravelMapIOS/discussions")!) {
                     Label("App Discussion Board", systemImage: "bubble.left.and.text.bubble.right")
@@ -617,14 +617,14 @@ struct CacheStatusView: View {
     }
 
     private func fetchLastMerge() async {
-        let url = URL(string: "https://api.github.com/repos/TravelMapping/UserData/pulls?state=closed&sort=updated&direction=desc&per_page=1")!
+        // Closed-without-merge PRs have no merged_at, so look past them to the newest merge
+        let url = URL(string: "https://api.github.com/repos/TravelMapping/UserData/pulls?state=closed&sort=updated&direction=desc&per_page=30")!
         var request = URLRequest(url: url)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
 
         guard let (data, _) = try? await URLSession.shared.data(for: request),
               let prs = try? JSONDecoder().decode([GitHubPR].self, from: data),
-              let pr = prs.first,
-              let mergedAt = pr.merged_at else {
+              let mergedAt = prs.compactMap(\.merged_at).max() else {
             lastMerge = "Unknown"
             return
         }
@@ -890,7 +890,7 @@ struct PrivacyPolicyView: View {
                         .padding(.top, 4)
                 }
 
-                policyCard(icon: "arrow.triangle.pull", color: .purple, title: "Optional GitHub Sign-In") {
+                policyCard(color: .purple, title: "Optional GitHub Sign-In", icon: { GitHubMark() }) {
                     bullet("Off unless you sign in under Settings › GitHub")
                     bullet("You approve access on github.com. Your password never passes through the app")
                     bullet("Used only to fork TravelMapping/UserData, commit your updated .list file, and open a pull request")
@@ -995,10 +995,13 @@ struct PrivacyPolicyView: View {
 
     @ViewBuilder
     private func policyCard<Content: View>(icon: String, color: Color, title: String, @ViewBuilder content: () -> Content) -> some View {
+        policyCard(color: color, title: title, icon: { Image(systemName: icon).font(.subheadline) }, content: content)
+    }
+
+    private func policyCard<Icon: View, Content: View>(color: Color, title: String, @ViewBuilder icon: () -> Icon, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Image(systemName: icon)
-                    .font(.subheadline)
+                icon()
                     .foregroundStyle(color)
                     .frame(width: 24)
                 Text(title)
