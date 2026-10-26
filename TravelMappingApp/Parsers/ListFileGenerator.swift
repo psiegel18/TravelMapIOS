@@ -166,3 +166,381 @@ struct ListFileGenerator {
         return lines.joined(separator: "\n")
     }
 }
+
+// MARK: - List Line
+
+/// One single-region .list entry (`Region Route Waypoint1 Waypoint2`).
+struct ListLine: Hashable, Identifiable, Sendable {
+    let region: String
+    let route: String
+    let waypoint1: String
+    let waypoint2: String
+
+    var id: String { text }
+    var text: String { "\(region) \(route) \(waypoint1) \(waypoint2)" }
+}
+
+// MARK: - List File Merger
+
+/// Inserts new lines into an existing .list file the way its owner would.
+/// People organize their files very differently (sectioned by country → system → state,
+/// sorted by region, sorted by route number, or chronological trip blocks), so placement
+/// is learned from the file's own neighbors rather than a fixed schema. Existing lines are
+/// never edited or reordered — the merge is insert-only.
+enum ListFileMerger {
+
+    struct Placement: Identifiable, Sendable {
+        let line: ListLine
+        /// 1-based line number in the merged output
+        let lineNumber: Int
+        /// Nearest section header above the inserted line, if any
+        let section: String?
+        var id: String { line.id }
+    }
+
+    struct Result: Sendable {
+        let text: String
+        let placements: [Placement]
+        /// New lines skipped because the file already contains them
+        let duplicates: [ListLine]
+    }
+
+    private enum Kind {
+        case data(regions: [String], routes: [String], waypoints: [String])
+        case header
+        case comment
+        case blank
+    }
+
+    private struct Entry {
+        let raw: String
+        let kind: Kind
+        var inserted: ListLine? = nil
+
+        var isData: Bool { if case .data = kind { return true } else { return false } }
+        var isBoundary: Bool {
+            switch kind {
+            case .header, .blank: return true
+            default: return false
+            }
+        }
+        var regions: [String] { if case .data(let r, _, _) = kind { return r } else { return [] } }
+        var routes: [String] { if case .data(_, let r, _) = kind { return r } else { return [] } }
+        var waypoints: [String] { if case .data(_, _, let w) = kind { return w } else { return [] } }
+        var primaryRegion: String { regions.first ?? "" }
+        var primaryRoute: String { routes.first ?? "" }
+    }
+
+    /// - Parameters:
+    ///   - existing: current .list file contents (empty for a brand-new file)
+    ///   - newLines: lines to add
+    ///   - blockTitle: header text used when appending a trip block (chronological files,
+    ///     or lines with nowhere better to go)
+    ///   - appendOnly: skip placement and always append one block (user preference)
+    static func merge(existing: String, newLines: [ListLine], blockTitle: String, appendOnly: Bool = false) -> Result {
+        // Split on \n and keep any \r with its line, so files that mix CRLF and LF
+        // round-trip byte for byte; inserted lines follow whichever ending dominates.
+        var rawLines = existing.components(separatedBy: "\n")
+        let hadTrailingNewline = rawLines.last == ""
+        if hadTrailingNewline { rawLines.removeLast() }
+        let crlfCount = rawLines.filter { $0.hasSuffix("\r") }.count
+        let newLineSuffix = crlfCount * 2 > rawLines.count ? "\r" : ""
+
+        var entries = rawLines.map { Entry(raw: $0, kind: classify(Self.stripCR($0))) }
+
+        // Dedup against the file and within the batch
+        var seen = Set<String>()
+        for entry in entries where entry.isData && Set(entry.regions).count == 1 && Set(entry.routes).count == 1 {
+            seen.insert(dedupKey(region: entry.primaryRegion, route: entry.primaryRoute, entry.waypoints))
+        }
+        var toInsert: [ListLine] = []
+        var duplicates: [ListLine] = []
+        for line in newLines {
+            let key = dedupKey(region: line.region, route: line.route, [line.waypoint1, line.waypoint2])
+            if seen.contains(key) {
+                duplicates.append(line)
+            } else {
+                seen.insert(key)
+                toInsert.append(line)
+            }
+        }
+
+        // Insert in sorted order so lines sharing an anchor stay ordered among themselves
+        toInsert.sort { sortKey($0.region, $0.route) < sortKey($1.region, $1.route) }
+
+        var leftovers: [ListLine] = []
+        if appendOnly || isChronological(entries) {
+            leftovers = toInsert
+        } else {
+            for line in toInsert {
+                if let index = insertionIndex(for: line, in: entries) {
+                    let separator = separatorNear(index, in: entries)
+                    let text = [line.region, line.route, line.waypoint1, line.waypoint2].joined(separator: separator)
+                    entries.insert(Entry(raw: text + newLineSuffix, kind: classify(text), inserted: line), at: index)
+                } else {
+                    leftovers.append(line)
+                }
+            }
+        }
+
+        if !leftovers.isEmpty {
+            if let last = entries.last, !last.isBoundary || last.isData { entries.append(Entry(raw: newLineSuffix, kind: .blank)) }
+            let header = headerLine(title: blockTitle, styledLike: entries)
+            entries.append(Entry(raw: header + newLineSuffix, kind: .header))
+            for line in leftovers {
+                entries.append(Entry(raw: line.text + newLineSuffix, kind: classify(line.text), inserted: line))
+            }
+        }
+
+        var placements: [Placement] = []
+        var currentHeader: String?
+        for (i, entry) in entries.enumerated() {
+            if case .header = entry.kind { currentHeader = headerText(Self.stripCR(entry.raw)) }
+            if let line = entry.inserted {
+                placements.append(Placement(line: line, lineNumber: i + 1, section: currentHeader))
+            }
+        }
+
+        var text = entries.map(\.raw).joined(separator: "\n")
+        if hadTrailingNewline || existing.isEmpty { text += "\n" }
+        return Result(text: text, placements: placements, duplicates: duplicates)
+    }
+
+    private static func stripCR(_ s: String) -> String {
+        s.hasSuffix("\r") ? String(s.dropLast()) : s
+    }
+
+    // MARK: Classification
+
+    private static func classify(_ raw: String) -> Kind {
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty { return .blank }
+        if trimmed.hasPrefix("#") {
+            // Indented comments are annotations on the line above; commented-out entries
+            // are disabled data. Only column-0 prose comments act as section headers.
+            // Long prose notes ("continued past ON427 through…") aren't headers either.
+            if raw.hasPrefix("#") && trimmed.count <= 60 && parseData(String(trimmed.drop { $0 == "#" }), anyCase: false) == nil {
+                return .header
+            }
+            return .comment
+        }
+        // TravelMapping matches .list entries case-insensitively, so data lines may be
+        // lowercase; headers above stay strict so prose comments aren't mistaken for data.
+        if let data = parseData(trimmed, anyCase: true) { return data }
+        return .comment
+    }
+
+    /// Regions and routes are uppercased so matching ignores the user's casing.
+    private static func parseData(_ text: String, anyCase: Bool) -> Kind? {
+        let body = text.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
+        let f = body.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
+        guard f.count >= 4, looksLikeRegion(f[0], anyCase: anyCase) else { return nil }
+        let u = f.map { $0.uppercased() }
+        if f.count >= 6 {
+            return .data(regions: [u[0], u[3]], routes: [u[1], u[4]], waypoints: [f[2], f[5]])
+        }
+        if f.count == 5 && looksLikeRegion(f[3], anyCase: anyCase) {
+            return .data(regions: [u[0], u[3]], routes: [u[1], u[1]], waypoints: [f[2], f[4]])
+        }
+        return .data(regions: [u[0]], routes: [u[1]], waypoints: [f[2], f[3]])
+    }
+
+    private static func looksLikeRegion(_ s: String, anyCase: Bool) -> Bool {
+        // Region codes: "IL", "ENG", "BIH", "MEX-BC" — letters/digits/hyphens
+        guard (2...7).contains(s.count), let first = s.first, first.isLetter else { return false }
+        if anyCase { return s.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" } }
+        guard first.isUppercase else { return false }
+        return s.allSatisfy { $0.isUppercase || $0.isNumber || $0 == "-" }
+    }
+
+    private static func dedupKey(region: String, route: String, _ waypoints: [String]) -> String {
+        "\(region.uppercased()) \(route.uppercased()) " + waypoints.map { $0.uppercased() }.sorted().joined(separator: " ")
+    }
+
+    // MARK: Route families & sort keys
+
+    /// Broad route system inferred from the route name: interstates, US routes,
+    /// region-prefixed state routes, or the alphabetic prefix (A, B, M, CR, …).
+    static func family(region: String, route: String) -> String {
+        let upper = route.uppercased()
+        if upper.hasPrefix("I-") { return "interstate" }
+        let prefix = String(upper.prefix { $0.isLetter })
+        if prefix == "US" { return "us" }
+        let regionLetters = String(region.uppercased().split(separator: "-").last ?? "")
+        if !prefix.isEmpty && prefix == regionLetters { return "state" }
+        return "prefix:\(prefix)"
+    }
+
+    private static func routeNumber(_ route: String) -> (Int, String) {
+        let digits = route.drop { !$0.isNumber }
+        let number = Int(String(digits.prefix { $0.isNumber })) ?? Int.max
+        return (number, String(digits.drop { $0.isNumber }))
+    }
+
+    private struct SortKey: Comparable {
+        let number: Int
+        let suffix: String
+        let region: String
+        let route: String
+        static func < (a: SortKey, b: SortKey) -> Bool {
+            (a.number, a.suffix, a.region) < (b.number, b.suffix, b.region)
+        }
+    }
+
+    private static func sortKey(_ region: String, _ route: String) -> SortKey {
+        let (n, s) = routeNumber(route)
+        return SortKey(number: n, suffix: s, region: region, route: route)
+    }
+
+    /// Orderings people actually use within a block
+    private enum Ordering: CaseIterable {
+        case byRegionThenRouteNumeric   // natural sort: FL I-4, FL I-10 …
+        case byRegionThenRouteLexical   // plain sort: AL AL295, AR AR102, FL I-10, FL I-4 …
+        case byRouteNumber              // US Interstates: I-4, I-5, I-10 … (any region order)
+
+        func inOrder(_ a: (String, String), _ b: (String, String)) -> Bool {
+            switch self {
+            case .byRouteNumber:
+                let ka = routeNumber(a.1), kb = routeNumber(b.1)
+                return ka.0 != kb.0 ? ka.0 < kb.0 : ka.1 <= kb.1
+            case .byRegionThenRouteLexical:
+                return a.0 != b.0 ? a.0 < b.0 : a.1 <= b.1
+            case .byRegionThenRouteNumeric:
+                if a.0 != b.0 { return a.0 < b.0 }
+                return a.1.compare(b.1, options: [.numeric]) != .orderedDescending
+            }
+        }
+    }
+
+    // MARK: Placement
+
+    private static func insertionIndex(for original: ListLine, in entries: [Entry]) -> Int? {
+        let line = ListLine(region: original.region.uppercased(), route: original.route.uppercased(),
+                            waypoint1: original.waypoint1, waypoint2: original.waypoint2)
+        let fam = family(region: line.region, route: line.route)
+        let crossRegion = fam == "interstate" || fam == "us"
+
+        // Tiers from most to least specific; first non-empty one wins
+        let tiers: [(Entry) -> Bool] = [
+            { $0.regions.contains(line.region) && $0.routes.contains(line.route) },
+            { crossRegion && $0.routes.contains(line.route) },
+            { $0.primaryRegion == line.region && family(region: $0.primaryRegion, route: $0.primaryRoute) == fam },
+            // Only nationwide systems group across regions; a new state's routes get their own block
+            { crossRegion && family(region: $0.primaryRegion, route: $0.primaryRoute) == fam },
+            { $0.regions.contains(line.region) },
+        ]
+
+        for (tier, matches) in tiers.enumerated() {
+            let anchors = entries.indices.filter { entries[$0].isData && matches(entries[$0]) }
+            guard let lastAnchor = anchors.last else { continue }
+
+            // When a tier's matches span several blocks, prefer the block with the most
+            // matches (e.g. the "#US Interstates" section over a stray interstate under
+            // a state heading).
+            let anchor = bestBlockAnchor(anchors, in: entries) ?? lastAnchor
+            let block = blockRange(around: anchor, in: entries)
+            let blockData = block.filter { entries[$0].isData }
+
+            if let ordering = detectOrdering(blockData.map { (entries[$0].primaryRegion, entries[$0].primaryRoute) }) {
+                return sortedPosition(for: (line.region, line.route), among: blockData, in: entries, ordering: ordering)
+            }
+
+            // Unsorted block: sit beside the same route when we have it, else end of block
+            if tier <= 1 {
+                return (anchors.filter { block.contains($0) }.last ?? anchor) + 1
+            }
+            return (blockData.last ?? anchor) + 1
+        }
+        return nil
+    }
+
+    /// Insertion index that leaves the fewest out-of-order neighbors — tolerant of the
+    /// occasional hand-placed line in an otherwise sorted block.
+    private static func sortedPosition(for key: (String, String), among blockData: [Int], in entries: [Entry], ordering: Ordering) -> Int {
+        let keys = blockData.map { (entries[$0].primaryRegion, entries[$0].primaryRoute) }
+        // violations(p) = lines before p that sort after key + lines from p on that sort before key
+        var before = 0
+        var after = keys.filter { !ordering.inOrder(key, $0) }.count
+        var best = (violations: after, position: 0)
+        for (i, k) in keys.enumerated() {
+            if !ordering.inOrder(k, key) { before += 1 }
+            if !ordering.inOrder(key, k) { after -= 1 }
+            // `<=` places ties after existing equal keys, beside the same route
+            if before + after <= best.violations { best = (before + after, i + 1) }
+        }
+        return best.position == 0 ? blockData[0] : blockData[best.position - 1] + 1
+    }
+
+    private static func bestBlockAnchor(_ anchors: [Int], in entries: [Entry]) -> Int? {
+        // One pass for every line's block start — calling blockRange per anchor is
+        // quadratic on big unsectioned files (15k lines, thousands of anchors).
+        var blockStart = [Int](repeating: 0, count: entries.count)
+        var current = 0
+        for i in entries.indices {
+            if i > 0 && entries[i - 1].isBoundary { current = i }
+            blockStart[i] = current
+        }
+        var counts: [Int: (count: Int, last: Int)] = [:]
+        for a in anchors {
+            let start = blockStart[a]
+            let c = counts[start]
+            counts[start] = ((c?.count ?? 0) + 1, a)
+        }
+        return counts.values.max { $0.count < $1.count }?.last
+    }
+
+    /// Lines between the nearest boundaries (section header or blank line) around `index`.
+    private static func blockRange(around index: Int, in entries: [Entry]) -> Range<Int> {
+        var lo = index
+        while lo > 0 && !entries[lo - 1].isBoundary { lo -= 1 }
+        var hi = index + 1
+        while hi < entries.count && !entries[hi].isBoundary { hi += 1 }
+        return lo..<hi
+    }
+
+    private static func detectOrdering(_ items: [(String, String)]) -> Ordering? {
+        guard items.count >= 3 else { return nil }
+        let pairs = Array(zip(items, items.dropFirst()))
+        // Best-fitting ordering wins; allCases order breaks ties (natural sort before plain)
+        let scored = Ordering.allCases.map { ordering in
+            (ordering, Double(pairs.filter { ordering.inOrder($0.0, $0.1) }.count) / Double(pairs.count))
+        }
+        guard let best = scored.max(by: { $0.1 < $1.1 }), best.1 >= 0.9 else { return nil }
+        return best.0
+    }
+
+    private static func separatorNear(_ index: Int, in entries: [Entry]) -> String {
+        let neighbor = entries[max(0, min(index - 1, entries.count - 1))...].first { $0.isData }
+        return neighbor?.raw.contains("\t") == true ? "\t" : " "
+    }
+
+    // MARK: Chronological files & headers
+
+    private static let datePattern = try! NSRegularExpression(
+        pattern: #"(\d{4}-\d{1,2}-\d{1,2})|(\d{1,2}/\d{1,2}/\d{2,4})|((Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.? \d{1,2}?,? ?\d{4})"#
+    )
+
+    /// Files whose sections are dated trip blocks get new lines appended as a new block.
+    private static func isChronological(_ entries: [Entry]) -> Bool {
+        let headers = entries.filter { if case .header = $0.kind { return true } else { return false } }
+        let dated = headers.filter {
+            datePattern.firstMatch(in: $0.raw, range: NSRange($0.raw.startIndex..., in: $0.raw)) != nil
+        }
+        // Dated headers must make up most of the file's later sections
+        guard dated.count >= 3 else { return false }
+        return Double(dated.count) / Double(headers.count) >= 0.5
+            || entries.lastIndex(where: { if case .header = $0.kind { return true } else { return false } })
+                .map { datePattern.firstMatch(in: entries[$0].raw, range: NSRange(entries[$0].raw.startIndex..., in: entries[$0].raw)) != nil } == true
+    }
+
+    private static func headerText(_ raw: String) -> String {
+        raw.trimmingCharacters(in: CharacterSet(charactersIn: "#-= \t"))
+    }
+
+    private static func headerLine(title: String, styledLike entries: [Entry]) -> String {
+        let headers = entries.filter { if case .header = $0.kind { return true } else { return false } }.map { stripCR($0.raw) }
+        if headers.contains(where: { $0.hasPrefix("##") && $0.hasSuffix("##") }) { return "##\(title)##" }
+        if headers.contains(where: { $0.hasPrefix("# ") }) || headers.isEmpty { return "# \(title)" }
+        return "#\(title)"
+    }
+}

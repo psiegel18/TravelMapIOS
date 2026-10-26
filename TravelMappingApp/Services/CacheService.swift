@@ -57,6 +57,8 @@ actor CacheService {
     }
 
     /// Store data with optional custom TTL.
+    private var reportedOutOfSpace = false
+
     func set(key: String, data: Data, ttl: TimeInterval? = nil) {
         let fileURL = cacheDir.appendingPathComponent(fileName(for: key))
         let metaURL = cacheDir.appendingPathComponent(fileName(for: key) + ".meta")
@@ -71,6 +73,15 @@ actor CacheService {
         do {
             try data.write(to: fileURL)
             try JSONEncoder().encode(meta).write(to: metaURL)
+        } catch CocoaError.fileWriteOutOfSpace {
+            // Device storage is full — not an app bug, and every subsequent write fails
+            // the same way (19 events in 8s for one user). Drop any partial file and
+            // note it once per launch instead of capturing an issue per write.
+            try? FileManager.default.removeItem(at: fileURL)
+            if !reportedOutOfSpace {
+                reportedOutOfSpace = true
+                SentrySDK.logger.warn("Cache write skipped: device out of storage", attributes: ["data_bytes": data.count])
+            }
         } catch {
             SentrySDK.capture(error: error) { scope in
                 scope.setTag(value: "cache_write", key: "cache_operation")

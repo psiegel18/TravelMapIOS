@@ -11,6 +11,10 @@ struct SettingsView: View {
     @State private var versionTapCount = 0
     @State private var showSentryTestAlert = false
     @State private var showTipJar = false
+    @State private var showGitHubSignIn = false
+    @State private var feedbackKind: FeedbackSheet.Kind?
+    @ObservedObject private var github = GitHubService.shared
+    @AppStorage("listAppendOnly") private var listAppendOnly = false
     @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var isValidatingUser = false
     @State private var userValidationResult: Bool? = Self.cachedValidationResult
@@ -56,6 +60,34 @@ struct SettingsView: View {
                 Toggle("Show on Apple Watch", isOn: $sendToWatch)
             } footer: {
                 Text("iCloud syncs favorites across devices. Apple Watch receives live trip status and route directions.")
+            }
+
+            // MARK: GitHub (.list updates)
+            Section {
+                if github.isConfigured {
+                    if github.isSignedIn {
+                        LabeledContent("Signed in as", value: github.login.map { "@\($0)" } ?? "GitHub")
+                        Button("Sign Out of GitHub", role: .destructive) {
+                            github.signOut()
+                        }
+                    } else {
+                        Button {
+                            showGitHubSignIn = true
+                        } label: {
+                            Label("Sign in with GitHub", systemImage: "person.badge.key")
+                        }
+                    }
+                }
+                Picker("New lines go", selection: $listAppendOnly) {
+                    Text("Where they fit in my file").tag(false)
+                    Text("In a block at the end").tag(true)
+                }
+            } header: {
+                TMDesign.sectionHeader("GitHub")
+            } footer: {
+                Text(github.isConfigured
+                     ? "Lets the app open .list update pull requests for your recorded trips. Your GitHub token stays in this device's Keychain."
+                     : "How recorded-trip segments are added to your .list file.")
             }
 
             // MARK: Appearance
@@ -177,25 +209,13 @@ struct SettingsView: View {
                 }
                 Button {
                     Haptics.light()
-                    TravelMappingApp.presentFeedbackForm(
-                        type: "feedback",
-                        title: "Send Feedback",
-                        placeholder: "Share thoughts, feature ideas, or general feedback.",
-                        submitLabel: "Send",
-                        captureIssue: false
-                    )
+                    feedbackKind = .feedback
                 } label: {
                     Label("Share Feedback", systemImage: "bubble.left.and.bubble.right")
                 }
                 Button {
                     Haptics.light()
-                    TravelMappingApp.presentFeedbackForm(
-                        type: "bug_report",
-                        title: "Report a Bug",
-                        placeholder: "What happened? Steps to reproduce help a lot.",
-                        submitLabel: "Send Report",
-                        captureIssue: true
-                    )
+                    feedbackKind = .bug
                 } label: {
                     Label("Report a Bug", systemImage: "ladybug")
                 }
@@ -264,6 +284,15 @@ struct SettingsView: View {
             }
         }
         .navigationTitle("Settings")
+        .sheet(isPresented: $showGitHubSignIn) {
+            GitHubSignInSheet()
+        }
+        .sheet(item: $feedbackKind) { kind in
+            FeedbackSheet(kind: kind)
+        }
+        .task {
+            await github.ensureLogin()
+        }
         .alert("Send Test Event", isPresented: $showSentryTestAlert) {
             Button("Send", role: .destructive) {
                 SentrySDK.capture(error: NSError(
@@ -970,5 +999,203 @@ struct TipSpringButtonStyle: ButtonStyle {
         configuration.label
             .scaleEffect(configuration.isPressed && !reduceMotion ? 0.95 : 1)
             .animation(.spring(response: 0.28, dampingFraction: 0.5), value: configuration.isPressed)
+    }
+}
+
+// MARK: - GitHub sign-in (device flow)
+
+/// Shows the one-time code from GitHub's device flow and waits for the user to
+/// approve it on github.com. No password ever passes through the app.
+struct GitHubSignInSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
+    @ObservedObject private var github = GitHubService.shared
+    @State private var code: GitHubService.DeviceCode?
+    @State private var errorMessage: String?
+    @State private var attempt = 0
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 22) {
+                Image(systemName: "person.badge.key.fill")
+                    .font(.system(size: 44))
+                    .foregroundStyle(TMDesign.accent)
+                    .padding(.top, 24)
+
+                if let code {
+                    Text("Enter this code on GitHub")
+                        .font(.system(size: 20, weight: .heavy))
+                    Text(code.user_code)
+                        .font(.system(size: 34, weight: .bold, design: .monospaced))
+                        .textSelection(.enabled)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 12)
+                        .background(TMDesign.secondarySurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    Button {
+                        UIPasteboard.general.string = code.user_code
+                        if let url = URL(string: code.verification_uri) { openURL(url) }
+                    } label: {
+                        Label("Copy Code & Open GitHub", systemImage: "arrow.up.forward.app")
+                            .font(.system(size: 17, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .background(TMDesign.accent, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text("Waiting for you to approve…")
+                            .foregroundStyle(TMDesign.secondaryText)
+                    }
+                    Text("The app asks for access to public repositories only, so it can fork TravelMapping/UserData and open pull requests for you.")
+                        .font(.system(size: 13))
+                        .foregroundStyle(TMDesign.tertiaryText)
+                        .multilineTextAlignment(.center)
+                } else if let errorMessage {
+                    Text(errorMessage)
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(TMDesign.secondaryText)
+                    Button("Try Again") {
+                        self.errorMessage = nil
+                        attempt += 1
+                    }
+                    .font(.system(size: 17, weight: .semibold))
+                } else {
+                    ProgressView()
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 24)
+            .navigationTitle("Sign in with GitHub")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+            .task(id: attempt) {
+                do {
+                    code = nil
+                    let deviceCode = try await github.startDeviceFlow()
+                    code = deviceCode
+                    try await github.completeDeviceFlow(deviceCode)
+                    Haptics.success()
+                    dismiss()
+                } catch is CancellationError {
+                    // Sheet dismissed mid-poll
+                } catch {
+                    code = nil
+                    errorMessage = error.localizedDescription
+                }
+            }
+        }
+        .sentryScreen("GitHubSignIn")
+    }
+}
+
+// MARK: - Feedback form
+
+/// Native feedback / bug-report form. Replaces Sentry's built-in form for the Settings
+/// buttons: that form doesn't scroll, and on current iPhones the keyboard covers its
+/// Send button (TRAVELMAPPING-W: 8 opens, 0 reports received). Send lives in the
+/// toolbar here so it's always reachable.
+struct FeedbackSheet: View {
+    enum Kind: String, Identifiable {
+        case feedback, bug
+        var id: String { rawValue }
+    }
+
+    let kind: Kind
+
+    @Environment(\.dismiss) private var dismiss
+    // Remembered on this device so repeat reporters don't retype them
+    @AppStorage("feedbackName") private var name = ""
+    @AppStorage("feedbackEmail") private var email = ""
+    @State private var message = ""
+    @FocusState private var messageFocused: Bool
+
+    private var trimmedMessage: String { message.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextEditor(text: $message)
+                        .frame(minHeight: 160)
+                        .focused($messageFocused)
+                        .overlay(alignment: .topLeading) {
+                            if message.isEmpty {
+                                Text(kind == .bug
+                                     ? "What happened? Steps to reproduce help a lot."
+                                     : "Share thoughts, feature ideas, or general feedback.")
+                                    .foregroundStyle(.tertiary)
+                                    .padding(.top, 8)
+                                    .padding(.leading, 5)
+                                    .allowsHitTesting(false)
+                            }
+                        }
+                } footer: {
+                    if kind == .bug {
+                        Text("App diagnostics (version, device, recent screens) are attached to help find the problem — never your trips or location.")
+                    }
+                }
+
+                Section {
+                    TextField("Name", text: $name)
+                        .textContentType(.name)
+                    TextField("Email", text: $email)
+                        .textContentType(.emailAddress)
+                        .keyboardType(.emailAddress)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                } header: {
+                    Text("Contact (optional)")
+                } footer: {
+                    Text("Only used to follow up on this \(kind == .bug ? "report" : "feedback").")
+                }
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .navigationTitle(kind == .bug ? "Report a Bug" : "Send Feedback")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(kind == .bug ? "Send Report" : "Send") { send() }
+                        .disabled(trimmedMessage.isEmpty)
+                }
+            }
+            .onAppear { messageFocused = true }
+        }
+        .sentryScreen(kind == .bug ? "ReportBug" : "SendFeedback")
+    }
+
+    private func send() {
+        // The issue is created on send (not on open) so it always carries the report
+        var eventId: SentryId?
+        if kind == .bug {
+            eventId = SentrySDK.capture(message: "User-reported bug") { scope in
+                scope.setLevel(.warning)
+                scope.setTag(value: "bug_report", key: "feedback_type")
+            }
+        }
+        let trimmedName = name.trimmingCharacters(in: .whitespaces)
+        let trimmedEmail = email.trimmingCharacters(in: .whitespaces)
+        SentrySDK.capture(feedback: SentryFeedback(
+            message: trimmedMessage,
+            name: trimmedName.isEmpty ? nil : trimmedName,
+            email: trimmedEmail.isEmpty ? nil : trimmedEmail,
+            source: .custom,
+            associatedEventId: eventId
+        ))
+        SentrySDK.logger.info("User feedback submitted", attributes: [
+            "hasName": !trimmedName.isEmpty,
+            "hasEmail": !trimmedEmail.isEmpty,
+            "feedback_type": kind == .bug ? "bug_report" : "feedback",
+        ])
+        Haptics.success()
+        dismiss()
     }
 }
