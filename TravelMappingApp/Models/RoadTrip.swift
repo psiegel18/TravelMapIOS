@@ -80,11 +80,6 @@ struct RoadTrip: Identifiable, Codable {
     /// before an orphan resume). Persisted on every auto-save so elapsed survives
     /// a force-quit; 0 for trips saved by builds that predate the field.
     var activeDuration: TimeInterval = 0
-    /// Hop keys ("root|start|end") the user has marked as sent in a .list update. They
-    /// drop out of the pending queue until the TM database reports them clinched.
-    var submittedHopKeys: [String] = []
-    /// Pull requests the app opened for this trip's segments
-    var listUpdatePRs: [ListUpdatePR] = []
 
     var duration: TimeInterval? {
         guard let end = endDate else { return nil }
@@ -114,8 +109,6 @@ struct RoadTrip: Identifiable, Codable {
         rawPoints = try container.decode([GPSPoint].self, forKey: .rawPoints)
         matchedSegments = try container.decode([MatchedSegment].self, forKey: .matchedSegments)
         activeDuration = try container.decodeIfPresent(TimeInterval.self, forKey: .activeDuration) ?? 0
-        submittedHopKeys = try container.decodeIfPresent([String].self, forKey: .submittedHopKeys) ?? []
-        listUpdatePRs = try container.decodeIfPresent([ListUpdatePR].self, forKey: .listUpdatePRs) ?? []
     }
 
     init(name: String? = nil, tripType: TripType = .road) {

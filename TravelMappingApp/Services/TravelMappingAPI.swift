@@ -239,7 +239,8 @@ actor TravelMappingAPI {
         region: String? = nil,
         regions: [String]? = nil,
         system: String? = nil,
-        traveler: String
+        traveler: String,
+        cacheTTL: TimeInterval = 6 * 3600
     ) async throws -> (segments: [MapSegment], routes: [RouteMetadata]) {
         var clauseParts: [String] = []
 
@@ -265,7 +266,7 @@ actor TravelMappingAPI {
             "traveler": traveler
         ]
 
-        let data = try await post(endpoint: "/lib/getRegionSystemSegments.php", params: params, cacheTTL: 6 * 3600) // cache 6 hours
+        let data = try await post(endpoint: "/lib/getRegionSystemSegments.php", params: params, cacheTTL: cacheTTL)
         let response = try JSONDecoder().decode(VisibleSegmentsResponse.self, from: data)
         return Self.parseSegmentsResponse(response)
     }

@@ -12,6 +12,7 @@ struct SettingsView: View {
     @State private var showSentryTestAlert = false
     @State private var showTipJar = false
     @State private var showGitHubSignIn = false
+    @State private var feedbackKind: FeedbackSheet.Kind?
     @ObservedObject private var github = GitHubService.shared
     @AppStorage("listAppendOnly") private var listAppendOnly = false
     @Environment(\.horizontalSizeClass) private var sizeClass
@@ -208,25 +209,13 @@ struct SettingsView: View {
                 }
                 Button {
                     Haptics.light()
-                    TravelMappingApp.presentFeedbackForm(
-                        type: "feedback",
-                        title: "Send Feedback",
-                        placeholder: "Share thoughts, feature ideas, or general feedback.",
-                        submitLabel: "Send",
-                        captureIssue: false
-                    )
+                    feedbackKind = .feedback
                 } label: {
                     Label("Share Feedback", systemImage: "bubble.left.and.bubble.right")
                 }
                 Button {
                     Haptics.light()
-                    TravelMappingApp.presentFeedbackForm(
-                        type: "bug_report",
-                        title: "Report a Bug",
-                        placeholder: "What happened? Steps to reproduce help a lot.",
-                        submitLabel: "Send Report",
-                        captureIssue: true
-                    )
+                    feedbackKind = .bug
                 } label: {
                     Label("Report a Bug", systemImage: "ladybug")
                 }
@@ -297,6 +286,12 @@ struct SettingsView: View {
         .navigationTitle("Settings")
         .sheet(isPresented: $showGitHubSignIn) {
             GitHubSignInSheet()
+        }
+        .sheet(item: $feedbackKind) { kind in
+            FeedbackSheet(kind: kind)
+        }
+        .task {
+            await github.ensureLogin()
         }
         .alert("Send Test Event", isPresented: $showSentryTestAlert) {
             Button("Send", role: .destructive) {
@@ -1096,5 +1091,111 @@ struct GitHubSignInSheet: View {
             }
         }
         .sentryScreen("GitHubSignIn")
+    }
+}
+
+// MARK: - Feedback form
+
+/// Native feedback / bug-report form. Replaces Sentry's built-in form for the Settings
+/// buttons: that form doesn't scroll, and on current iPhones the keyboard covers its
+/// Send button (TRAVELMAPPING-W: 8 opens, 0 reports received). Send lives in the
+/// toolbar here so it's always reachable.
+struct FeedbackSheet: View {
+    enum Kind: String, Identifiable {
+        case feedback, bug
+        var id: String { rawValue }
+    }
+
+    let kind: Kind
+
+    @Environment(\.dismiss) private var dismiss
+    // Remembered on this device so repeat reporters don't retype them
+    @AppStorage("feedbackName") private var name = ""
+    @AppStorage("feedbackEmail") private var email = ""
+    @State private var message = ""
+    @FocusState private var messageFocused: Bool
+
+    private var trimmedMessage: String { message.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextEditor(text: $message)
+                        .frame(minHeight: 160)
+                        .focused($messageFocused)
+                        .overlay(alignment: .topLeading) {
+                            if message.isEmpty {
+                                Text(kind == .bug
+                                     ? "What happened? Steps to reproduce help a lot."
+                                     : "Share thoughts, feature ideas, or general feedback.")
+                                    .foregroundStyle(.tertiary)
+                                    .padding(.top, 8)
+                                    .padding(.leading, 5)
+                                    .allowsHitTesting(false)
+                            }
+                        }
+                } footer: {
+                    if kind == .bug {
+                        Text("App diagnostics (version, device, recent screens) are attached to help find the problem — never your trips or location.")
+                    }
+                }
+
+                Section {
+                    TextField("Name", text: $name)
+                        .textContentType(.name)
+                    TextField("Email", text: $email)
+                        .textContentType(.emailAddress)
+                        .keyboardType(.emailAddress)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                } header: {
+                    Text("Contact (optional)")
+                } footer: {
+                    Text("Only used to follow up on this \(kind == .bug ? "report" : "feedback").")
+                }
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .navigationTitle(kind == .bug ? "Report a Bug" : "Send Feedback")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(kind == .bug ? "Send Report" : "Send") { send() }
+                        .disabled(trimmedMessage.isEmpty)
+                }
+            }
+            .onAppear { messageFocused = true }
+        }
+        .sentryScreen(kind == .bug ? "ReportBug" : "SendFeedback")
+    }
+
+    private func send() {
+        // The issue is created on send (not on open) so it always carries the report
+        var eventId: SentryId?
+        if kind == .bug {
+            eventId = SentrySDK.capture(message: "User-reported bug") { scope in
+                scope.setLevel(.warning)
+                scope.setTag(value: "bug_report", key: "feedback_type")
+            }
+        }
+        let trimmedName = name.trimmingCharacters(in: .whitespaces)
+        let trimmedEmail = email.trimmingCharacters(in: .whitespaces)
+        SentrySDK.capture(feedback: SentryFeedback(
+            message: trimmedMessage,
+            name: trimmedName.isEmpty ? nil : trimmedName,
+            email: trimmedEmail.isEmpty ? nil : trimmedEmail,
+            source: .custom,
+            associatedEventId: eventId
+        ))
+        SentrySDK.logger.info("User feedback submitted", attributes: [
+            "hasName": !trimmedName.isEmpty,
+            "hasEmail": !trimmedEmail.isEmpty,
+            "feedback_type": kind == .bug ? "bug_report" : "feedback",
+        ])
+        Haptics.success()
+        dismiss()
     }
 }

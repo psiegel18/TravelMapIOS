@@ -14,6 +14,9 @@ struct UserDetailView: View {
     // app-hang TRAVELMAPPING-16/-H captured it inside MKMapView addOverlays:),
     // and doing that work behind the List tab hung every large-profile open.
     @State private var hasActivatedMapTab = false
+    /// Stats is mounted on first visit, like Map — building it hidden on open
+    /// stalled the profile screen 3s on big profiles (TRAVELMAPPING-H)
+    @State private var hasActivatedStatsTab = false
     @State private var shareContent: ShareContent?
     @State private var mapLoadedRegions: Set<String> = []
     @State private var userMiles: Double = 0
@@ -70,13 +73,17 @@ struct UserDetailView: View {
                             .allowsHitTesting(selectedTab == 1)
                         }
 
-                        StatisticsView(profile: profile)
-                            .opacity(selectedTab == 2 ? 1 : 0)
-                            .allowsHitTesting(selectedTab == 2)
+                        if hasActivatedStatsTab {
+                            StatisticsView(profile: profile)
+                                .opacity(selectedTab == 2 ? 1 : 0)
+                                .allowsHitTesting(selectedTab == 2)
+                        }
                     }
                     .onChange(of: selectedTab) {
                         if selectedTab == 1 {
                             hasActivatedMapTab = true
+                        } else if selectedTab == 2 {
+                            hasActivatedStatsTab = true
                         }
                     }
                 }

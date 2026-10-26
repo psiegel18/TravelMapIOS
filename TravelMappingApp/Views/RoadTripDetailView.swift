@@ -21,6 +21,8 @@ struct RoadTripDetailView: View {
     @State private var excludedRangeIDs: Set<String> = []
     @State private var showListUpdate = false
     @State private var copiedLines = false
+    /// PRs that include segments from this trip
+    @State private var tripPRs: [ListUpdatePR] = []
     @ObservedObject private var settings = SyncedSettingsService.shared
 
     private var useMiles: Bool {
@@ -350,7 +352,17 @@ struct RoadTripDetailView: View {
         let username = settings.primaryUser
         guard !username.isEmpty, !trip.matchedSegments.isEmpty else { return }
         do {
-            logAnalysis = try await TripLogAnalyzer.analyze(trips: [trip], username: username)
+            let storage = TripStorageService.shared
+            let fileExtension = isRail ? "rlist" : "list"
+            let analysis = try await TripLogAnalyzer.analyze(
+                trips: [trip], username: username,
+                submittedKeys: await storage.submittedHopKeys(fileExtension: fileExtension)
+            )
+            let tripKeys = Set(analysis.ranges.flatMap(\.hopKeys))
+            tripPRs = await storage.listSubmissions()
+                .filter { $0.fileExtension == fileExtension && !tripKeys.isDisjoint(with: $0.hopKeys) }
+                .compactMap(\.pr)
+            logAnalysis = analysis
             logAnalysisError = nil
         } catch {
             SentrySDK.capture(error: error)
@@ -359,15 +371,17 @@ struct RoadTripDetailView: View {
     }
 
     private func markSubmitted(_ ranges: [TripLogRange], pr: ListUpdatePR?) {
-        let keys = ranges.flatMap(\.hopKeys)
-        trip.submittedHopKeys = Array(Set(trip.submittedHopKeys).union(keys))
-        if let pr { trip.listUpdatePRs.append(pr) }
-        let updatedTrip = trip
         let crumb = Breadcrumb(level: .info, category: "list_update")
         crumb.message = "Marked \(ranges.count) ranges submitted from trip detail"
         SentrySDK.addBreadcrumb(crumb)
+        let fileExtension = isRail ? "rlist" : "list"
         Task {
-            try? await TripStorageService.shared.save(updatedTrip)
+            await TripStorageService.shared.recordSubmission(
+                fileExtension: fileExtension,
+                hopKeys: ranges.flatMap(\.hopKeys),
+                lines: ranges.map(\.line.text),
+                pr: pr
+            )
             await analyzeLog()
         }
     }
@@ -448,7 +462,7 @@ struct RoadTripDetailView: View {
                     }
                 }
 
-                ForEach(trip.listUpdatePRs) { pr in
+                ForEach(tripPRs) { pr in
                     Link(destination: pr.url) {
                         Label("Pull request #\(pr.number) · \(pr.lineCount.formatted()) line\(pr.lineCount == 1 ? "" : "s")",
                               systemImage: "arrow.triangle.pull")
@@ -844,6 +858,8 @@ struct ListUpdateSheet: View {
     @State private var openedPR: ListUpdatePR?
     @State private var showSignIn = false
     @State private var showManualSteps = false
+    /// The user's still-open app PR for this list, if any — new lines go into it
+    @State private var openPR: ListUpdatePR?
 
     private var fileName: String { "\(username).\(category.fileExtension)" }
 
@@ -891,6 +907,7 @@ struct ListUpdateSheet: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
+                        .disabled(isOpeningPR)
                 }
             }
             .sheet(isPresented: $showSignIn) {
@@ -944,6 +961,7 @@ struct ListUpdateSheet: View {
         Section {
             if github.isSignedIn {
                 Button {
+                    isOpeningPR = true  // before the Task starts, so a double tap can't send twice
                     Task { await openPullRequest() }
                 } label: {
                     HStack(spacing: 10) {
@@ -952,7 +970,7 @@ struct ListUpdateSheet: View {
                         } else {
                             Image(systemName: "arrow.triangle.pull")
                         }
-                        Text(isOpeningPR ? "Opening pull request…" : "Open pull request")
+                        Text(isOpeningPR ? "Sending…" : openPR.map { "Add to pull request #\($0.number)" } ?? "Open pull request")
                             .font(.system(size: 16, weight: .semibold))
                     }
                 }
@@ -973,7 +991,9 @@ struct ListUpdateSheet: View {
         } header: {
             Text("Send the update")
         } footer: {
-            if let login = github.login, github.isSignedIn {
+            if let openPR {
+                Text("Your pull request #\(openPR.number) hasn't been merged yet, so these lines are added to it instead of opening a second one that would conflict.")
+            } else if let login = github.login, github.isSignedIn {
                 Text("As @\(login): forks TravelMapping/UserData to your account (first time only), commits the updated file to a new branch, and opens a pull request for the TM team to review.")
             } else {
                 Text("Sign in once and the app opens the pull request for you — no copying and pasting.")
@@ -1028,10 +1048,11 @@ struct ListUpdateSheet: View {
     private func prOpenedSection(_ pr: ListUpdatePR) -> some View {
         Section {
             VStack(alignment: .leading, spacing: 8) {
-                Label("Pull request #\(pr.number) opened", systemImage: "checkmark.circle.fill")
+                Label(openPR != nil ? "Added to pull request #\(pr.number)" : "Pull request #\(pr.number) opened",
+                      systemImage: "checkmark.circle.fill")
                     .font(.system(size: 17, weight: .bold))
                     .foregroundStyle(TMDesign.greenChipFG)
-                Text("\(pr.lineCount.formatted()) new line\(pr.lineCount == 1 ? "" : "s") are waiting for the TravelMapping team to merge. Once they do, the next nightly update adds them to your stats.")
+                Text("\(pr.lineCount.formatted()) new line\(pr.lineCount == 1 ? " is" : "s are") waiting for the TravelMapping team to merge. Once they do, the next nightly update adds them to your stats.")
                     .font(.system(size: 15))
                     .foregroundStyle(TMDesign.secondaryText)
             }
@@ -1046,6 +1067,20 @@ struct ListUpdateSheet: View {
 
     private func load() async {
         errorMessage = nil
+        if github.isSignedIn {
+            let fileExtension = category.fileExtension
+            let candidates = await TripStorageService.shared.listSubmissions()
+                .filter { $0.fileExtension == fileExtension }
+                .compactMap(\.pr)
+                .sorted { $0.createdAt > $1.createdAt }
+                .prefix(3)
+            for pr in candidates where pr.branch != nil {
+                if (try? await github.pullRequestState(pr.number)) == .open {
+                    openPR = pr
+                    break
+                }
+            }
+        }
         do {
             let existing = try await DataService.fetchCurrentListText(username: username, category: category)
             hasExistingFile = existing != nil
@@ -1063,17 +1098,17 @@ struct ListUpdateSheet: View {
     }
 
     private func openPullRequest() async {
-        isOpeningPR = true
         prError = nil
         defer { isOpeningPR = false }
         do {
-            let (pr, _) = try await github.openListUpdatePR(
+            let (pr, _) = try await github.submitListUpdate(
                 username: username,
                 category: category,
                 lines: lines,
                 blockTitle: blockTitle,
                 appendOnly: appendOnly,
-                tripNames: tripNames
+                tripNames: tripNames,
+                appendingTo: openPR
             )
             openedPR = pr
             onSubmitted(pr)

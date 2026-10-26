@@ -47,43 +47,6 @@ struct TravelMappingApp: App {
         return b
     }()
 
-    /// Sentry calls `configureForm` exactly once at SDK init, so we capture the
-    /// singleton form-config reference there and mutate it directly before each
-    /// `sendActions(.touchUpInside)` to switch between Share-Feedback and Report-a-Bug
-    /// presentation. `pendingFeedbackType` is read inside `onSubmitSuccess`, which
-    /// does fire per-submit, so the static var works for that one.
-    static var formConfig: SentryUserFeedbackFormConfiguration?
-    static var pendingFeedbackType: String = "general"
-
-    /// Show the Sentry feedback form. For `bug_report` the call also captures a
-    /// warning-level message so the report appears in the Issues feed (not just the
-    /// User Feedback feed); the submitted form is then associated with that event.
-    @MainActor
-    static func presentFeedbackForm(
-        type: String,
-        title: String,
-        placeholder: String,
-        submitLabel: String,
-        captureIssue: Bool
-    ) {
-        pendingFeedbackType = type
-        formConfig?.formTitle = title
-        formConfig?.messagePlaceholder = placeholder
-        formConfig?.submitButtonLabel = submitLabel
-
-        SentrySDK.configureScope { scope in
-            scope.setTag(value: type, key: "feedback_type")
-        }
-
-        if captureIssue {
-            SentrySDK.capture(message: "User-reported bug") { scope in
-                scope.setLevel(.warning)
-                scope.setTag(value: type, key: "feedback_type")
-            }
-        }
-
-        feedbackTrigger.sendActions(for: .touchUpInside)
-    }
 
     init() {
         let buildChannel: String
@@ -174,7 +137,7 @@ struct TravelMappingApp: App {
                         "hasName": !((data["name"] as? String) ?? "").isEmpty,
                         "hasEmail": !((data["email"] as? String) ?? "").isEmpty,
                         "hasAttachment": !((data["attachments"] as? [Any]) ?? []).isEmpty,
-                        "feedback_type": TravelMappingApp.pendingFeedbackType,
+                        "feedback_type": "shake",
                     ])
                 }
                 config.onSubmitError = { error in
@@ -186,7 +149,6 @@ struct TravelMappingApp: App {
                 }
 
                 config.configureForm = { form in
-                    TravelMappingApp.formConfig = form
                     form.messageLabel = "Message"
                     form.showName = true
                     form.showEmail = true
@@ -194,8 +156,8 @@ struct TravelMappingApp: App {
                     form.isEmailRequired = false
                     form.useSentryUser = true
                     form.showBranding = false
-                    // Defaults for shake-gesture / screenshot-detection paths that
-                    // bypass `presentFeedbackForm`. The Settings buttons override these.
+                    // Sentry's form now only serves shake / screenshot detection; the
+                    // Settings buttons use the native FeedbackSheet (SettingsView.swift).
                     form.formTitle = "Send Feedback"
                     form.messagePlaceholder = "Tell us what's on your mind."
                     form.submitButtonLabel = "Send"

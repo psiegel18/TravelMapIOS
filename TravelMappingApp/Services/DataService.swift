@@ -137,7 +137,20 @@ class DataService: ObservableObject {
     /// stale copy would silently drop whatever the user changed since. Returns nil when the
     /// user has no file of this type yet.
     nonisolated static func fetchCurrentListText(username: String, category: RouteCategory) async throws -> String? {
-        let url = URL(string: "\(rawBase)/\(category.directoryName)/\(username).\(category.fileExtension)")!
+        // raw.githubusercontent.com/…/master is CDN-cached for ~5 minutes regardless of
+        // request cache policy; pin to the head commit so a just-merged change is never
+        // missing from the file the user pastes back over the original.
+        var ref = "master"
+        var headRequest = URLRequest(url: URL(string: "https://api.github.com/repos/TravelMapping/UserData/commits/master")!)
+        headRequest.setValue("application/vnd.github.sha", forHTTPHeaderField: "Accept")
+        headRequest.cachePolicy = .reloadIgnoringLocalCacheData
+        if let (shaData, shaResponse) = try? await URLSession.shared.data(for: headRequest),
+           (shaResponse as? HTTPURLResponse)?.statusCode == 200,
+           let sha = String(data: shaData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           sha.count == 40 {
+            ref = sha
+        }
+        let url = URL(string: "https://raw.githubusercontent.com/TravelMapping/UserData/\(ref)/\(category.directoryName)/\(username).\(category.fileExtension)")!
         var request = URLRequest(url: url)
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -244,7 +257,11 @@ struct ListUpdatePR: Codable, Hashable, Identifiable {
     let number: Int
     let url: URL
     let createdAt: Date
-    let lineCount: Int
+    var lineCount: Int
+    /// Head branch and fork ("login/UserData"), so later updates can be added to
+    /// this PR while it's still open instead of opening a conflicting second one
+    var branch: String?
+    var fork: String?
     var id: Int { number }
 }
 
@@ -267,7 +284,7 @@ final class GitHubService: ObservableObject {
     var isConfigured: Bool { !Self.clientID.isEmpty }
     var isSignedIn: Bool { token != nil }
 
-    private var token: String?
+    @Published private var token: String?
 
     enum GitHubError: LocalizedError {
         case notConfigured
@@ -276,6 +293,7 @@ final class GitHubService: ObservableObject {
         case denied
         case api(status: Int, message: String)
         case forkNotReady
+        case nothingNew
 
         var errorDescription: String? {
             switch self {
@@ -285,6 +303,7 @@ final class GitHubService: ObservableObject {
             case .denied: return "GitHub sign-in was cancelled."
             case .api(let status, let message): return "GitHub returned \(status): \(message)"
             case .forkNotReady: return "GitHub is still creating your fork. Try again in a minute."
+            case .nothingNew: return "Your list file already has all of these lines."
             }
         }
     }
@@ -329,16 +348,24 @@ final class GitHubService: ObservableObject {
         let deadline = Date().addingTimeInterval(TimeInterval(code.expires_in))
         while Date() < deadline {
             try await Task.sleep(nanoseconds: interval * 1_000_000_000)
-            let data = try await formPost("https://github.com/login/oauth/access_token", [
-                "client_id": Self.clientID,
-                "device_code": code.device_code,
-                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-            ])
+            let data: Data
+            do {
+                data = try await formPost("https://github.com/login/oauth/access_token", [
+                    "client_id": Self.clientID,
+                    "device_code": code.device_code,
+                    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                ])
+            } catch let error as URLError where error.code != .cancelled {
+                // "Copy Code & Open GitHub" backgrounds the app, and the first request
+                // after resuming often fails (-1005). Keep polling — failing here would
+                // throw away the code the user just approved.
+                continue
+            }
             let response = try JSONDecoder().decode(TokenResponse.self, from: data)
             if let accessToken = response.access_token {
                 token = accessToken
                 Self.saveToken(accessToken)
-                try await refreshLogin()
+                try? await refreshLogin()  // login is re-fetched lazily if this fails
                 let crumb = Breadcrumb(level: .info, category: "github")
                 crumb.message = "Signed in with GitHub"
                 SentrySDK.addBreadcrumb(crumb)
@@ -362,6 +389,11 @@ final class GitHubService: ObservableObject {
         UserDefaults.standard.removeObject(forKey: "githubLogin")
     }
 
+    /// Fills in the GitHub username if sign-in stored the token but couldn't fetch it.
+    func ensureLogin() async {
+        if isSignedIn && login == nil { try? await refreshLogin() }
+    }
+
     private func refreshLogin() async throws {
         struct User: Decodable { let login: String }
         let user = try JSONDecoder().decode(User.self, from: try await api("GET", "/user"))
@@ -371,63 +403,57 @@ final class GitHubService: ObservableObject {
 
     // MARK: Pull requests
 
-    /// Merges `lines` into the newest upstream copy of the user's list file, commits it
-    /// to a fresh branch on the user's fork, and opens a pull request.
-    func openListUpdatePR(
+    /// Merges `lines` into the user's list file and sends it as a pull request.
+    /// With an `openPR` still open, the lines are committed to that PR's branch (on top
+    /// of what it already adds); otherwise a fresh branch is cut from upstream master.
+    func submitListUpdate(
         username: String,
         category: RouteCategory,
         lines: [ListLine],
         blockTitle: String,
         appendOnly: Bool,
-        tripNames: [String]
+        tripNames: [String],
+        appendingTo openPR: ListUpdatePR?
     ) async throws -> (pr: ListUpdatePR, merge: ListFileMerger.Result) {
         guard isSignedIn else { throw GitHubError.notSignedIn }
-        if login == nil { try await refreshLogin() }
-        guard let login else { throw GitHubError.notSignedIn }
-
         let path = "\(category.directoryName)/\(username).\(category.fileExtension)"
+        let names = tripNames.prefix(3).joined(separator: ", ") + (tripNames.count > 3 ? " +\(tripNames.count - 3) more" : "")
+
+        if let openPR, let fork = openPR.fork, let branch = openPR.branch,
+           let headSHA = try? await refSHA(repo: fork, branch: branch, quiet: true) {
+            let file = try await readFile(repo: fork, sha: headSHA, path: path)
+            let merge = await Self.merge(file.text, lines, blockTitle, appendOnly)
+            guard !merge.placements.isEmpty else { throw GitHubError.nothingNew }
+            try await commit(repo: fork, branch: branch, path: path, text: merge.text, fileSHA: file.sha,
+                             message: "Add \(merge.placements.count) more segment\(merge.placements.count == 1 ? "" : "s") from \(names)")
+            var updated = openPR
+            updated.lineCount += merge.placements.count
+            breadcrumb("Added \(merge.placements.count) lines to PR #\(openPR.number)")
+            return (updated, merge)
+        }
 
         // 1. Upstream head + current file at that exact commit (no CDN staleness)
-        struct Ref: Decodable { struct Object: Decodable { let sha: String }; let object: Object }
-        let baseSHA = try JSONDecoder().decode(Ref.self, from: try await api("GET", "/repos/\(Self.upstream)/git/ref/heads/master")).object.sha
-
-        // Blob SHA from the contents API (needed to update the file); text from the raw
-        // URL pinned to the same commit — the contents API omits bodies over 1 MB.
-        struct Contents: Decodable { let sha: String }
-        var existingText = ""
-        var fileSHA: String?
-        do {
-            fileSHA = try JSONDecoder().decode(Contents.self, from: try await api("GET", "/repos/\(Self.upstream)/contents/\(path)?ref=\(baseSHA)")).sha
-        } catch GitHubError.api(let status, _) where status == 404 {
-            fileSHA = nil  // first list of this type
-        }
-        if fileSHA != nil {
-            let rawURL = URL(string: "https://raw.githubusercontent.com/\(Self.upstream)/\(baseSHA)/\(path)")!
-            let (data, response) = try await URLSession.shared.data(from: rawURL)
-            // Never commit a merge built on a file we failed to read — it would wipe the list
-            guard (response as? HTTPURLResponse)?.statusCode == 200,
-                  let text = String(data: data, encoding: .utf8), !text.isEmpty else {
-                throw GitHubError.api(status: (response as? HTTPURLResponse)?.statusCode ?? -1, message: "Couldn't read your current list file")
-            }
-            existingText = text
-        }
-
-        let merge = await Task.detached(priority: .userInitiated) {
-            ListFileMerger.merge(existing: existingText, newLines: lines, blockTitle: blockTitle, appendOnly: appendOnly)
-        }.value
-
-        guard !merge.placements.isEmpty else {
-            throw GitHubError.api(status: 409, message: "Your list file already has all of these lines")
-        }
+        let baseSHA = try await refSHA(repo: Self.upstream, branch: "master")
+        let file = try await readFile(repo: Self.upstream, sha: baseSHA, path: path)
+        let merge = await Self.merge(file.text, lines, blockTitle, appendOnly)
+        guard !merge.placements.isEmpty else { throw GitHubError.nothingNew }
 
         // 2. Fork (idempotent — returns the existing fork if there is one)
-        struct Repo: Decodable { let full_name: String }
-        let fork = try JSONDecoder().decode(Repo.self, from: try await api("POST", "/repos/\(Self.upstream)/forks", body: [
+        struct Repo: Decodable {
+            struct Owner: Decodable { let login: String }
+            let full_name: String
+            let owner: Owner
+        }
+        let forkRepo = try JSONDecoder().decode(Repo.self, from: try await api("POST", "/repos/\(Self.upstream)/forks", body: [
             "default_branch_only": true,
-        ])).full_name
+        ]))
+        let fork = forkRepo.full_name
+
+        // A brand-new fork answers GET /repos before its git data exists; wait for the
+        // default branch itself to resolve before creating refs on it.
         var forkReady = false
-        for _ in 0..<15 {
-            if (try? await api("GET", "/repos/\(fork)")) != nil { forkReady = true; break }
+        for _ in 0..<20 {
+            if (try? await refSHA(repo: fork, branch: "master", quiet: true)) != nil { forkReady = true; break }
             try await Task.sleep(nanoseconds: 2_000_000_000)
         }
         guard forkReady else { throw GitHubError.forkNotReady }
@@ -436,24 +462,24 @@ final class GitHubService: ObservableObject {
         //    long-stale fork may need syncing before the ref can point at that commit.
         let branch = "tm-app-\(Self.branchStamp())"
         let refBody: [String: Any] = ["ref": "refs/heads/\(branch)", "sha": baseSHA]
-        do {
-            _ = try await api("POST", "/repos/\(fork)/git/refs", body: refBody)
-        } catch GitHubError.api(let status, _) where status == 422 {
-            _ = try? await api("POST", "/repos/\(fork)/merge-upstream", body: ["branch": "master"])
-            _ = try await api("POST", "/repos/\(fork)/git/refs", body: refBody)
+        var created = false
+        for attempt in 0..<4 where !created {
+            do {
+                _ = try await api("POST", "/repos/\(fork)/git/refs", body: refBody, quietStatuses: [404, 409, 422])
+                created = true
+            } catch GitHubError.api(let status, _) where [404, 409, 422].contains(status) && attempt < 3 {
+                if status == 422 {
+                    _ = try? await api("POST", "/repos/\(fork)/merge-upstream", body: ["branch": "master"], quietStatuses: [409, 422])
+                }
+                try await Task.sleep(nanoseconds: 2_000_000_000)
+            }
         }
 
         // 4. Commit the merged file
-        let names = tripNames.prefix(3).joined(separator: ", ") + (tripNames.count > 3 ? " +\(tripNames.count - 3) more" : "")
-        var commit: [String: Any] = [
-            "message": "Update \(username).\(category.fileExtension): \(merge.placements.count) segment\(merge.placements.count == 1 ? "" : "s") from \(names)",
-            "content": Data(merge.text.utf8).base64EncodedString(),
-            "branch": branch,
-        ]
-        if let fileSHA { commit["sha"] = fileSHA }
-        _ = try await api("PUT", "/repos/\(fork)/contents/\(path)", body: commit)
+        try await commit(repo: fork, branch: branch, path: path, text: merge.text, fileSHA: file.sha,
+                         message: "Update \(username).\(category.fileExtension): \(merge.placements.count) segment\(merge.placements.count == 1 ? "" : "s") from \(names)")
 
-        // 5. Pull request
+        // 5. Pull request — head owner from the fork itself (survives GitHub renames)
         let lineList = merge.placements.map { "- `\($0.line.text)`" }.joined(separator: "\n")
         let prBody = """
         Adds \(merge.placements.count) segment\(merge.placements.count == 1 ? "" : "s") recorded with GPS in the Travel Mapping iOS app (\(names)).
@@ -465,17 +491,67 @@ final class GitHubService: ObservableObject {
         struct PR: Decodable { let number: Int; let html_url: URL }
         let pr = try JSONDecoder().decode(PR.self, from: try await api("POST", "/repos/\(Self.upstream)/pulls", body: [
             "title": "\(username): add \(merge.placements.count) recorded segment\(merge.placements.count == 1 ? "" : "s")",
-            "head": "\(login):\(branch)",
+            "head": "\(forkRepo.owner.login):\(branch)",
             "base": "master",
             "body": prBody,
             "maintainer_can_modify": true,
         ]))
+        login = forkRepo.owner.login
+        UserDefaults.standard.set(forkRepo.owner.login, forKey: "githubLogin")
 
+        breadcrumb("Opened list update PR #\(pr.number) (\(merge.placements.count) lines)")
+        return (ListUpdatePR(number: pr.number, url: pr.html_url, createdAt: Date(), lineCount: merge.placements.count,
+                             branch: branch, fork: fork), merge)
+    }
+
+    private func refSHA(repo: String, branch: String, quiet: Bool = false) async throws -> String {
+        struct Ref: Decodable { struct Object: Decodable { let sha: String }; let object: Object }
+        let data = try await api("GET", "/repos/\(repo)/git/ref/heads/\(branch)", quietStatuses: quiet ? [404, 409] : [])
+        return try JSONDecoder().decode(Ref.self, from: data).object.sha
+    }
+
+    /// File text + blob SHA at an exact commit. Text comes from the commit-pinned raw URL
+    /// (the contents API omits bodies over 1 MB). Throws rather than ever returning an
+    /// empty stand-in for a file that exists but couldn't be read — committing a merge
+    /// built on that would wipe the user's list.
+    private func readFile(repo: String, sha: String, path: String) async throws -> (text: String, sha: String?) {
+        struct Contents: Decodable { let sha: String; let size: Int }
+        let contents: Contents
+        do {
+            contents = try JSONDecoder().decode(Contents.self, from: try await api("GET", "/repos/\(repo)/contents/\(path)?ref=\(sha)"))
+        } catch GitHubError.api(let status, _) where status == 404 {
+            return ("", nil)  // first list of this type
+        }
+        let rawURL = URL(string: "https://raw.githubusercontent.com/\(repo)/\(sha)/\(path)")!
+        let (data, response) = try await URLSession.shared.data(from: rawURL)
+        guard (response as? HTTPURLResponse)?.statusCode == 200,
+              let text = String(data: data, encoding: .utf8),
+              !text.isEmpty || contents.size == 0 else {
+            throw GitHubError.api(status: (response as? HTTPURLResponse)?.statusCode ?? -1, message: "Couldn't read your current list file")
+        }
+        return (text, contents.sha)
+    }
+
+    private func commit(repo: String, branch: String, path: String, text: String, fileSHA: String?, message: String) async throws {
+        var body: [String: Any] = [
+            "message": message,
+            "content": Data(text.utf8).base64EncodedString(),
+            "branch": branch,
+        ]
+        if let fileSHA { body["sha"] = fileSHA }
+        _ = try await api("PUT", "/repos/\(repo)/contents/\(path)", body: body)
+    }
+
+    private nonisolated static func merge(_ text: String, _ lines: [ListLine], _ blockTitle: String, _ appendOnly: Bool) async -> ListFileMerger.Result {
+        await Task.detached(priority: .userInitiated) {
+            ListFileMerger.merge(existing: text, newLines: lines, blockTitle: blockTitle, appendOnly: appendOnly)
+        }.value
+    }
+
+    private func breadcrumb(_ message: String) {
         let crumb = Breadcrumb(level: .info, category: "github")
-        crumb.message = "Opened list update PR #\(pr.number) (\(merge.placements.count) lines)"
+        crumb.message = message
         SentrySDK.addBreadcrumb(crumb)
-
-        return (ListUpdatePR(number: pr.number, url: pr.html_url, createdAt: Date(), lineCount: merge.placements.count), merge)
     }
 
     /// Works signed out too (public repo), subject to the unauthenticated rate limit.
@@ -488,7 +564,8 @@ final class GitHubService: ObservableObject {
 
     // MARK: HTTP
 
-    private func api(_ method: String, _ path: String, body: [String: Any]? = nil) async throws -> Data {
+    /// `quietStatuses` are expected failures the caller handles — not worth a Sentry issue.
+    private func api(_ method: String, _ path: String, body: [String: Any]? = nil, quietStatuses: Set<Int> = []) async throws -> Data {
         var request = URLRequest(url: URL(string: "https://api.github.com\(path)")!)
         request.httpMethod = method
         request.cachePolicy = .reloadIgnoringLocalCacheData
@@ -506,7 +583,7 @@ final class GitHubService: ObservableObject {
             struct Message: Decodable { let message: String? }
             let message = (try? JSONDecoder().decode(Message.self, from: data))?.message ?? HTTPURLResponse.localizedString(forStatusCode: status)
             let error = GitHubError.api(status: status, message: message)
-            if status != 404 {
+            if status != 404 && !quietStatuses.contains(status) {
                 SentrySDK.capture(error: error) { scope in
                     scope.setTag(value: method, key: "github.method")
                     scope.setExtra(value: path.components(separatedBy: "?").first ?? path, key: "github.path")

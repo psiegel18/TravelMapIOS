@@ -10,7 +10,11 @@ struct RoadTripListView: View {
     @State private var showOrphanedDialog = false
     @State private var showLocationDeniedAlert = false
     @State private var showTripTypeChooser = false
-    @State private var pendingSummary: (lines: Int, trips: Int)?
+    @State private var pendingSummary: (lines: Int, trips: Int, waiting: Int)?
+    /// Bumped on reappear; `.task(id:)` cancels a still-running refresh when it changes
+    @State private var refreshToken = 0
+    /// Inputs of the last summary — re-analysis is skipped when nothing changed
+    @State private var summarySignature = ""
     @ObservedObject private var settings = SyncedSettingsService.shared
 
     private var locationPermissionDenied: Bool {
@@ -51,7 +55,7 @@ struct RoadTripListView: View {
                 }
             }
 
-            if let pending = pendingSummary, pending.lines > 0 {
+            if let pending = pendingSummary, pending.lines > 0 || pending.waiting > 0 {
                 Section {
                     NavigationLink {
                         PendingListUpdatesView(trips: trips, username: settings.primaryUser) {
@@ -148,10 +152,14 @@ struct RoadTripListView: View {
         .onAppear {
             // Returning from a trip detail where lines may have been marked submitted
             guard !isLoading else { return }
-            Task { await loadTrips() }
+            refreshToken += 1
+        }
+        .task(id: refreshToken) {
+            guard refreshToken > 0 else { return }
+            await loadTrips()
         }
         .onChange(of: settings.primaryUser) {
-            Task { await loadPendingSummary() }
+            refreshToken += 1
         }
     }
 
@@ -258,19 +266,30 @@ struct RoadTripListView: View {
             pendingSummary = nil
             return
         }
+        let storage = TripStorageService.shared
+        let roadKeys = await storage.submittedHopKeys(fileExtension: "list")
+        let railKeys = await storage.submittedHopKeys(fileExtension: "rlist")
+        let waiting = await storage.listSubmissions().reduce(0) { $0 + $1.lines.count }
+        let signature = "\(waiting)|\(username)|\(candidates.map { "\($0.id)\($0.matchedSegments.count)" }.sorted().joined())|\(roadKeys.count)|\(railKeys.count)"
+        guard signature != summarySignature || pendingSummary == nil else { return }
+
         var lines = 0
         var tripIDs = Set<UUID>()
         for type in [TripType.road, .rail] {
             let typed = candidates.filter { $0.tripType == type }
             guard !typed.isEmpty,
-                  let analysis = try? await TripLogAnalyzer.analyze(trips: typed, username: username) else { continue }
+                  let analysis = try? await TripLogAnalyzer.analyze(
+                    trips: typed, username: username,
+                    submittedKeys: type == .rail ? railKeys : roadKeys) else { continue }
             lines += analysis.newRanges.count
             tripIDs.formUnion(analysis.newRanges.flatMap(\.tripIDs))
         }
-        pendingSummary = (lines, tripIDs.count)
+        guard !Task.isCancelled else { return }
+        pendingSummary = (lines, tripIDs.count, waiting)
+        summarySignature = signature
     }
 
-    private func pendingRow(_ pending: (lines: Int, trips: Int)) -> some View {
+    private func pendingRow(_ pending: (lines: Int, trips: Int, waiting: Int)) -> some View {
         HStack(spacing: 12) {
             Image(systemName: "text.badge.plus")
                 .font(.system(size: 15, weight: .semibold))
@@ -279,11 +298,19 @@ struct RoadTripListView: View {
                 .background(TMDesign.amberChipBG, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
-                Text("\(pending.lines.formatted()) segment\(pending.lines == 1 ? "" : "s") not in your list yet")
-                    .font(.system(size: 17, weight: .bold))
-                Text("From \(pending.trips.formatted()) trip\(pending.trips == 1 ? "" : "s") · tap to update your .list")
-                    .font(.system(size: 15))
-                    .foregroundStyle(TMDesign.secondaryText)
+                if pending.lines > 0 {
+                    Text("\(pending.lines.formatted()) segment\(pending.lines == 1 ? "" : "s") not in your list yet")
+                        .font(.system(size: 17, weight: .bold))
+                    Text("From \(pending.trips.formatted()) trip\(pending.trips == 1 ? "" : "s") · tap to update your .list")
+                        .font(.system(size: 15))
+                        .foregroundStyle(TMDesign.secondaryText)
+                } else {
+                    Text("\(pending.waiting.formatted()) line\(pending.waiting == 1 ? "" : "s") waiting on TravelMapping")
+                        .font(.system(size: 17, weight: .bold))
+                    Text("Submitted · tap for status")
+                        .font(.system(size: 15))
+                        .foregroundStyle(TMDesign.secondaryText)
+                }
             }
         }
         .padding(.vertical, 6)
@@ -394,13 +421,7 @@ struct PendingListUpdatesView: View {
     @State private var sheetType: TripType?
     @State private var localTrips: [RoadTrip] = []
     @State private var prStates: [Int: GitHubService.PRState] = [:]
-
-    /// PRs opened from any trip in the last 60 days, newest first
-    private var recentPRs: [ListUpdatePR] {
-        let cutoff = Date().addingTimeInterval(-60 * 86_400)
-        let all = Set(localTrips.flatMap(\.listUpdatePRs)).filter { $0.createdAt > cutoff }
-        return all.sorted { $0.createdAt > $1.createdAt }
-    }
+    @State private var submissions: [ListSubmission] = []
 
     var body: some View {
         List {
@@ -431,11 +452,40 @@ struct PendingListUpdatesView: View {
                     }
                 }
             }
-            if !recentPRs.isEmpty {
-                Section("Pull requests") {
-                    ForEach(recentPRs) { pr in
-                        ListUpdatePRRow(pr: pr, state: prStates[pr.number])
+            if !submissions.isEmpty {
+                Section {
+                    ForEach(submissions.sorted { $0.date > $1.date }) { submission in
+                        Group {
+                            if let pr = submission.pr {
+                                ListUpdatePRRow(pr: pr, state: prStates[pr.number])
+                            } else {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Marked submitted · \(submission.lines.count.formatted()) line\(submission.lines.count == 1 ? "" : "s")")
+                                        .font(.system(size: 16, weight: .semibold))
+                                    Text(submission.date.formatted(date: .abbreviated, time: .omitted))
+                                        .font(.system(size: 13))
+                                        .foregroundStyle(TMDesign.tertiaryText)
+                                }
+                            }
+                        }
+                        .swipeActions {
+                            Button("Not Sent") {
+                                Task { await unmark(submission.id) }
+                            }
+                            .tint(TMDesign.frontier)
+                        }
+                        .contextMenu {
+                            Button {
+                                Task { await unmark(submission.id) }
+                            } label: {
+                                Label("Not Sent — Put Back in Queue", systemImage: "arrow.uturn.backward")
+                            }
+                        }
                     }
+                } header: {
+                    Text("Waiting on TravelMapping")
+                } footer: {
+                    Text("These clear on their own once TravelMapping's nightly update includes them. Swipe or touch and hold one to put its segments back in the queue — a closed pull request does that automatically.")
                 }
             }
         }
@@ -449,11 +499,16 @@ struct PendingListUpdatesView: View {
                 category: type == .rail ? .rail : .road,
                 blockTitle: "\(Date().formatted(.iso8601.year().month().day())) recorded trips",
                 tripNames: tripNames(in: included(type == .rail ? rail : road)),
-                onSubmitted: { pr in markSubmitted(included(type == .rail ? rail : road), pr: pr) }
+                onSubmitted: { pr in markSubmitted(included(type == .rail ? rail : road), pr: pr, type: type) }
             )
         }
         .task {
             localTrips = trips
+            await analyze()
+            await refreshPRStates()
+        }
+        .refreshable {
+            prStates = [:]
             await analyze()
             await refreshPRStates()
         }
@@ -513,19 +568,42 @@ struct PendingListUpdatesView: View {
     }
 
     private func refreshPRStates() async {
-        for pr in recentPRs where prStates[pr.number] == nil {
-            prStates[pr.number] = try? await GitHubService.shared.pullRequestState(pr.number)
+        var closed: [Int] = []
+        for pr in submissions.compactMap(\.pr) where prStates[pr.number] == nil {
+            let state = try? await GitHubService.shared.pullRequestState(pr.number)
+            prStates[pr.number] = state
+            if state == .closed { closed.append(pr.number) }
         }
+        // A closed (unmerged) PR will never land — put its segments back in the queue
+        guard !closed.isEmpty else { return }
+        await TripStorageService.shared.removeSubmissions { closed.contains($0.pr?.number ?? -1) }
+        await analyze()
+    }
+
+    private func unmark(_ id: UUID) async {
+        await TripStorageService.shared.removeSubmissions { $0.id == id }
+        await analyze()
+        await onTripsChanged()
     }
 
     private func analyze() async {
         errorMessage = nil
+        let storage = TripStorageService.shared
         let candidates = localTrips.filter { $0.status == .completed && !$0.matchedSegments.isEmpty }
         do {
             let roadTrips = candidates.filter { $0.tripType == .road }
             let railTrips = candidates.filter { $0.tripType == .rail }
-            road = roadTrips.isEmpty ? nil : try await TripLogAnalyzer.analyze(trips: roadTrips, username: username)
-            rail = railTrips.isEmpty ? nil : try await TripLogAnalyzer.analyze(trips: railTrips, username: username)
+            road = roadTrips.isEmpty ? nil : try await TripLogAnalyzer.analyze(
+                trips: roadTrips, username: username,
+                submittedKeys: await storage.submittedHopKeys(fileExtension: "list"))
+            rail = railTrips.isEmpty ? nil : try await TripLogAnalyzer.analyze(
+                trips: railTrips, username: username,
+                submittedKeys: await storage.submittedHopKeys(fileExtension: "rlist"))
+
+            // Submissions whose every segment the database now reports as logged are done
+            let logged = Set(((road?.loggedRanges ?? []) + (rail?.loggedRanges ?? [])).flatMap(\.hopKeys))
+            await storage.removeSubmissions { !$0.hopKeys.isEmpty && $0.hopKeys.allSatisfy(logged.contains) }
+            submissions = await storage.listSubmissions()
         } catch {
             SentrySDK.capture(error: error)
             errorMessage = "Couldn't check your list files right now."
@@ -538,22 +616,18 @@ struct PendingListUpdatesView: View {
         return localTrips.filter { ids.contains($0.id) }.sorted { $0.startDate < $1.startDate }.map(\.name)
     }
 
-    private func markSubmitted(_ ranges: [TripLogRange], pr: ListUpdatePR?) {
-        var changed: [RoadTrip] = []
-        for i in localTrips.indices {
-            let keys = ranges.filter { $0.tripIDs.contains(localTrips[i].id) }.flatMap(\.hopKeys)
-            guard !keys.isEmpty else { continue }
-            localTrips[i].submittedHopKeys = Array(Set(localTrips[i].submittedHopKeys).union(keys))
-            if let pr { localTrips[i].listUpdatePRs.append(pr) }
-            changed.append(localTrips[i])
-        }
+    private func markSubmitted(_ ranges: [TripLogRange], pr: ListUpdatePR?, type: TripType) {
         let crumb = Breadcrumb(level: .info, category: "list_update")
-        crumb.message = "Marked \(ranges.count) ranges submitted across \(changed.count) trips"
+        crumb.message = "Marked \(ranges.count) ranges submitted from pending queue"
         SentrySDK.addBreadcrumb(crumb)
         Task {
-            for trip in changed {
-                try? await TripStorageService.shared.save(trip)
-            }
+            await TripStorageService.shared.recordSubmission(
+                fileExtension: type == .rail ? "rlist" : "list",
+                hopKeys: ranges.flatMap(\.hopKeys),
+                lines: ranges.map(\.line.text),
+                pr: pr
+            )
+            excludedRangeIDs = []
             await analyze()
             await onTripsChanged()
         }

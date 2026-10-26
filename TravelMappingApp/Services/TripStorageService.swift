@@ -84,6 +84,59 @@ actor TripStorageService {
         try? FileManager.default.removeItem(at: listURL)
     }
 
+    // MARK: .list submissions
+
+    /// All .list updates the user has sent (or marked as sent), in one iCloud-synced file
+    /// next to the trips. Kept apart from the trip files so a segment submitted from one
+    /// trip counts for every trip that drove it, and re-saving a stale trip copy (or a
+    /// trip saved by an older app version on another device) can't drop the marks.
+    func listSubmissions() async -> [ListSubmission] {
+        let url = await tripsDirectory().appendingPathComponent(Self.submissionsFile)
+        guard let data = try? Data(contentsOf: url) else { return [] }
+        do {
+            return try JSONDecoder().decode([ListSubmission].self, from: data)
+        } catch {
+            SentrySDK.capture(error: error)
+            return []
+        }
+    }
+
+    /// Hop keys currently waiting on TravelMapping for a list type ("list" / "rlist").
+    func submittedHopKeys(fileExtension: String) async -> Set<String> {
+        Set(await listSubmissions().filter { $0.fileExtension == fileExtension }.flatMap(\.hopKeys))
+    }
+
+    /// Records a submission. Lines added to an already-recorded PR merge into its entry.
+    func recordSubmission(fileExtension: String, hopKeys: [String], lines: [String], pr: ListUpdatePR?) async {
+        var all = await listSubmissions()
+        if let pr, let i = all.firstIndex(where: { $0.pr?.number == pr.number }) {
+            all[i].hopKeys = Array(Set(all[i].hopKeys).union(hopKeys))
+            all[i].lines += lines.filter { !all[i].lines.contains($0) }
+            all[i].pr = pr
+        } else {
+            all.append(ListSubmission(id: UUID(), date: Date(), fileExtension: fileExtension,
+                                      hopKeys: hopKeys, lines: lines, pr: pr))
+        }
+        await saveSubmissions(all)
+    }
+
+    func removeSubmissions(where shouldRemove: @Sendable (ListSubmission) -> Bool) async {
+        let all = await listSubmissions()
+        let kept = all.filter { !shouldRemove($0) }
+        if kept.count != all.count { await saveSubmissions(kept) }
+    }
+
+    private static let submissionsFile = "list-submissions.json"
+
+    private func saveSubmissions(_ submissions: [ListSubmission]) async {
+        let url = await tripsDirectory().appendingPathComponent(Self.submissionsFile)
+        do {
+            try JSONEncoder().encode(submissions).write(to: url, options: .atomic)
+        } catch {
+            SentrySDK.capture(error: error)
+        }
+    }
+
     /// Export the trip's matched segments as a .list file, return the file URL.
     func exportListFile(for trip: RoadTrip) async throws -> URL {
         let dir = await tripsDirectory()
@@ -100,6 +153,17 @@ actor TripStorageService {
 }
 
 // MARK: - Trip Log Analysis
+
+/// One .list update the user sent: manually ("Mark as submitted") or as an app PR.
+struct ListSubmission: Codable, Identifiable, Sendable {
+    let id: UUID
+    let date: Date
+    /// "list" or "rlist"
+    let fileExtension: String
+    var hopKeys: [String]
+    var lines: [String]
+    var pr: ListUpdatePR?
+}
 
 /// A contiguous stretch of one route that a recorded trip traveled, classified against
 /// what the traveler's .list file already has (per the TM database).
@@ -141,7 +205,9 @@ struct TripLogAnalysis: Sendable {
 enum TripLogAnalyzer {
 
     /// All trips must share a trip type (roads and rail live in different list files).
-    static func analyze(trips: [RoadTrip], username: String) async throws -> TripLogAnalysis {
+    /// `submittedKeys` should come from `TripStorageService.submittedHopKeys` — the
+    /// submissions of every trip, not just the ones analyzed.
+    static func analyze(trips: [RoadTrip], username: String, submittedKeys: Set<String>) async throws -> TripLogAnalysis {
         let api: TravelMappingAPI = trips.first?.tripType == .rail ? .rail : .shared
         let roots = Array(Set(trips.flatMap { $0.matchedSegments.map(\.root) })).sorted()
         guard !roots.isEmpty else { return TripLogAnalysis(ranges: [], unresolvedCount: 0) }
@@ -150,9 +216,14 @@ enum TripLogAnalyzer {
         var hopsByRoot: [String: [TravelMappingAPI.MapSegment]] = [:]
         var listNames: [String: String] = [:]
         try await withThrowingTaskGroup(of: (segments: [TravelMappingAPI.MapSegment], routes: [TravelMappingAPI.RouteMetadata]).self) { group in
-            for start in stride(from: 0, to: roots.count, by: 40) {
-                let batch = Array(roots[start..<min(start + 40, roots.count)])
-                group.addTask { try await api.getRegionSegments(roots: batch, traveler: username) }
+            // Batch per region (root prefix) so a new trip only changes the cache keys of
+            // the regions it touches; the TM database updates daily, so cache for 24h.
+            let byRegion = Dictionary(grouping: roots) { String($0.split(separator: ".").first ?? "") }
+            for regionRoots in byRegion.values {
+                for start in stride(from: 0, to: regionRoots.count, by: 40) {
+                    let batch = Array(regionRoots[start..<min(start + 40, regionRoots.count)])
+                    group.addTask { try await api.getRegionSegments(roots: batch, traveler: username, cacheTTL: 24 * 3600) }
+                }
             }
             for try await result in group {
                 for seg in result.segments { hopsByRoot[seg.root, default: []].append(seg) }
@@ -161,7 +232,7 @@ enum TripLogAnalyzer {
         }
         for root in hopsByRoot.keys { hopsByRoot[root]?.sort { $0.orderIndex < $1.orderIndex } }
 
-        let submitted = Set(trips.flatMap(\.submittedHopKeys))
+        let submitted = submittedKeys
 
         struct Builder {
             var root: String
@@ -208,6 +279,24 @@ enum TripLogAnalyzer {
                 }
             }
         }
+
+        // Routes driven against their waypoint order arrive as fragments in reverse; join
+        // any same-route, same-status ranges that touch end to end.
+        var joined: [Builder] = []
+        for b in builders {
+            if let i = joined.firstIndex(where: { $0.root == b.root && $0.status == b.status &&
+                ($0.hops.last?.endName == b.hops.first?.startName || b.hops.last?.endName == $0.hops.first?.startName) }) {
+                if joined[i].hops.last?.endName == b.hops.first?.startName {
+                    joined[i].hops += b.hops
+                } else {
+                    joined[i].hops = b.hops + joined[i].hops
+                }
+                joined[i].tripIDs.formUnion(b.tripIDs)
+            } else {
+                joined.append(b)
+            }
+        }
+        builders = joined
 
         // Fall back to the name stored at record time when the API omitted route metadata
         for trip in trips {

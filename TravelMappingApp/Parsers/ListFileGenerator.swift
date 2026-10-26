@@ -238,12 +238,15 @@ enum ListFileMerger {
     ///     or lines with nowhere better to go)
     ///   - appendOnly: skip placement and always append one block (user preference)
     static func merge(existing: String, newLines: [ListLine], blockTitle: String, appendOnly: Bool = false) -> Result {
-        let lineEnding = existing.contains("\r\n") ? "\r\n" : "\n"
-        var rawLines = existing.components(separatedBy: lineEnding)
+        // Split on \n and keep any \r with its line, so files that mix CRLF and LF
+        // round-trip byte for byte; inserted lines follow whichever ending dominates.
+        var rawLines = existing.components(separatedBy: "\n")
         let hadTrailingNewline = rawLines.last == ""
         if hadTrailingNewline { rawLines.removeLast() }
+        let crlfCount = rawLines.filter { $0.hasSuffix("\r") }.count
+        let newLineSuffix = crlfCount * 2 > rawLines.count ? "\r" : ""
 
-        var entries = rawLines.map { Entry(raw: $0, kind: classify($0)) }
+        var entries = rawLines.map { Entry(raw: $0, kind: classify(Self.stripCR($0))) }
 
         // Dedup against the file and within the batch
         var seen = Set<String>()
@@ -272,8 +275,8 @@ enum ListFileMerger {
             for line in toInsert {
                 if let index = insertionIndex(for: line, in: entries) {
                     let separator = separatorNear(index, in: entries)
-                    let raw = [line.region, line.route, line.waypoint1, line.waypoint2].joined(separator: separator)
-                    entries.insert(Entry(raw: raw, kind: classify(raw), inserted: line), at: index)
+                    let text = [line.region, line.route, line.waypoint1, line.waypoint2].joined(separator: separator)
+                    entries.insert(Entry(raw: text + newLineSuffix, kind: classify(text), inserted: line), at: index)
                 } else {
                     leftovers.append(line)
                 }
@@ -281,26 +284,30 @@ enum ListFileMerger {
         }
 
         if !leftovers.isEmpty {
-            if let last = entries.last, !last.isBoundary || last.isData { entries.append(Entry(raw: "", kind: .blank)) }
+            if let last = entries.last, !last.isBoundary || last.isData { entries.append(Entry(raw: newLineSuffix, kind: .blank)) }
             let header = headerLine(title: blockTitle, styledLike: entries)
-            entries.append(Entry(raw: header, kind: .header))
+            entries.append(Entry(raw: header + newLineSuffix, kind: .header))
             for line in leftovers {
-                entries.append(Entry(raw: line.text, kind: classify(line.text), inserted: line))
+                entries.append(Entry(raw: line.text + newLineSuffix, kind: classify(line.text), inserted: line))
             }
         }
 
         var placements: [Placement] = []
         var currentHeader: String?
         for (i, entry) in entries.enumerated() {
-            if case .header = entry.kind { currentHeader = headerText(entry.raw) }
+            if case .header = entry.kind { currentHeader = headerText(Self.stripCR(entry.raw)) }
             if let line = entry.inserted {
                 placements.append(Placement(line: line, lineNumber: i + 1, section: currentHeader))
             }
         }
 
-        var text = entries.map(\.raw).joined(separator: lineEnding)
-        if hadTrailingNewline || existing.isEmpty { text += lineEnding }
+        var text = entries.map(\.raw).joined(separator: "\n")
+        if hadTrailingNewline || existing.isEmpty { text += "\n" }
         return Result(text: text, placements: placements, duplicates: duplicates)
+    }
+
+    private static func stripCR(_ s: String) -> String {
+        s.hasSuffix("\r") ? String(s.dropLast()) : s
     }
 
     // MARK: Classification
@@ -312,31 +319,37 @@ enum ListFileMerger {
             // Indented comments are annotations on the line above; commented-out entries
             // are disabled data. Only column-0 prose comments act as section headers.
             // Long prose notes ("continued past ON427 through…") aren't headers either.
-            if raw.hasPrefix("#") && trimmed.count <= 60 && parseData(String(trimmed.drop { $0 == "#" })) == nil {
+            if raw.hasPrefix("#") && trimmed.count <= 60 && parseData(String(trimmed.drop { $0 == "#" }), anyCase: false) == nil {
                 return .header
             }
             return .comment
         }
-        if let data = parseData(trimmed) { return data }
+        // TravelMapping matches .list entries case-insensitively, so data lines may be
+        // lowercase; headers above stay strict so prose comments aren't mistaken for data.
+        if let data = parseData(trimmed, anyCase: true) { return data }
         return .comment
     }
 
-    private static func parseData(_ text: String) -> Kind? {
+    /// Regions and routes are uppercased so matching ignores the user's casing.
+    private static func parseData(_ text: String, anyCase: Bool) -> Kind? {
         let body = text.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
         let f = body.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
-        guard f.count >= 4, looksLikeRegion(f[0]) else { return nil }
+        guard f.count >= 4, looksLikeRegion(f[0], anyCase: anyCase) else { return nil }
+        let u = f.map { $0.uppercased() }
         if f.count >= 6 {
-            return .data(regions: [f[0], f[3]], routes: [f[1], f[4]], waypoints: [f[2], f[5]])
+            return .data(regions: [u[0], u[3]], routes: [u[1], u[4]], waypoints: [f[2], f[5]])
         }
-        if f.count == 5 && looksLikeRegion(f[3]) {
-            return .data(regions: [f[0], f[3]], routes: [f[1], f[1]], waypoints: [f[2], f[4]])
+        if f.count == 5 && looksLikeRegion(f[3], anyCase: anyCase) {
+            return .data(regions: [u[0], u[3]], routes: [u[1], u[1]], waypoints: [f[2], f[4]])
         }
-        return .data(regions: [f[0]], routes: [f[1]], waypoints: [f[2], f[3]])
+        return .data(regions: [u[0]], routes: [u[1]], waypoints: [f[2], f[3]])
     }
 
-    private static func looksLikeRegion(_ s: String) -> Bool {
-        // Region codes: "IL", "ENG", "BIH", "US-..."-free uppercase tokens with optional digits/hyphens
-        guard (2...7).contains(s.count), let first = s.first, first.isUppercase else { return false }
+    private static func looksLikeRegion(_ s: String, anyCase: Bool) -> Bool {
+        // Region codes: "IL", "ENG", "BIH", "MEX-BC" — letters/digits/hyphens
+        guard (2...7).contains(s.count), let first = s.first, first.isLetter else { return false }
+        if anyCase { return s.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" } }
+        guard first.isUppercase else { return false }
         return s.allSatisfy { $0.isUppercase || $0.isNumber || $0 == "-" }
     }
 
@@ -401,7 +414,9 @@ enum ListFileMerger {
 
     // MARK: Placement
 
-    private static func insertionIndex(for line: ListLine, in entries: [Entry]) -> Int? {
+    private static func insertionIndex(for original: ListLine, in entries: [Entry]) -> Int? {
+        let line = ListLine(region: original.region.uppercased(), route: original.route.uppercased(),
+                            waypoint1: original.waypoint1, waypoint2: original.waypoint2)
         let fam = family(region: line.region, route: line.route)
         let crossRegion = fam == "interstate" || fam == "us"
 
@@ -457,9 +472,17 @@ enum ListFileMerger {
     }
 
     private static func bestBlockAnchor(_ anchors: [Int], in entries: [Entry]) -> Int? {
+        // One pass for every line's block start — calling blockRange per anchor is
+        // quadratic on big unsectioned files (15k lines, thousands of anchors).
+        var blockStart = [Int](repeating: 0, count: entries.count)
+        var current = 0
+        for i in entries.indices {
+            if i > 0 && entries[i - 1].isBoundary { current = i }
+            blockStart[i] = current
+        }
         var counts: [Int: (count: Int, last: Int)] = [:]
         for a in anchors {
-            let start = blockRange(around: a, in: entries).lowerBound
+            let start = blockStart[a]
             let c = counts[start]
             counts[start] = ((c?.count ?? 0) + 1, a)
         }
