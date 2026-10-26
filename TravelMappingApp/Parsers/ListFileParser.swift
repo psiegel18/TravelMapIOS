@@ -119,3 +119,103 @@ struct ListFileParser {
         return s.allSatisfy { $0.isUppercase || $0.isNumber }
     }
 }
+
+// MARK: - TravelMapping user log
+
+/// One problem TravelMapping reported with a line of the user's list file during its
+/// nightly site update (https://travelmapping.net/logs/users/<user>.log).
+struct ListLogIssue: Identifiable, Hashable, Sendable {
+    enum Kind: Hashable, Sendable {
+        /// Waypoint label(s) no longer on the route (often renumbered exits)
+        case missingWaypoints([String])
+        /// Route was renamed; TravelMapping still accepts the old name for now
+        case deprecatedRoute(old: String, canonical: String)
+        /// Region/route combination doesn't exist (removed, renamed or mistyped)
+        case unknownRoute
+        /// Both ends resolve to the same point, so the line adds nothing
+        case zeroDistance
+    }
+
+    let kind: Kind
+    /// The list line exactly as TravelMapping quoted it
+    let line: String
+    /// TravelMapping's own message
+    let message: String
+    /// "Route updated 2026-10-15: NY I-81" notes printed under the issue
+    var routeNotes: [String] = []
+
+    var id: String { "\(line)|\(message)" }
+}
+
+/// Route change history from the log's "Most recent updates for listed routes" table.
+struct ListLogRouteUpdate: Hashable, Sendable {
+    let date: String
+    let root: String
+    let description: String
+}
+
+enum ListLogParser {
+    static func parse(_ text: String) -> (issues: [ListLogIssue], updates: [ListLogRouteUpdate]) {
+        var issues: [ListLogIssue] = []
+        var updates: [ListLogRouteUpdate] = []
+        var inUpdates = false
+
+        for rawLine in text.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty { continue }
+
+            if rawLine.hasPrefix(" "), line.hasPrefix("Route updated"), !issues.isEmpty {
+                issues[issues.count - 1].routeNotes.append(line)
+                continue
+            }
+            if line.hasPrefix("Most recent updates for listed routes") { inUpdates = true; continue }
+            if inUpdates {
+                // date | (country) state | route | root | description
+                let cols = line.components(separatedBy: " | ")
+                if cols.count >= 5, cols[0].count == 10 {
+                    updates.append(ListLogRouteUpdate(date: cols[0], root: cols[3],
+                                                      description: cols[4...].joined(separator: " | ")))
+                    continue
+                }
+                inUpdates = false
+            }
+
+            guard let range = line.range(of: " in line: ") else { continue }
+            let head = String(line[..<range.lowerBound])
+            let listLine = String(line[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+
+            if head.hasPrefix("Waypoint label ") && head.hasSuffix(" not found") {
+                let label = head.dropFirst("Waypoint label ".count).dropLast(" not found".count)
+                issues.append(ListLogIssue(kind: .missingWaypoints([String(label)]), line: listLine, message: line))
+            } else if head.hasPrefix("Waypoint labels ") && head.hasSuffix(" not found") {
+                let labels = head.dropFirst("Waypoint labels ".count).dropLast(" not found".count)
+                    .components(separatedBy: " and ")
+                issues.append(ListLogIssue(kind: .missingWaypoints(labels), line: listLine, message: line))
+            } else if head.hasPrefix("Waypoint ") && head.hasSuffix(" not found") {
+                // Multi-region form: "Waypoint NY I-81 27 not found"
+                let parts = head.dropFirst("Waypoint ".count).dropLast(" not found".count).split(separator: " ")
+                if let label = parts.last {
+                    issues.append(ListLogIssue(kind: .missingWaypoints([String(label)]), line: listLine, message: line))
+                }
+            } else if head.hasPrefix("Note: deprecated route name "), let arrow = head.range(of: " -> canonical name ") {
+                let old = unquote(String(head[head.index(head.startIndex, offsetBy: "Note: deprecated route name ".count)..<arrow.lowerBound]))
+                let canonical = unquote(String(head[arrow.upperBound...]))
+                issues.append(ListLogIssue(kind: .deprecatedRoute(old: old, canonical: canonical), line: listLine, message: line))
+            } else if head.hasPrefix("Unknown region/highway combo") {
+                // YY/ZZ-prefixed regions are lines users deliberately park
+                let region = listLine.split(separator: " ").first.map(String.init) ?? ""
+                if region.hasPrefix("YY") || region.hasPrefix("ZZ") { continue }
+                issues.append(ListLogIssue(kind: .unknownRoute, line: listLine, message: line))
+            } else if head.hasPrefix("Equivalent waypoint labels") {
+                issues.append(ListLogIssue(kind: .zeroDistance, line: listLine, message: line))
+            }
+        }
+        return (issues, updates)
+    }
+
+    /// `"ESP-EX A66"` → `A66`; `I-481` → `I-481`
+    private static func unquote(_ s: String) -> String {
+        let trimmed = s.trimmingCharacters(in: CharacterSet(charactersIn: "\" "))
+        return trimmed.split(separator: " ").last.map(String.init) ?? trimmed
+    }
+}

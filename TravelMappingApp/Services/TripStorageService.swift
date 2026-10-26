@@ -388,3 +388,292 @@ enum TripLogAnalyzer {
         return span(a, b) ?? span(b, a)
     }
 }
+
+// MARK: - List checkup
+
+/// A route's current waypoint labels in route order (hidden "+" points excluded).
+struct RouteWaypoints: Sendable {
+    let root: String
+    let listName: String
+    let labels: [String]
+    let coordinates: [String: CLLocationCoordinate2D]
+}
+
+/// A .list entry split into its endpoints. Handles `R Rt W1 W2` and `R1 Rt1 W1 R2 Rt2 W2`.
+struct ListEntry: Hashable, Sendable {
+    var region1: String, route1: String, waypoint1: String
+    var region2: String, route2: String, waypoint2: String
+    let multiRegion: Bool
+
+    init?(_ line: String) {
+        let f = line.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
+        if f.count == 4 {
+            (region1, route1, waypoint1, region2, route2, waypoint2) = (f[0], f[1], f[2], f[0], f[1], f[3])
+            multiRegion = false
+        } else if f.count == 6 {
+            (region1, route1, waypoint1, region2, route2, waypoint2) = (f[0], f[1], f[2], f[3], f[4], f[5])
+            multiRegion = true
+        } else {
+            return nil
+        }
+    }
+
+    var text: String {
+        multiRegion
+            ? "\(region1) \(route1) \(waypoint1) \(region2) \(route2) \(waypoint2)"
+            : "\(region1) \(route1) \(waypoint1) \(waypoint2)"
+    }
+
+    var routeKey1: String { "\(region1.uppercased()) \(route1.uppercased())" }
+    var routeKey2: String { "\(region2.uppercased()) \(route2.uppercased())" }
+}
+
+/// One flagged line with the fix the checkup proposes (if any).
+struct CheckupFix: Identifiable, Sendable {
+    enum Source: String, Sendable {
+        case automatic = "Automatic"
+        case ai = "AI suggestion"
+        case manual = "You chose"
+    }
+
+    let issue: ListLogIssue
+    var replacement: String?
+    var source: Source?
+    var note: String?
+    /// Current waypoints for the routes in the line, keyed "REGION ROUTE"
+    var routes: [String: RouteWaypoints] = [:]
+
+    /// The line a fix should produce: the original, with a renamed route already applied
+    var target: ListEntry?
+
+    var id: String { issue.id }
+    var canPickWaypoints: Bool {
+        guard let target, !routes.isEmpty else { return false }
+        return routes[target.routeKey1] != nil && routes[target.routeKey2] != nil
+    }
+}
+
+/// Finds lines of the user's list that didn't count in TravelMapping's last nightly update
+/// and proposes fixes. Everything here is deterministic and checked against current route
+/// data; AI suggestions (opt-in, the user's own key) only fill gaps and are validated the
+/// same way before they're shown.
+enum ListCheckup {
+    struct Result: Sendable {
+        var fixes: [CheckupFix]
+        let updates: [ListLogRouteUpdate]
+        /// "psiegel18.list last updated: …" line, for context
+        let fileUpdated: String?
+    }
+
+    static func logURL(username: String, category: RouteCategory) -> URL {
+        let host = category == .rail ? "https://tmrail.teresco.org" : "https://travelmapping.net"
+        return URL(string: "\(host)/logs/users/\(username).log")!
+    }
+
+    static func run(username: String, category: RouteCategory) async throws -> Result {
+        var request = URLRequest(url: logURL(username: username, category: category))
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200, let text = String(data: data, encoding: .utf8) else {
+            throw URLError(.badServerResponse)
+        }
+        let parsed = ListLogParser.parse(text)
+        let fileUpdated = text.components(separatedBy: .newlines).first { $0.contains(" last updated: ") }
+
+        let api: TravelMappingAPI = category == .rail ? .rail : .shared
+        var routeCache: [String: RouteWaypoints?] = [:]
+        func route(_ region: String, _ name: String) async -> RouteWaypoints? {
+            let key = "\(region.uppercased()) \(name.uppercased())"
+            if let cached = routeCache[key] { return cached }
+            let found = await routeWaypoints(api: api, region: region, route: name)
+            routeCache[key] = found
+            return found
+        }
+
+        var fixes: [CheckupFix] = []
+        for issue in parsed.issues {
+            var fix = CheckupFix(issue: issue)
+            guard var entry = ListEntry(issue.line) else { fixes.append(fix); continue }
+            fix.target = entry
+
+            switch issue.kind {
+            case .deprecatedRoute(let old, let canonical):
+                if entry.route1.caseInsensitiveCompare(old) == .orderedSame { entry.route1 = canonical }
+                if entry.route2.caseInsensitiveCompare(old) == .orderedSame { entry.route2 = canonical }
+                fix.target = entry
+                await attachRoutes(&fix, entry: entry, route: route)
+                if labelsExist(entry, in: fix.routes) {
+                    fix.replacement = entry.text
+                    fix.source = .automatic
+                    fix.note = "Route renamed from \(old) to \(canonical); both waypoints are on the renamed route."
+                } else {
+                    fix.note = "Renamed to \(canonical), and some waypoints changed too — pick new ones."
+                }
+            case .missingWaypoints(let labels):
+                await attachRoutes(&fix, entry: entry, route: route)
+                // A label that only differs by case is a safe automatic fix
+                var repaired = entry
+                var allFixed = true
+                for label in labels {
+                    let key = entry.waypoint1 == label ? entry.routeKey1 : entry.routeKey2
+                    guard let match = fix.routes[key]?.labels.first(where: { $0.caseInsensitiveCompare(label) == .orderedSame }) else {
+                        allFixed = false
+                        continue
+                    }
+                    if repaired.waypoint1 == label { repaired.waypoint1 = match }
+                    if repaired.waypoint2 == label { repaired.waypoint2 = match }
+                }
+                if allFixed && repaired != entry {
+                    fix.replacement = repaired.text
+                    fix.source = .automatic
+                    fix.note = "Waypoint label capitalization changed."
+                }
+            case .unknownRoute, .zeroDistance:
+                break
+            }
+            fixes.append(fix)
+        }
+        return Result(fixes: fixes, updates: parsed.updates, fileUpdated: fileUpdated)
+    }
+
+    static func labelsExist(_ entry: ListEntry, in routes: [String: RouteWaypoints]) -> Bool {
+        guard let r1 = routes[entry.routeKey1], let r2 = routes[entry.routeKey2] else { return false }
+        return r1.labels.contains(entry.waypoint1) && r2.labels.contains(entry.waypoint2)
+    }
+
+    private static func attachRoutes(_ fix: inout CheckupFix, entry: ListEntry,
+                                      route: (String, String) async -> RouteWaypoints?) async {
+        if let r = await route(entry.region1, entry.route1) { fix.routes[entry.routeKey1] = r }
+        if let r = await route(entry.region2, entry.route2) { fix.routes[entry.routeKey2] = r }
+    }
+
+    /// TM roots are usually region + route with the first number padded to 3 digits
+    /// ("NY I-81" → ny.i081, "WI US41" → wi.us041). Fall back to scanning the region.
+    private static func routeWaypoints(api: TravelMappingAPI, region: String, route: String) async -> RouteWaypoints? {
+        let listName = "\(region) \(route)"
+        let guess = region.lowercased() + "." + paddedRouteRoot(route)
+        if let result = try? await api.getRegionSegments(roots: [guess], traveler: "null", cacheTTL: 24 * 3600),
+           let waypoints = build(root: guess, listName: listName, segments: result.segments, routes: result.routes) {
+            return waypoints
+        }
+        guard let result = try? await api.getRegionSegments(region: region.uppercased(), traveler: "null", cacheTTL: 24 * 3600),
+              let meta = result.routes.first(where: { $0.listName.caseInsensitiveCompare(listName) == .orderedSame }) else {
+            return nil
+        }
+        return build(root: meta.root, listName: meta.listName, segments: result.segments, routes: result.routes)
+    }
+
+    private static func paddedRouteRoot(_ route: String) -> String {
+        let lower = route.lowercased().replacingOccurrences(of: "-", with: "")
+        let prefix = lower.prefix { !$0.isNumber }
+        let rest = lower.dropFirst(prefix.count)
+        let digits = rest.prefix { $0.isNumber }
+        guard !digits.isEmpty else { return lower }
+        let padded = String(repeating: "0", count: max(0, 3 - digits.count)) + digits
+        return prefix + padded + rest.dropFirst(digits.count)
+    }
+
+    private static func build(root: String, listName: String, segments: [TravelMappingAPI.MapSegment],
+                              routes: [TravelMappingAPI.RouteMetadata]) -> RouteWaypoints? {
+        let hops = segments.filter { $0.root == root }.sorted { $0.orderIndex < $1.orderIndex }
+        guard !hops.isEmpty else { return nil }
+        var labels: [String] = []
+        var coordinates: [String: CLLocationCoordinate2D] = [:]
+        func add(_ label: String, _ coordinate: CLLocationCoordinate2D) {
+            guard !label.hasPrefix("+"), coordinates[label] == nil else { return }
+            labels.append(label)
+            coordinates[label] = coordinate
+        }
+        for hop in hops {
+            add(hop.startName, hop.start)
+            add(hop.endName, hop.end)
+        }
+        let name = routes.first { $0.root == root }?.listName ?? listName
+        return RouteWaypoints(root: root, listName: name, labels: labels, coordinates: coordinates)
+    }
+
+    // MARK: AI suggestions
+
+    /// Asks the user's AI provider for fixes to lines the checkup couldn't fix itself.
+    /// Returns validated suggestions keyed by fix ID; anything naming a waypoint that isn't
+    /// on the route is dropped.
+    @MainActor
+    static func suggestFixes(_ fixes: [CheckupFix], updates: [ListLogRouteUpdate]) async throws -> [String: (line: String, reason: String)] {
+        let candidates = fixes.filter { $0.replacement == nil && $0.canPickWaypoints }
+        guard !candidates.isEmpty else { return [:] }
+
+        let system = """
+        You fix entries in TravelMapping .list files. An entry is "Region Route Waypoint1 Waypoint2" \
+        (or "Region1 Route1 Waypoint1 Region2 Route2 Waypoint2" when it crosses a region border) and marks \
+        the stretch of that route between the two waypoints as traveled. When TravelMapping relabels, \
+        renumbers, or moves waypoints, old entries stop working.
+
+        For each problem, propose a corrected entry that covers the same stretch of road the traveler \
+        originally meant. Use only waypoint labels from that route's current waypoint list, exactly as \
+        written there. Use the route change notes to map old labels to new ones (for example, sequential \
+        exit numbers renumbered to mileage-based ones). Keep the regions and route names unless a note \
+        says the route itself changed. If you can't tell what the traveler meant, use confidence "low" \
+        and say why instead of guessing.
+
+        Reply with JSON only, no other text:
+        {"fixes":[{"id":"<problem id>","line":"<corrected entry>","confidence":"high|medium|low","reason":"<one short sentence>"}]}
+        """
+
+        var prompt = ""
+        for (n, fix) in candidates.enumerated() {
+            prompt += "Problem \(n + 1) (id: \(fix.id))\n"
+            prompt += "TravelMapping says: \(fix.issue.message)\n"
+            prompt += "Entry: \(fix.issue.line)\n"
+            if let target = fix.target, target.text != fix.issue.line {
+                prompt += "The route was renamed; the corrected entry must use: \(target.routeKey1)\(target.multiRegion ? " / \(target.routeKey2)" : "")\n"
+            }
+            let roots = Set(fix.routes.values.map(\.root))
+            let notes = fix.issue.routeNotes + updates.filter { roots.contains($0.root) }.map { "\($0.date): \($0.description)" }
+            if !notes.isEmpty { prompt += "Route change notes:\n" + notes.map { "- \($0)" }.joined(separator: "\n") + "\n" }
+            for (key, route) in fix.routes.sorted(by: { $0.key < $1.key }) {
+                let points = route.labels.map { label -> String in
+                    guard let c = route.coordinates[label] else { return label }
+                    return "\(label) (\(String(format: "%.4f", c.latitude)), \(String(format: "%.4f", c.longitude)))"
+                }
+                prompt += "Current waypoints for \(key) in route order: " + points.joined(separator: "; ") + "\n"
+            }
+            prompt += "\n"
+        }
+
+        let answer = try await AIService.shared.complete(
+            system: system,
+            prompt: prompt,
+            feature: "List checkup",
+            sentSummary: "\(candidates.count) flagged line\(candidates.count == 1 ? "" : "s") from your list file, TravelMapping's notes about them, and the public waypoint lists for \(Set(candidates.flatMap { $0.routes.keys }).count) route(s)"
+        )
+
+        struct Reply: Decodable {
+            struct Fix: Decodable { let id: String; let line: String; let confidence: String?; let reason: String? }
+            let fixes: [Fix]
+        }
+        guard let json = extractJSON(answer), let reply = try? JSONDecoder().decode(Reply.self, from: Data(json.utf8)) else {
+            throw AIService.AIError.emptyResponse
+        }
+
+        var result: [String: (line: String, reason: String)] = [:]
+        for suggestion in reply.fixes {
+            guard let fix = candidates.first(where: { $0.id == suggestion.id }),
+                  let entry = ListEntry(suggestion.line),
+                  let original = fix.target,
+                  entry.multiRegion == original.multiRegion,
+                  // Same routes as the original line, and every waypoint really exists
+                  entry.routeKey1 == original.routeKey1, entry.routeKey2 == original.routeKey2,
+                  labelsExist(entry, in: fix.routes),
+                  entry != original else { continue }
+            let confidence = suggestion.confidence.map { " (\($0) confidence)" } ?? ""
+            result[fix.id] = (entry.text, (suggestion.reason ?? "Suggested by AI") + confidence)
+        }
+        return result
+    }
+
+    /// Pulls the JSON object out of a reply that may wrap it in ``` fences or prose
+    private static func extractJSON(_ text: String) -> String? {
+        guard let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}"), start < end else { return nil }
+        return String(text[start...end])
+    }
+}

@@ -310,6 +310,38 @@ enum ListFileMerger {
         s.hasSuffix("\r") ? String(s.dropLast()) : s
     }
 
+    // MARK: Fixing existing lines
+
+    /// Whitespace-collapsed form used to match a line against TravelMapping's log
+    static func normalizedLine(_ s: String) -> String {
+        s.split(whereSeparator: { $0 == " " || $0 == "\t" }).joined(separator: " ")
+    }
+
+    /// Replaces existing entries — the one edit the checkup makes to lines already in the
+    /// file. Lines match on their data (spacing-insensitive, ignoring a trailing # comment);
+    /// the comment, line ending and the rest of the file are kept byte for byte. Keys are
+    /// the line as TravelMapping's log quotes it; a value starting with "#" comments it out.
+    static func applyReplacements(_ text: String, _ replacements: [String: String]) -> (text: String, applied: [String]) {
+        guard !replacements.isEmpty else { return (text, []) }
+        let normalize = normalizedLine
+        let wanted = Dictionary(replacements.map { (normalize($0.key), $0.value) }, uniquingKeysWith: { a, _ in a })
+        var applied: [String] = []
+        let lines = text.components(separatedBy: "\n").map { raw -> String in
+            let cr = raw.hasSuffix("\r") ? "\r" : ""
+            let body = cr.isEmpty ? raw : String(raw.dropLast())
+            guard !body.trimmingCharacters(in: .whitespaces).hasPrefix("#") else { return raw }
+            let hashIndex = body.firstIndex(of: "#")
+            let data = hashIndex.map { String(body[..<$0]) } ?? body
+            guard let replacement = wanted[normalize(data)] else { return raw }
+            applied.append(normalize(data))
+            // Keep the spacing before an inline comment, and the comment itself
+            let trailing = String(data.reversed().prefix { $0 == " " || $0 == "\t" }.reversed())
+            let comment = hashIndex.map { String(body[$0...]) } ?? ""
+            return replacement + (comment.isEmpty ? "" : (trailing.isEmpty ? " " : trailing) + comment) + cr
+        }
+        return (lines.joined(separator: "\n"), applied)
+    }
+
     // MARK: Classification
 
     private static func classify(_ raw: String) -> Kind {

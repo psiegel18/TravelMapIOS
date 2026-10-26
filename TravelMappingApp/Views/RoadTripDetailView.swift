@@ -841,6 +841,8 @@ struct ListUpdateSheet: View {
     let category: RouteCategory
     let blockTitle: String
     let tripNames: [String]
+    /// Existing lines to rewrite (list checkup fixes): logged line → corrected line
+    var replacements: [String: String] = [:]
     /// Called once the update is on its way — with the PR when the app opened one
     let onSubmitted: (ListUpdatePR?) -> Void
 
@@ -856,6 +858,8 @@ struct ListUpdateSheet: View {
     @State private var isOpeningPR = false
     @State private var prError: String?
     @State private var openedPR: ListUpdatePR?
+    /// Normalized original lines the replacements matched in the current file
+    @State private var appliedFixes: [String] = []
     /// Lines this send added (an appended PR's lineCount is its running total)
     @State private var sentLineCount = 0
     @State private var showSignIn = false
@@ -888,7 +892,9 @@ struct ListUpdateSheet: View {
                             manualFooter
                         }
                     }
-                    copyLinesSection(result)
+                    if !result.placements.isEmpty {
+                        copyLinesSection(result)
+                    }
                 } else if let errorMessage {
                     Section {
                         Text(errorMessage)
@@ -925,6 +931,31 @@ struct ListUpdateSheet: View {
 
     @ViewBuilder
     private func placementSections(_ result: ListFileMerger.Result) -> some View {
+        if !replacements.isEmpty {
+            Section {
+                ForEach(replacements.sorted(by: { $0.key < $1.key }), id: \.key) { old, new in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(old)
+                            .strikethrough()
+                            .foregroundStyle(TMDesign.tertiaryText)
+                        Text(new)
+                            .foregroundStyle(appliedFixes.contains(ListFileMerger.normalizedLine(old)) ? .primary : TMDesign.tertiaryText)
+                    }
+                    .font(.system(size: 14, weight: .medium, design: .monospaced))
+                }
+            } header: {
+                Text("Lines being fixed")
+            } footer: {
+                let missing = replacements.count - appliedFixes.count
+                if missing > 0 {
+                    Text("\(missing) of these line\(missing == 1 ? " isn't" : "s aren't") in your current \(fileName) anymore — probably already fixed — and will be skipped.")
+                } else {
+                    Text("Only these lines change; any comment at the end of a line is kept.")
+                }
+            }
+        }
+
+        if !result.placements.isEmpty {
         Section {
             ForEach(result.placements) { placement in
                 VStack(alignment: .leading, spacing: 3) {
@@ -945,6 +976,7 @@ struct ListUpdateSheet: View {
             } else {
                 Text("Placed next to similar routes, following how your \(fileName) is organized. Nothing already in your file is changed.")
             }
+        }
         }
 
         if !result.duplicates.isEmpty {
@@ -976,7 +1008,7 @@ struct ListUpdateSheet: View {
                             .font(.system(size: 16, weight: .semibold))
                     }
                 }
-                .disabled(isOpeningPR || (result?.placements.isEmpty ?? true) || !hasExistingFile)
+                .disabled(isOpeningPR || ((result?.placements.isEmpty ?? true) && appliedFixes.isEmpty) || !hasExistingFile)
             } else {
                 Button {
                     showSignIn = true
@@ -1047,6 +1079,13 @@ struct ListUpdateSheet: View {
         }
     }
 
+    private var sentSummary: String {
+        var parts: [String] = []
+        if sentLineCount > 0 { parts.append("\(sentLineCount.formatted()) new line\(sentLineCount == 1 ? "" : "s")") }
+        if !appliedFixes.isEmpty { parts.append("\(appliedFixes.count) fixed line\(appliedFixes.count == 1 ? "" : "s")") }
+        return parts.joined(separator: " and ") + (sentLineCount + appliedFixes.count == 1 ? " is" : " are")
+    }
+
     private func prOpenedSection(_ pr: ListUpdatePR) -> some View {
         Section {
             VStack(alignment: .leading, spacing: 8) {
@@ -1054,7 +1093,7 @@ struct ListUpdateSheet: View {
                       systemImage: "checkmark.circle.fill")
                     .font(.system(size: 17, weight: .bold))
                     .foregroundStyle(TMDesign.greenChipFG)
-                Text("\(sentLineCount.formatted()) new line\(sentLineCount == 1 ? " is" : "s are") waiting for the TravelMapping team to merge. Once they do, the next nightly update adds them to your stats.")
+                Text(sentSummary + " waiting for the TravelMapping team to merge. Once they do, the next nightly update adds them to your stats.")
                     .font(.system(size: 15))
                     .foregroundStyle(TMDesign.secondaryText)
             }
@@ -1086,7 +1125,8 @@ struct ListUpdateSheet: View {
         do {
             let existing = try await DataService.fetchCurrentListText(username: username, category: category)
             hasExistingFile = existing != nil
-            let text = existing ?? ""
+            let (text, applied) = ListFileMerger.applyReplacements(existing ?? "", replacements)
+            appliedFixes = applied
             let lines = lines
             let blockTitle = blockTitle
             let appendOnly = appendOnly
@@ -1110,6 +1150,7 @@ struct ListUpdateSheet: View {
                 blockTitle: blockTitle,
                 appendOnly: appendOnly,
                 tripNames: tripNames,
+                replacements: replacements,
                 appendingTo: openPR
             )
             sentLineCount = merge.placements.count

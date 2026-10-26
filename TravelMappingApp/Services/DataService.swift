@@ -413,6 +413,7 @@ final class GitHubService: ObservableObject {
         blockTitle: String,
         appendOnly: Bool,
         tripNames: [String],
+        replacements: [String: String] = [:],
         appendingTo openPR: ListUpdatePR?
     ) async throws -> (pr: ListUpdatePR, merge: ListFileMerger.Result) {
         guard isSignedIn else { throw GitHubError.notSignedIn }
@@ -431,10 +432,11 @@ final class GitHubService: ObservableObject {
         }
         if let openPR, let fork = openPR.fork, let branch = openPR.branch, let headSHA = openBranchSHA {
             let file = try await readFile(repo: fork, sha: headSHA, path: path)
-            let merge = await Self.merge(file.text, lines, blockTitle, appendOnly)
-            guard !merge.placements.isEmpty else { throw GitHubError.nothingNew }
+            let (fixedText, fixed) = ListFileMerger.applyReplacements(file.text, replacements)
+            let merge = await Self.merge(fixedText, lines, blockTitle, appendOnly)
+            guard !merge.placements.isEmpty || !fixed.isEmpty else { throw GitHubError.nothingNew }
             try await commit(repo: fork, branch: branch, path: path, text: merge.text, fileSHA: file.sha,
-                             message: "Add \(merge.placements.count) more segment\(merge.placements.count == 1 ? "" : "s") from \(names)")
+                             message: Self.commitSummary(added: merge.placements.count, fixed: fixed.count, from: names, more: true))
             var updated = openPR
             updated.lineCount += merge.placements.count
             breadcrumb("Added \(merge.placements.count) lines to PR #\(openPR.number)")
@@ -444,8 +446,9 @@ final class GitHubService: ObservableObject {
         // 1. Upstream head + current file at that exact commit (no CDN staleness)
         let baseSHA = try await refSHA(repo: Self.upstream, branch: "master")
         let file = try await readFile(repo: Self.upstream, sha: baseSHA, path: path)
-        let merge = await Self.merge(file.text, lines, blockTitle, appendOnly)
-        guard !merge.placements.isEmpty else { throw GitHubError.nothingNew }
+        let (fixedText, fixed) = ListFileMerger.applyReplacements(file.text, replacements)
+        let merge = await Self.merge(fixedText, lines, blockTitle, appendOnly)
+        guard !merge.placements.isEmpty || !fixed.isEmpty else { throw GitHubError.nothingNew }
 
         // 2. Fork (idempotent — returns the existing fork if there is one)
         struct Repo: Decodable {
@@ -486,20 +489,26 @@ final class GitHubService: ObservableObject {
 
         // 4. Commit the merged file
         try await commit(repo: fork, branch: branch, path: path, text: merge.text, fileSHA: file.sha,
-                         message: "Update \(username).\(category.fileExtension): \(merge.placements.count) segment\(merge.placements.count == 1 ? "" : "s") from \(names)")
+                         message: "Update \(username).\(category.fileExtension): " + Self.commitSummary(added: merge.placements.count, fixed: fixed.count, from: names, more: false))
 
         // 5. Pull request — head owner from the fork itself (survives GitHub renames)
-        let lineList = merge.placements.map { "- `\($0.line.text)`" }.joined(separator: "\n")
-        let prBody = """
-        Adds \(merge.placements.count) segment\(merge.placements.count == 1 ? "" : "s") recorded with GPS in the Travel Mapping iOS app (\(names)).
-
-        \(lineList)
-
-        Existing lines are unchanged; new lines were placed alongside similar routes.
-        """
+        var sections: [String] = []
+        if !merge.placements.isEmpty {
+            sections.append("Adds \(merge.placements.count) segment\(merge.placements.count == 1 ? "" : "s") recorded with GPS in the Travel Mapping iOS app (\(names)):\n\n"
+                + merge.placements.map { "- `\($0.line.text)`" }.joined(separator: "\n")
+                + "\n\nNew lines were placed alongside similar routes.")
+        }
+        if !fixed.isEmpty {
+            sections.append("Fixes \(fixed.count) line\(fixed.count == 1 ? "" : "s") flagged in the TravelMapping site-update log:\n\n"
+                + fixed.map { old in
+                    let new = replacements.first { ListFileMerger.normalizedLine($0.key) == old }?.value ?? ""
+                    return "- `\(old)` → `\(new)`"
+                }.joined(separator: "\n"))
+        }
+        let prBody = sections.joined(separator: "\n\n")
         struct PR: Decodable { let number: Int; let html_url: URL }
         let pr = try JSONDecoder().decode(PR.self, from: try await api("POST", "/repos/\(Self.upstream)/pulls", body: [
-            "title": "\(username): add \(merge.placements.count) recorded segment\(merge.placements.count == 1 ? "" : "s")",
+            "title": "\(username): " + Self.commitSummary(added: merge.placements.count, fixed: fixed.count, from: nil, more: false),
             "head": "\(forkRepo.owner.login):\(branch)",
             "base": "master",
             "body": prBody,
@@ -511,6 +520,15 @@ final class GitHubService: ObservableObject {
         breadcrumb("Opened list update PR #\(pr.number) (\(merge.placements.count) lines)")
         return (ListUpdatePR(number: pr.number, url: pr.html_url, createdAt: Date(), lineCount: merge.placements.count,
                              branch: branch, fork: fork), merge)
+    }
+
+    private static func commitSummary(added: Int, fixed: Int, from names: String?, more: Bool) -> String {
+        var parts: [String] = []
+        if added > 0 { parts.append("add \(added)\(more ? " more" : "") recorded segment\(added == 1 ? "" : "s")") }
+        if fixed > 0 { parts.append("fix \(fixed) line\(fixed == 1 ? "" : "s")") }
+        var summary = parts.joined(separator: ", ")
+        if let names, added > 0, !names.isEmpty { summary += " from \(names)" }
+        return summary.prefix(1).uppercased() + summary.dropFirst()
     }
 
     private func refSHA(repo: String, branch: String, quiet: Bool = false) async throws -> String {
@@ -756,7 +774,7 @@ final class AIService: ObservableObject {
             case .notReady: return "Turn on AI Assistant in Settings first."
             case .badBaseURL: return "That API address isn't a valid https URL."
             case .http(let status, let message):
-                if status == 401 || status == 403 { return "The provider rejected the API key (\(status)). Check it in Settings › AI Assistant." }
+                if status == 401 || status == 403 { return "The provider rejected the API key (\(status)). Check the key and that your account has API access." }
                 if status == 429 { return "Rate limited or out of credit with the provider (429): \(message)" }
                 return "The AI provider returned \(status): \(message)"
             case .refused(let category): return "The model declined this request\(category.map { " (\($0))" } ?? "")."
@@ -810,6 +828,17 @@ final class AIService: ObservableObject {
     }
 
     private var consentScope: String { "\(provider?.rawValue ?? "")|\(host)" }
+
+    /// True for requests to an AI provider — Sentry drops their failed-request events, since
+    /// they concern the user's own account and must never carry prompts or keys to us.
+    nonisolated static func isAIProviderURL(_ urlString: String) -> Bool {
+        guard let host = URL(string: urlString)?.host else { return false }
+        var hosts: Set<String> = ["api.anthropic.com", "api.openai.com", "api.x.ai"]
+        if let custom = UserDefaults.standard.string(forKey: "aiBaseURL").flatMap({ URL(string: $0)?.host }) {
+            hosts.insert(custom)
+        }
+        return hosts.contains(host)
+    }
 
     // MARK: Setup
 
