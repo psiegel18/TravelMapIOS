@@ -132,6 +132,29 @@ class DataService: ObservableObject {
         )
     }
 
+    /// Current text of a user's list file, bypassing every cache — merging new lines into a
+    /// stale copy would silently drop whatever the user changed since. Returns nil when the
+    /// user has no file of this type yet.
+    nonisolated static func fetchCurrentListText(username: String, category: RouteCategory) async throws -> String? {
+        let url = URL(string: "\(rawBase)/\(category.directoryName)/\(username).\(category.fileExtension)")!
+        var request = URLRequest(url: url)
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+        if statusCode == 404 { return nil }
+        guard statusCode == 200 else { throw DataServiceError.badStatus(statusCode) }
+        guard let content = String(data: data, encoding: .utf8) else {
+            throw URLError(.cannotDecodeContentData)
+        }
+        return content
+    }
+
+    /// GitHub web-editor URL for a user's list file. For non-collaborators GitHub forks
+    /// the repo and opens a pull request when they tap "Propose changes".
+    nonisolated static func listFileEditURL(username: String, category: RouteCategory) -> URL {
+        URL(string: "https://github.com/TravelMapping/UserData/edit/master/\(category.directoryName)/\(username).\(category.fileExtension)")!
+    }
+
     // MARK: - GitHub API
 
     private struct GitHubFile: Decodable {

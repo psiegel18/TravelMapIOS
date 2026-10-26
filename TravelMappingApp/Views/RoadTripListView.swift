@@ -1,5 +1,6 @@
 import SwiftUI
 import CoreLocation
+import Sentry
 
 struct RoadTripListView: View {
     @ObservedObject private var recorder = TripRecordingService.shared
@@ -9,6 +10,8 @@ struct RoadTripListView: View {
     @State private var showOrphanedDialog = false
     @State private var showLocationDeniedAlert = false
     @State private var showTripTypeChooser = false
+    @State private var pendingSummary: (lines: Int, trips: Int)?
+    @ObservedObject private var settings = SyncedSettingsService.shared
 
     private var locationPermissionDenied: Bool {
         let status = CLLocationManager().authorizationStatus
@@ -45,6 +48,18 @@ struct RoadTripListView: View {
                     startTripButton
                         .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
                         .listRowBackground(Color.clear)
+                }
+            }
+
+            if let pending = pendingSummary, pending.lines > 0 {
+                Section {
+                    NavigationLink {
+                        PendingListUpdatesView(trips: trips, username: settings.primaryUser) {
+                            await loadTrips()
+                        }
+                    } label: {
+                        pendingRow(pending)
+                    }
                 }
             }
 
@@ -129,6 +144,14 @@ struct RoadTripListView: View {
         }
         .refreshable {
             await loadTrips()
+        }
+        .onAppear {
+            // Returning from a trip detail where lines may have been marked submitted
+            guard !isLoading else { return }
+            Task { await loadTrips() }
+        }
+        .onChange(of: settings.primaryUser) {
+            Task { await loadPendingSummary() }
         }
     }
 
@@ -223,6 +246,48 @@ struct RoadTripListView: View {
         let loaded = (try? await TripStorageService.shared.listTrips()) ?? []
         trips = loaded.filter { $0.status != .recording }
         isLoading = false
+        await loadPendingSummary()
+    }
+
+    /// Counts trip segments not yet in the user's list files (road and rail separately,
+    /// since they live in different files).
+    private func loadPendingSummary() async {
+        let username = settings.primaryUser
+        let candidates = trips.filter { $0.status == .completed && !$0.matchedSegments.isEmpty }
+        guard !username.isEmpty, !candidates.isEmpty else {
+            pendingSummary = nil
+            return
+        }
+        var lines = 0
+        var tripIDs = Set<UUID>()
+        for type in [TripType.road, .rail] {
+            let typed = candidates.filter { $0.tripType == type }
+            guard !typed.isEmpty,
+                  let analysis = try? await TripLogAnalyzer.analyze(trips: typed, username: username) else { continue }
+            lines += analysis.newRanges.count
+            tripIDs.formUnion(analysis.newRanges.flatMap(\.tripIDs))
+        }
+        pendingSummary = (lines, tripIDs.count)
+    }
+
+    private func pendingRow(_ pending: (lines: Int, trips: Int)) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "text.badge.plus")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(TMDesign.amberChipFG)
+                .frame(width: 34, height: 34)
+                .background(TMDesign.amberChipBG, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("\(pending.lines.formatted()) segment\(pending.lines == 1 ? "" : "s") not in your list yet")
+                    .font(.system(size: 17, weight: .bold))
+                Text("From \(pending.trips.formatted()) trip\(pending.trips == 1 ? "" : "s") · tap to update your .list")
+                    .font(.system(size: 15))
+                    .foregroundStyle(TMDesign.secondaryText)
+            }
+        }
+        .padding(.vertical, 6)
+        .accessibilityElement(children: .combine)
     }
 
     private func confirmDelete(at offsets: IndexSet) {
@@ -310,4 +375,162 @@ private extension View {
             Text("GPS tracking detects which TM routes you travel — no tapping required.")
         }
     }
+}
+
+// MARK: - Pending .list updates
+
+/// Every traveled-but-not-logged segment across all recorded trips, deduplicated,
+/// grouped by region, ready to merge into the user's list files.
+struct PendingListUpdatesView: View {
+    let trips: [RoadTrip]
+    let username: String
+    let onTripsChanged: () async -> Void
+
+    @State private var road: TripLogAnalysis?
+    @State private var rail: TripLogAnalysis?
+    @State private var isLoading = true
+    @State private var errorMessage: String?
+    @State private var excludedRangeIDs: Set<String> = []
+    @State private var sheetType: TripType?
+    @State private var localTrips: [RoadTrip] = []
+
+    var body: some View {
+        List {
+            if isLoading {
+                Section {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                        Text("Comparing your trips with your list files…")
+                            .foregroundStyle(TMDesign.secondaryText)
+                    }
+                }
+            } else if let errorMessage {
+                Section {
+                    Text(errorMessage)
+                    Button("Try Again") { Task { await analyze() } }
+                }
+            } else {
+                if let road, !road.newRanges.isEmpty {
+                    typeSections(road, type: .road)
+                }
+                if let rail, !rail.newRanges.isEmpty {
+                    typeSections(rail, type: .rail)
+                }
+                if (road?.newRanges.isEmpty ?? true) && (rail?.newRanges.isEmpty ?? true) {
+                    Section {
+                        Text("All caught up — every recorded segment is in your list files or already submitted.")
+                            .foregroundStyle(TMDesign.secondaryText)
+                    }
+                }
+            }
+        }
+        .navigationTitle("Pending .list Updates")
+        .navigationBarTitleDisplayMode(.inline)
+        .sentryScreen("PendingListUpdates")
+        .sheet(item: $sheetType) { type in
+            ListUpdateSheet(
+                lines: included(type == .rail ? rail : road).map(\.line),
+                username: username,
+                category: type == .rail ? .rail : .road,
+                blockTitle: "\(Date().formatted(.iso8601.year().month().day())) recorded trips",
+                onMarkSubmitted: { markSubmitted(included(type == .rail ? rail : road)) }
+            )
+        }
+        .task {
+            localTrips = trips
+            await analyze()
+        }
+    }
+
+    @ViewBuilder
+    private func typeSections(_ analysis: TripLogAnalysis, type: TripType) -> some View {
+        let grouped = Dictionary(grouping: analysis.newRanges, by: \.region)
+        Section {
+            Button {
+                Haptics.light()
+                sheetType = type
+            } label: {
+                Label("Update my .\(type == .rail ? "rlist" : "list") (\(included(analysis).count.formatted()) lines)",
+                      systemImage: "square.and.pencil")
+                    .font(.system(size: 16, weight: .semibold))
+            }
+            .disabled(included(analysis).isEmpty)
+        } header: {
+            Text(type == .rail ? "Rail & Transit" : "Roads")
+        } footer: {
+            if analysis.unresolvedCount > 0 {
+                Text("\(analysis.unresolvedCount.formatted()) recorded segments couldn't be matched to current route data.")
+            }
+        }
+        ForEach(grouped.keys.sorted(), id: \.self) { region in
+            Section(region) {
+                ForEach(grouped[region] ?? []) { range in
+                    VStack(alignment: .leading, spacing: 4) {
+                        ListLineToggleRow(
+                            range: range,
+                            isIncluded: !excludedRangeIDs.contains(range.id),
+                            onToggle: {
+                                if excludedRangeIDs.contains(range.id) {
+                                    excludedRangeIDs.remove(range.id)
+                                } else {
+                                    excludedRangeIDs.insert(range.id)
+                                }
+                            }
+                        )
+                        Text(tripNames(for: range))
+                            .font(.system(size: 12))
+                            .foregroundStyle(TMDesign.tertiaryText)
+                            .padding(.leading, 28)
+                    }
+                }
+            }
+        }
+    }
+
+    private func included(_ analysis: TripLogAnalysis?) -> [TripLogRange] {
+        (analysis?.newRanges ?? []).filter { !excludedRangeIDs.contains($0.id) }
+    }
+
+    private func tripNames(for range: TripLogRange) -> String {
+        localTrips.filter { range.tripIDs.contains($0.id) }.map(\.name).joined(separator: ", ")
+    }
+
+    private func analyze() async {
+        errorMessage = nil
+        let candidates = localTrips.filter { $0.status == .completed && !$0.matchedSegments.isEmpty }
+        do {
+            let roadTrips = candidates.filter { $0.tripType == .road }
+            let railTrips = candidates.filter { $0.tripType == .rail }
+            road = roadTrips.isEmpty ? nil : try await TripLogAnalyzer.analyze(trips: roadTrips, username: username)
+            rail = railTrips.isEmpty ? nil : try await TripLogAnalyzer.analyze(trips: railTrips, username: username)
+        } catch {
+            SentrySDK.capture(error: error)
+            errorMessage = "Couldn't check your list files right now."
+        }
+        isLoading = false
+    }
+
+    private func markSubmitted(_ ranges: [TripLogRange]) {
+        var changed: [RoadTrip] = []
+        for i in localTrips.indices {
+            let keys = ranges.filter { $0.tripIDs.contains(localTrips[i].id) }.flatMap(\.hopKeys)
+            guard !keys.isEmpty else { continue }
+            localTrips[i].submittedHopKeys = Array(Set(localTrips[i].submittedHopKeys).union(keys))
+            changed.append(localTrips[i])
+        }
+        let crumb = Breadcrumb(level: .info, category: "list_update")
+        crumb.message = "Marked \(ranges.count) ranges submitted across \(changed.count) trips"
+        SentrySDK.addBreadcrumb(crumb)
+        Task {
+            for trip in changed {
+                try? await TripStorageService.shared.save(trip)
+            }
+            await analyze()
+            await onTripsChanged()
+        }
+    }
+}
+
+extension TripType: Identifiable {
+    public var id: String { rawValue }
 }
