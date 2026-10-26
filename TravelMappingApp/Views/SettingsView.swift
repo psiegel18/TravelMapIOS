@@ -226,7 +226,7 @@ struct SettingsView: View {
                 Button {
                     showTipJar = true
                 } label: {
-                    Label("Leave a Tip", systemImage: "heart")
+                    Label("Tip the App Developer", systemImage: "heart")
                 }
                 .sheet(isPresented: $showTipJar) {
                     // Medium detent is right for iPhone, but on iPad it renders as a
@@ -242,6 +242,8 @@ struct SettingsView: View {
                 }
             } header: {
                 TMDesign.sectionHeader("Support")
+            } footer: {
+                Text("Tips go to the independent developer of this iPhone app — not to the Travel Mapping project, which runs the website and route data.")
             }
 
             // MARK: About
@@ -953,13 +955,37 @@ struct TipJarSheet: View {
                 VStack(spacing: 6) {
                     Text("The Tip Jar")
                         .font(.system(size: 28, weight: .heavy))
-                    Text("Travel Mapping is free and open source. Tips keep the wheels turning — every mile of development is fan-funded.")
+                    Text("Tips support this iPhone app, which is built and maintained by one independent developer.")
                         .font(.system(size: 15))
                         .foregroundStyle(TMDesign.secondaryText)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 24)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+
+                // Credit where it's due: the app is a client for someone else's project
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Who does what", systemImage: "info.circle.fill")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(TMDesign.accent)
+                    Text("The Travel Mapping website, route data, and every traveler's stats are the work of the Travel Mapping project and its volunteers. The app's developer didn't build any of that and isn't part of that team — this app just shows their data on your iPhone.")
+                        .font(.system(size: 14))
+                        .foregroundStyle(TMDesign.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("Tips go only to the app's developer, for work on the iPhone, iPad, Apple Watch, and widget apps — not to the Travel Mapping project.")
+                        .font(.system(size: 14))
+                        .foregroundStyle(TMDesign.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Link(destination: URL(string: "https://travelmapping.net")!) {
+                        Label("Visit the Travel Mapping project", systemImage: "arrow.up.forward.app")
+                            .font(.system(size: 14, weight: .semibold))
+                    }
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .padding(.horizontal, 20)
+                .accessibilityElement(children: .combine)
 
                 TipJarView()
                     .padding(.horizontal, 20)
