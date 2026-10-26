@@ -40,7 +40,7 @@
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>Travel Mapping needs continuous location access to record your road trip routes in the background.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Travel Mapping uses your location to show where you are on the map relative to your traveled routes.</string>
+	<string>Travel Mapping uses your location to show where you are on the map relative to your traveled routes, and to plan routes starting from where you are.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>UIBackgroundModes</key>

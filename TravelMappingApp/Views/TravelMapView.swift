@@ -1640,23 +1640,38 @@ struct TravelMapView: View {
 class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
     @Published var lastLocation: CLLocation?
+    @Published var authorizationStatus: CLAuthorizationStatus = .notDetermined
+    /// A fix was asked for before permission was decided; fetch it once allowed
+    private var wantsLocation = false
 
     override init() {
         super.init()
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        authorizationStatus = manager.authorizationStatus
     }
 
     func requestLocation() {
+        wantsLocation = true
         manager.requestWhenInUseAuthorization()
         manager.requestLocation()
     }
 
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        authorizationStatus = manager.authorizationStatus
+        if wantsLocation, [.authorizedWhenInUse, .authorizedAlways].contains(manager.authorizationStatus) {
+            manager.requestLocation()
+        }
+    }
+
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        wantsLocation = false
         lastLocation = locations.last
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        // Denied permission and a momentarily unknown fix are expected, not bugs
+        if let code = (error as? CLError)?.code, code == .denied || code == .locationUnknown { return }
         SentrySDK.capture(error: error)
     }
 }

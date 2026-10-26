@@ -738,7 +738,7 @@ enum AIProvider: String, CaseIterable, Codable, Identifiable {
         case .anthropic: return "Claude (Anthropic)"
         case .openai: return "ChatGPT (OpenAI)"
         case .xai: return "Grok (xAI)"
-        case .custom: return "Other (OpenAI-compatible)"
+        case .custom: return "Other (OpenAI API)"  // longer names push the picker value onto its own line
         }
     }
 
@@ -979,6 +979,12 @@ final class AIService: ObservableObject {
             ? customBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             : (provider.defaultBaseURL ?? "")
         guard let url = URL(string: base), url.scheme == "https", url.host != nil else { throw AIError.badBaseURL }
+        // A built-in provider's address typed under Other gets that provider's own API and auth
+        if provider == .custom, let known = AIProvider.allCases.first(where: {
+            $0.defaultBaseURL.flatMap { URL(string: $0)?.host } == url.host
+        }) {
+            return try await connect(provider: known, key: key, customBaseURL: "")
+        }
 
         let models = try await Self.listModels(provider: provider, baseURL: base, key: trimmedKey)
 

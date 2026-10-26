@@ -70,7 +70,7 @@ actor TravelMappingAPI {
 
     // MARK: - Processed Types for the App
 
-    struct MapSegment: Identifiable {
+    struct MapSegment: Identifiable, Sendable {
         /// Stable content-based identity ("root|startName|endName"). Must NOT be a
         /// response array index — indices collide across regions and between the road
         /// and rail APIs, which corrupts selection sets built from multiple responses.
