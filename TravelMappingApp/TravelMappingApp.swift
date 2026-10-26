@@ -101,8 +101,9 @@ struct TravelMappingApp: App {
             // -- Screenshots & View Hierarchy on Errors --
             options.attachScreenshot = true
             options.attachViewHierarchy = true
-            // Screenshot masking is configured separately from Session Replay. App has no PII,
-            // so clear the defaults so error-attached screenshots aren't black-boxed.
+            // Screenshot masking is configured separately from Session Replay. Views with private
+            // content (Route Planner, keys, GitHub account) opt in via .sentryReplayMask(), which
+            // screenshots honor too, so clear the blanket defaults that black-box everything.
             options.screenshot.maskAllText = false
             options.screenshot.maskAllImages = false
             options.screenshot.maskedViewClasses = []
@@ -114,7 +115,7 @@ struct TravelMappingApp: App {
             options.tracePropagationTargets = ["travelmapping.net", "tmrail.teresco.org"]
 
 
-            // -- Session Replay (all unmasked — no private info) --
+            // -- Session Replay (unmasked except views marked .sentryReplayMask()) --
             // TestFlight gets full coverage for beta debugging; App Store is sampled to conserve quota.
             switch buildChannel {
             case "development": options.sessionReplay.sessionSampleRate = 1.0
@@ -126,7 +127,7 @@ struct TravelMappingApp: App {
             options.sessionReplay.maskAllImages = false
             options.sessionReplay.maskedViewClasses = []
             options.sessionReplay.quality = .medium
-            // App has no PII, so override the iOS 26+ Liquid Glass safeguard that auto-disables
+            // Private views are masked individually, so override the iOS 26+ Liquid Glass safeguard that auto-disables
             // Session Replay on recent iOS/Xcode combos. Without this, most beta testers (iOS 26+)
             // generate zero replays.
             options.experimental.enableSessionReplayInUnreliableEnvironment = true
@@ -138,8 +139,6 @@ struct TravelMappingApp: App {
                 config.customButton = TravelMappingApp.feedbackTrigger
                 config.onSubmitSuccess = { data in
                     SentrySDK.logger.info("User feedback submitted", attributes: [
-                        "hasName": !((data["name"] as? String) ?? "").isEmpty,
-                        "hasEmail": !((data["email"] as? String) ?? "").isEmpty,
                         "hasAttachment": !((data["attachments"] as? [Any]) ?? []).isEmpty,
                         "feedback_type": "shake",
                     ])
@@ -154,11 +153,12 @@ struct TravelMappingApp: App {
 
                 config.configureForm = { form in
                     form.messageLabel = "Message"
-                    form.showName = true
-                    form.showEmail = true
+                    // No name/email: feedback stays anonymous (App Store label has no Contact Info).
+                    form.showName = false
+                    form.showEmail = false
                     form.isNameRequired = false
                     form.isEmailRequired = false
-                    form.useSentryUser = true
+                    form.useSentryUser = false
                     form.showBranding = false
                     // Sentry's form now only serves shake / screenshot detection; the
                     // Settings buttons use the native FeedbackSheet (SettingsView.swift).
@@ -175,8 +175,12 @@ struct TravelMappingApp: App {
                 if buildChannel == "appstore", log.level == .trace || log.level == .debug {
                     return nil
                 }
-                return log
+                return SentryPrivacy.scrub(log)
             }
+
+            // -- Keep the user's username out of diagnostics (see SentryPrivacy) --
+            options.beforeBreadcrumb = { crumb in SentryPrivacy.scrub(crumb) }
+            options.beforeSendSpan = { span in SentryPrivacy.scrub(span) }
 
             // -- Filter out expected noise (cancellations, denied permissions) --
             options.beforeSend = { event in
@@ -201,7 +205,7 @@ struct TravelMappingApp: App {
                         }
                     }
                 }
-                return event
+                return SentryPrivacy.scrub(event)
             }
 
             // -- Custom tags & context --
@@ -226,13 +230,6 @@ struct TravelMappingApp: App {
 
         // Kick off the app-lifetime StoreKit transaction listener.
         _ = Self.transactionListener
-
-        if let username = UserDefaults.standard.string(forKey: "primaryUser"), !username.isEmpty {
-            SentrySDK.configureScope { scope in
-                scope.setUser(User(userId: username))
-                scope.setTag(value: username, key: "tm.username")
-            }
-        }
 
         // Initial contexts — read from the source-of-truth services so the values match
         // whatever those services will write on subsequent updates (no drift).
@@ -289,4 +286,99 @@ private struct FeedbackTriggerHost: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: UIView, context: Context) {}
+}
+
+/// Keeps the device owner's TravelMapping username (and GitHub login) out of everything sent to Sentry, so
+/// diagnostics aren't linked to an identity (App Store label: "Data Not Linked to You").
+/// The username still reaches Sentry indirectly — in log text, breadcrumb and span URLs
+/// (`?u=`, `traveler`) and extras — so it's replaced wherever it appears as a whole token.
+/// Other travelers' names (favorites, comparisons) are public and left alone.
+enum SentryPrivacy {
+    static let placeholder = "[user]"
+
+    private final class Cache: @unchecked Sendable {
+        let lock = NSLock()
+        var names: [String] = []
+        var regex: NSRegularExpression?
+    }
+    private static let cache = Cache()
+
+    /// The TravelMapping username and, when signed in, the GitHub login (it's in fork URLs).
+    private static func regex() -> NSRegularExpression? {
+        let names = ["primaryUser", "githubLogin"]
+            .compactMap { UserDefaults.standard.string(forKey: $0)?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !names.isEmpty else { return nil }
+        cache.lock.lock(); defer { cache.lock.unlock() }
+        if cache.names != names {
+            cache.names = names
+            let tokens = names.map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|")
+            cache.regex = try? NSRegularExpression(
+                pattern: "(?<![A-Za-z0-9_-])(?:\(tokens))(?![A-Za-z0-9_-])",
+                options: .caseInsensitive)
+        }
+        return cache.regex
+    }
+
+    static func scrub(_ text: String) -> String {
+        guard let regex = regex() else { return text }
+        return regex.stringByReplacingMatches(
+            in: text, range: NSRange(text.startIndex..., in: text),
+            withTemplate: NSRegularExpression.escapedTemplate(for: placeholder))
+    }
+
+    static func scrubValue(_ value: Any) -> Any {
+        switch value {
+        case let text as String: return scrub(text)
+        case let dict as [String: Any]: return dict.mapValues(scrubValue)
+        case let array as [Any]: return array.map(scrubValue)
+        default: return value
+        }
+    }
+
+    static func scrub(_ event: Event) -> Event {
+        if let message = event.message {
+            let scrubbed = SentryMessage(formatted: scrub(message.formatted))
+            scrubbed.message = message.message.map(scrub)
+            scrubbed.params = message.params?.map(scrub)
+            event.message = scrubbed
+        }
+        event.transaction = event.transaction.map(scrub)
+        event.tags = event.tags?.mapValues(scrub)
+        event.extra = event.extra?.mapValues(scrubValue)
+        event.context = event.context?.mapValues { (scrubValue($0) as? [String: Any]) ?? $0 }
+        event.exceptions?.forEach { $0.value = $0.value.map(scrub) }
+        if let request = event.request {
+            request.url = request.url.map(scrub)
+            request.queryString = request.queryString.map(scrub)
+        }
+        event.breadcrumbs?.forEach { _ = scrub($0) }
+        return event
+    }
+
+    static func scrub(_ crumb: Breadcrumb) -> Breadcrumb {
+        crumb.message = crumb.message.map(scrub)
+        crumb.data = crumb.data?.mapValues(scrubValue)
+        return crumb
+    }
+
+    static func scrub(_ span: Span) -> Span {
+        span.spanDescription = span.spanDescription.map(scrub)
+        for (key, value) in span.data {
+            if let text = value as? String { span.setData(value: scrub(text), key: key) }
+        }
+        return span
+    }
+
+    static func scrub(_ log: SentryLog) -> SentryLog {
+        log.body = scrub(log.body)
+        for (key, attribute) in log.attributes {
+            if let text = attribute.value as? String {
+                log.attributes[key] = SentryLog.Attribute(string: scrub(text))
+            } else if let texts = attribute.value as? [String] {
+                log.attributes[key] = SentryLog.Attribute(stringArray: texts.map(scrub))
+            }
+        }
+        return log
+    }
 }

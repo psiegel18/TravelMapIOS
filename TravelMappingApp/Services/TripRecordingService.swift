@@ -219,7 +219,6 @@ class TripRecordingService: NSObject, ObservableObject {
         Haptics.success()
         SentrySDK.logger.info("Trip started", attributes: [
             "tripType": tripType == .rail ? "rail" : "road",
-            "tripName": trip.name,
         ])
         Self.tripBreadcrumb(
             "Trip started",

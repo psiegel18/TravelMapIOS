@@ -33,12 +33,14 @@ struct UserDetailView: View {
         Group {
             if isLoading {
                 ProgressView("Loading \(username)...")
+                    .sentryReplayMask()
             } else if let profile {
                 VStack(spacing: 0) {
                     // Username as the page identity (audit §2: large title 30pt/800).
                     // The redundant compact stat strip that used to sit here duplicated
                     // the totals shown just below in each tab — removed per audit.
                     Text(username)
+                        .sentryReplayMask()
                         .font(.system(size: 30, weight: .heavy))
                         .lineLimit(1)
                         .minimumScaleFactor(0.6)
@@ -93,6 +95,7 @@ struct UserDetailView: View {
                     systemImage: "doc.questionmark",
                     description: Text("No travel data found for \(username)")
                 )
+                .sentryReplayMask()
             }
         }
         // Username renders as the in-content 30pt/800 large title (audit §2);

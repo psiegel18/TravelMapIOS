@@ -88,13 +88,8 @@ struct TravelMappingWatchApp: App {
                 return scope
             }
         })
-
-        if let username = UserDefaults.standard.string(forKey: "watchUsername"), !username.isEmpty {
-            SentrySDK.configureScope { scope in
-                scope.setUser(User(userId: username))
-                scope.setTag(value: username, key: "tm.username")
-            }
-        }
+        // The username is deliberately not attached: diagnostics stay unlinked to an
+        // identity (App Store privacy label).
     }
 
     var body: some Scene {

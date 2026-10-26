@@ -1,4 +1,5 @@
 import SwiftUI
+import Sentry
 
 struct UserListView: View {
     @ObservedObject var dataService: DataService
@@ -231,8 +232,10 @@ struct TravelerHeroCard: View {
                     background: Color.white.opacity(0.22),
                     foreground: .white
                 )
+                .sentryReplayMask()
                 VStack(alignment: .leading, spacing: 2) {
                     Text(username)
+                        .sentryReplayMask()
                         .font(.system(size: 21, weight: .heavy))
                         .foregroundStyle(.white)
                         .lineLimit(1)

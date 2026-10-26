@@ -103,11 +103,8 @@ struct OnboardingView: View {
             settings.primaryUser = trimmed
             watchUsername = trimmed
             FavoritesService.shared.addFavorite(trimmed)
-            // Mirror the launch-time scope setup in TravelMappingApp.init so events from
-            // this first session already carry the user and tm.username tag.
+            // The username itself stays out of Sentry (see SentryPrivacy).
             SentrySDK.configureScope { scope in
-                scope.setUser(User(userId: trimmed))
-                scope.setTag(value: trimmed, key: "tm.username")
                 scope.setTag(value: "true", key: "primary_user_set")
             }
         }
@@ -331,6 +328,7 @@ struct OnboardingView: View {
 
                 if let error = validationError {
                     Text(error)
+                        .sentryReplayMask()
                         .font(.system(size: 15))
                         .foregroundStyle(TMDesign.rail)
                         .multilineTextAlignment(.center)
@@ -349,6 +347,7 @@ struct OnboardingView: View {
                 .foregroundStyle(TMDesign.accent)
                 .accessibilityHidden(true)
             TextField("e.g. psiegel18", text: $usernameInput)
+                .sentryReplayMask()
                 .font(.system(size: 17, weight: .semibold))
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)

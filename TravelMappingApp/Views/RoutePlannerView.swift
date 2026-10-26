@@ -77,6 +77,7 @@ struct RoutePlannerView: View {
 
                 if let field = focusedField, showingSuggestions {
                     suggestionList(for: field)
+                        .sentryReplayMask()
                 }
 
                 if isCalculating {
@@ -113,6 +114,8 @@ struct RoutePlannerView: View {
                 .onMapCameraChange { context in
                     visibleRegion = context.region
                 }
+                // Replays never show where the user is planning from or to
+                .sentryReplayMask()
 
                 // Map controls
                 VStack(spacing: 8) {
@@ -237,6 +240,7 @@ struct RoutePlannerView: View {
                 plannerMapContent
                 UserAnnotation()
             }
+            .sentryReplayMask()
             .mapControls {
                 MapCompass()
                 MapScaleView()
@@ -289,6 +293,7 @@ struct RoutePlannerView: View {
                         .submitLabel(.next)
                         .onSubmit { focusedField = .destination }
                         .accessibilityLabel("Start location")
+                        .sentryReplayMask()
                     // Only one end can be "here"
                     if startQuery != Self.currentLocationLabel && endQuery != Self.currentLocationLabel {
                         currentLocationButton(for: .origin)
@@ -314,6 +319,7 @@ struct RoutePlannerView: View {
                             startSearch()
                         }
                         .accessibilityLabel("End location")
+                        .sentryReplayMask()
                     if endQuery != Self.currentLocationLabel && startQuery != Self.currentLocationLabel {
                         currentLocationButton(for: .destination)
                     }
@@ -827,6 +833,8 @@ struct RoutePlannerView: View {
                     }
                 }
             }
+            // Street-by-street steps reveal the trip's endpoints
+            .sentryReplayMask()
             .navigationTitle("Directions")
             .alert("Apple Watch", isPresented: Binding(get: { watchMessage != nil }, set: { if !$0 { watchMessage = nil } })) {
                 Button("OK", role: .cancel) {}
