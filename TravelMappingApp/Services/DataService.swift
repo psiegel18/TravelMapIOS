@@ -779,9 +779,54 @@ enum AIProvider: String, CaseIterable, Codable, Identifiable {
         }
     }
 
+    var pricingURL: URL? {
+        switch self {
+        case .anthropic: return URL(string: "https://platform.claude.com/docs/en/about-claude/pricing")
+        case .openai: return URL(string: "https://openai.com/api/pricing/")
+        case .xai: return URL(string: "https://docs.x.ai/developers/models")
+        case .custom: return nil
+        }
+    }
+
     /// Preselected after the key is verified; any model the key can use may be chosen
     var suggestedModel: String? {
         self == .anthropic ? "claude-opus-5-5" : nil
+    }
+}
+
+/// Rough relative price of a model, guessed from its name. Providers' model lists carry
+/// no prices, so this is only a hint; the provider's pricing page has the real rates.
+enum AIModelCost: Int {
+    case low = 1, moderate, high, highest
+
+    var symbol: String { String(repeating: "$", count: rawValue) }
+
+    var label: String {
+        switch self {
+        case .low: return "Lower cost"
+        case .moderate: return "Moderate cost"
+        case .high: return "Higher cost"
+        case .highest: return "Highest cost"
+        }
+    }
+
+    static func estimate(for model: String) -> AIModelCost? {
+        let id = model.lowercased()
+        // Whole name parts only, so "gemini" doesn't read as "mini"
+        let parts = Set(id.split(whereSeparator: { "-_.:/ ".contains($0) }).map(String.init))
+        // Not chat models; no badge so they don't look like deliberate picks
+        if !parts.isDisjoint(with: ["embedding", "tts", "whisper", "transcribe", "image", "dall", "moderation", "audio", "realtime", "search"]) { return nil }
+        let openAIStyle = id.hasPrefix("gpt-") || id.hasPrefix("o1") || id.hasPrefix("o3")
+        if id.contains("fable") || id.contains("mythos") { return .highest }
+        if id.contains("opus") { return .high }
+        if id.contains("sonnet") { return .moderate }
+        if id.contains("haiku") { return .low }
+        if !parts.isDisjoint(with: ["mini", "nano", "lite", "flash", "fast", "small"]) { return .low }
+        // OpenAI's "-pro" models are top tier; other vendors' "pro" models vary too much to guess
+        if parts.contains("pro") { return openAIStyle ? .highest : nil }
+        if id.hasPrefix("o1") || id.hasPrefix("o3") { return .high }
+        if id.hasPrefix("gpt-") || id.hasPrefix("grok-") { return .moderate }
+        return nil
     }
 }
 
@@ -797,6 +842,15 @@ struct AIActivityEntry: Codable, Identifiable {
     let sentSummary: String
     let charactersSent: Int
     var outcome: String
+    /// Tokens the provider reported billing for; nil for older entries or if not reported
+    var inputTokens: Int?
+    var outputTokens: Int?
+}
+
+/// Token counts from a provider response — what the user's account is billed on
+struct AIUsage {
+    var input: Int?
+    var output: Int?
 }
 
 /// Bring-your-own-key AI client. AI features stay hidden unless the user has saved a key,
@@ -1007,10 +1061,12 @@ final class AIService: ObservableObject {
                                     charactersSent: system.count + prompt.count, outcome: "Sending…")
         record(entry)
         do {
-            let text = provider == .anthropic
+            let (text, usage) = provider == .anthropic
                 ? try await Self.anthropicMessage(baseURL: baseURL, key: key, model: model, system: system, prompt: prompt)
                 : try await Self.chatCompletion(baseURL: baseURL, key: key, model: model, system: system, prompt: prompt)
             entry.outcome = "Answered"
+            entry.inputTokens = usage.input
+            entry.outputTokens = usage.output
             record(entry)
             return text
         } catch {
@@ -1051,7 +1107,7 @@ final class AIService: ObservableObject {
 
     /// Claude Messages API. Opus 5.x / Fable 5.1 / Sonnet 5.5 get server-side refusal
     /// fallbacks so a safety decline is retried on Anthropic's recommended model.
-    private static func anthropicMessage(baseURL: String, key: String, model: String, system: String, prompt: String) async throws -> String {
+    private static func anthropicMessage(baseURL: String, key: String, model: String, system: String, prompt: String) async throws -> (String, AIUsage) {
         var request = URLRequest(url: URL(string: "\(baseURL)/messages")!)
         request.httpMethod = "POST"
         authorize(&request, provider: .anthropic, key: key)
@@ -1073,19 +1129,21 @@ final class AIService: ObservableObject {
         struct Response: Decodable {
             struct Block: Decodable { let type: String; let text: String? }
             struct StopDetails: Decodable { let category: String? }
+            struct Usage: Decodable { let input_tokens: Int?; let output_tokens: Int? }
             let content: [Block]
             let stop_reason: String?
             let stop_details: StopDetails?
+            let usage: Usage?
         }
         let response = try JSONDecoder().decode(Response.self, from: data)
         if response.stop_reason == "refusal" { throw AIError.refused(response.stop_details?.category) }
         let text = response.content.filter { $0.type == "text" }.compactMap(\.text).joined()
         guard !text.isEmpty else { throw AIError.emptyResponse }
-        return text
+        return (text, AIUsage(input: response.usage?.input_tokens, output: response.usage?.output_tokens))
     }
 
     /// OpenAI-style Chat Completions — OpenAI, xAI, and compatible services.
-    private static func chatCompletion(baseURL: String, key: String, model: String, system: String, prompt: String) async throws -> String {
+    private static func chatCompletion(baseURL: String, key: String, model: String, system: String, prompt: String) async throws -> (String, AIUsage) {
         var request = URLRequest(url: URL(string: "\(baseURL)/chat/completions")!)
         request.httpMethod = "POST"
         authorize(&request, provider: .openai, key: key)
@@ -1100,12 +1158,15 @@ final class AIService: ObservableObject {
         let data = try await send(request)
         struct Response: Decodable {
             struct Choice: Decodable { struct Message: Decodable { let content: String?; let refusal: String? }; let message: Message }
+            struct Usage: Decodable { let prompt_tokens: Int?; let completion_tokens: Int? }
             let choices: [Choice]
+            let usage: Usage?
         }
-        let message = try JSONDecoder().decode(Response.self, from: data).choices.first?.message
+        let response = try JSONDecoder().decode(Response.self, from: data)
+        let message = response.choices.first?.message
         if let refusal = message?.refusal, !refusal.isEmpty { throw AIError.refused(nil) }
         guard let text = message?.content, !text.isEmpty else { throw AIError.emptyResponse }
-        return text
+        return (text, AIUsage(input: response.usage?.prompt_tokens, output: response.usage?.completion_tokens))
     }
 
     private static func authorize(_ request: inout URLRequest, provider: AIProvider, key: String) {

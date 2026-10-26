@@ -86,6 +86,7 @@ struct SettingsView: View {
                 if github.isConfigured {
                     if github.isSignedIn {
                         LabeledContent("Signed in as", value: github.login.map { "@\($0)" } ?? "GitHub")
+                            .sentryReplayMask()
                         Toggle("Stay Signed In on My Other Devices", isOn: Binding(
                             get: { github.syncsAcrossDevices },
                             set: { on in
@@ -810,10 +811,28 @@ struct PrivacyPolicyView: View {
                     serviceRow("travelmapping.net", desc: "Route data & statistics")
                     serviceRow("tmrail.teresco.org", desc: "Rail route data")
                     serviceRow("GitHub", desc: "User travel list files")
-                    Text("No personal information is transmitted.")
+                    Text("No personal information is sent to the developer. The app has no accounts of its own. GitHub and AI providers are contacted only if you turn on the optional features below.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .padding(.top, 4)
+                }
+
+                policyCard(icon: "arrow.triangle.pull", color: .purple, title: "Optional GitHub Sign-In") {
+                    bullet("Off unless you sign in under Settings › GitHub")
+                    bullet("You approve access on github.com. Your password never passes through the app")
+                    bullet("Used only to fork TravelMapping/UserData, commit your updated .list file, and open a pull request")
+                    bullet("Token stored in your Keychain and sent only to api.github.com. Syncs through iCloud Keychain only if you turn that on")
+                    bullet("Pull requests are public on GitHub, like any UserData contribution")
+                }
+
+                policyCard(icon: "sparkles", color: .pink, title: "Optional AI Assistant (Your Own Key)") {
+                    Text("Off unless you add your own API key and give permission. Requests go straight from your device to the provider you chose, under your account and its privacy policy. The developer never receives your key, your requests, or the answers.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    ForEach(AIDisclosure.sends, id: \.self) { bullet("Sent: \($0)") }
+                    ForEach(AIDisclosure.neverSends, id: \.self) { noBullet("Never sent: \($0)") }
+                    bullet("Key stored in your Keychain. Syncs through iCloud Keychain only if you turn that on")
+                    bullet("A log of every request stays on your device (Settings › AI Assistant › Activity)")
                 }
 
                 policyCard(icon: "ant.fill", color: .teal, title: "Crash Reporting & Diagnostics") {
@@ -840,13 +859,15 @@ struct PrivacyPolicyView: View {
 
                 policyCard(icon: "xmark.circle.fill", color: .red, title: "We Do Not Collect") {
                     noBullet("Personal info (email, phone, real name)")
+                    noBullet("Your API keys, GitHub token, or AI requests")
                     noBullet("Advertising or tracking data")
                     noBullet("Your road trip data or location history")
                 }
 
                 policyCard(icon: "externaldrive.fill", color: .indigo, title: "Data Storage") {
                     storagePill(icon: "iphone", label: "Device", detail: "Preferences, favorites, cache, trips")
-                    storagePill(icon: "icloud", label: "iCloud", detail: "Favorites & preferences (optional)")
+                    storagePill(icon: "icloud", label: "iCloud", detail: "Favorites, preferences & trips (optional)")
+                    storagePill(icon: "key.fill", label: "Keychain", detail: "GitHub token & AI key, if added (iCloud Keychain sync optional)")
                     storagePill(icon: "server.rack", label: "Sentry", detail: "Anonymous crash, performance, and session replay data (no PII)")
                 }
 
@@ -854,6 +875,8 @@ struct PrivacyPolicyView: View {
                     bullet("iCloud sync: Toggle on/off in Settings")
                     bullet("Location: Only for trip recording \u{2014} deny and still use the app")
                     bullet("Cache: Clear anytime from Settings")
+                    bullet("GitHub: Sign out anytime from Settings")
+                    bullet("AI: Turn off, revoke permission, or remove your key anytime from Settings")
                 }
 
                 policyCard(icon: "figure.child", color: .yellow, title: "Children's Privacy") {
@@ -864,10 +887,10 @@ struct PrivacyPolicyView: View {
 
                 // Footer
                 VStack(spacing: 4) {
-                    Text("Last updated: April 13, 2026")
+                    Text("Last updated: October 25, 2026")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
-                    Link("View web version", destination: URL(string: "https://psiegel18.github.io/TravelMapIOS/PRIVACY.html")!)
+                    Link("View web version", destination: URL(string: "https://travel.psiegel.org/PRIVACY")!)
                         .font(.caption2)
                 }
                 .padding(.top, 8)
@@ -1381,15 +1404,53 @@ struct AISettingsView: View {
                     } else {
                         Picker("Model", selection: $ai.model) {
                             Text("Choose…").tag("")
-                            ForEach(models, id: \.self) { Text($0).tag($0) }
+                            ForEach(models, id: \.self) { id in
+                                if let cost = AIModelCost.estimate(for: id) {
+                                    Text("\(id)  \(cost.symbol)").tag(id)
+                                } else {
+                                    Text(id).tag(id)
+                                }
+                            }
+                        }
+                    }
+                    if let cost = AIModelCost.estimate(for: ai.model) {
+                        LabeledContent("Relative cost") {
+                            Text("\(cost.symbol) · \(cost.label)")
+                        }
+                    }
+                    if let url = ai.provider?.pricingURL {
+                        Link(destination: url) {
+                            Label("\(ai.provider?.companyName ?? "Provider") Pricing", systemImage: "dollarsign.circle")
                         }
                     }
                 } header: {
                     Text("Model")
                 } footer: {
-                    if ai.model.isEmpty {
-                        Text("Choose a chat model. AI features stay off until you do.")
+                    VStack(alignment: .leading, spacing: 6) {
+                        if ai.model.isEmpty {
+                            Text("Choose a chat model. AI features stay off until you do.")
+                        }
+                        Text("$ to $$$$ is a rough guide from the model's name — providers don't publish prices in their model lists. AI Activity shows the exact tokens each request used.")
                     }
+                }
+            }
+
+            if ai.hasKey {
+                Section {
+                    Label {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("List checkup")
+                            Text("Road Trips › List checkup › Suggest fixes. When TravelMapping skips lines of your .list file, the AI proposes waypoints for them.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: "checklist")
+                    }
+                } header: {
+                    Text("Where AI is used")
+                } footer: {
+                    Text("The AI only runs when you tap Suggest fixes. There's no background use and no chat.")
                 }
             }
 
@@ -1587,6 +1648,11 @@ struct AIActivityView: View {
                         .foregroundStyle(.secondary)
                     Text("Sent: \(entry.sentSummary) (\(entry.charactersSent.formatted()) characters) to \(entry.host)")
                         .font(.footnote)
+                    if let tokens = tokenSummary(entry) {
+                        Text("Used: \(tokens)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .padding(.vertical, 2)
             }
@@ -1599,5 +1665,14 @@ struct AIActivityView: View {
             }
         }
         .sentryScreen("AIActivity")
+    }
+
+    /// Whichever token counts the provider reported; some compatible servers send only input
+    private func tokenSummary(_ entry: AIActivityEntry) -> String? {
+        let parts = [
+            entry.inputTokens.map { "\($0.formatted()) input" },
+            entry.outputTokens.map { "\($0.formatted()) output" },
+        ].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " + ") + " tokens"
     }
 }
