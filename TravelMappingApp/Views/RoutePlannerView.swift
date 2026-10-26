@@ -20,6 +20,7 @@ struct RoutePlannerView: View {
     @State private var errorMessage: String?
     @State private var showDirections = false
     @State private var showFullMap = false
+    @State private var watchMessage: String?
     @State private var hasReportedInitialDisplay = false
     @FocusState private var focusedField: PlannerField?
     @StateObject private var locationManager = LocationManager()
@@ -288,18 +289,9 @@ struct RoutePlannerView: View {
                         .submitLabel(.next)
                         .onSubmit { focusedField = .destination }
                         .accessibilityLabel("Start location")
-                    if startQuery != Self.currentLocationLabel {
-                        Button {
-                            useCurrentLocationAsStart()
-                        } label: {
-                            Image(systemName: "location.fill")
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(.tint)
-                                .frame(width: 32, height: 32)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Use current location as start")
+                    // Only one end can be "here"
+                    if startQuery != Self.currentLocationLabel && endQuery != Self.currentLocationLabel {
+                        currentLocationButton(for: .origin)
                     }
                 }
                 .padding(.vertical, 13)
@@ -322,6 +314,9 @@ struct RoutePlannerView: View {
                             startSearch()
                         }
                         .accessibilityLabel("End location")
+                    if endQuery != Self.currentLocationLabel && startQuery != Self.currentLocationLabel {
+                        currentLocationButton(for: .destination)
+                    }
                 }
                 .padding(.vertical, 13)
             }
@@ -348,13 +343,28 @@ struct RoutePlannerView: View {
         )
     }
 
-    private func useCurrentLocationAsStart() {
+    private func currentLocationButton(for field: PlannerField) -> some View {
+        Button {
+            useCurrentLocation(for: field)
+        } label: {
+            Image(systemName: "location.fill")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.tint)
+                .frame(width: 32, height: 32)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(field == .origin ? "Use current location as start" : "Use current location as end")
+    }
+
+    private func useCurrentLocation(for field: PlannerField) {
         Haptics.light()
-        startQuery = Self.currentLocationLabel
+        if field == .origin { startQuery = Self.currentLocationLabel } else { endQuery = Self.currentLocationLabel }
         locationManager.lastLocation = nil  // don't route from where the phone was earlier
-        locationManager.requestLocation()  // asks for When In Use the first time
-        focusedField = endQuery.isEmpty ? .destination : nil
-        if !endQuery.isEmpty {
+        locationManager.requestLocation()   // asks for When In Use the first time
+        let other = field == .origin ? endQuery : startQuery
+        focusedField = other.isEmpty ? (field == .origin ? .destination : .origin) : nil
+        if !other.isEmpty {
             startSearch()
         }
     }
@@ -696,16 +706,17 @@ struct RoutePlannerView: View {
         .padding(.vertical, 10)
     }
 
+    /// Sharing the maps URL as the item makes Messages show a tappable map preview
+    /// that opens the app; the directions go along as the message text.
     @ViewBuilder
     private var shareMenuItems: some View {
-        ShareLink(item: generateDirectionsText(mapLink: .apple)) {
-            Label("Share with Apple Maps Link", systemImage: "map")
-        }
-        ShareLink(item: generateDirectionsText(mapLink: .google)) {
-            Label("Share with Google Maps Link", systemImage: "globe")
-        }
-        ShareLink(item: generateDirectionsText(mapLink: .waze)) {
-            Label("Share with Waze Link", systemImage: "car")
+        ForEach([MapLink.apple, .google, .waze], id: \.self) { link in
+            if let url = mapLinkURL(link) {
+                ShareLink(item: url, subject: Text("Route: \(startQuery) → \(endQuery)"),
+                          message: Text(generateDirectionsText())) {
+                    Label("Share \(link.appName) Link", systemImage: link.icon)
+                }
+            }
         }
         ShareLink(item: generateDirectionsText()) {
             Label("Share Directions Only", systemImage: "text.alignleft")
@@ -817,6 +828,11 @@ struct RoutePlannerView: View {
                 }
             }
             .navigationTitle("Directions")
+            .alert("Apple Watch", isPresented: Binding(get: { watchMessage != nil }, set: { if !$0 { watchMessage = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(watchMessage ?? "")
+            }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -877,16 +893,40 @@ struct RoutePlannerView: View {
             guard !step.instructions.isEmpty else { return nil }
             return (instruction: step.instructions, distance: step.distance, notice: step.notice)
         }
-        WatchSyncService.shared.sendDirections(
+        let result = WatchSyncService.shared.sendDirections(
             routeName: "\(startQuery) → \(endQuery)",
             totalDistance: route.distance,
             totalTime: route.expectedTravelTime,
             steps: steps
         )
-        Haptics.success()
+        switch result {
+        case .delivered:
+            Haptics.success()
+            watchMessage = "Directions are on your Apple Watch."
+        case .queued:
+            Haptics.success()
+            watchMessage = "Sent. Open Travel Mapping on your Apple Watch to see the directions."
+        case .noWatch:
+            Haptics.error()
+            watchMessage = "No Apple Watch is paired with this iPhone."
+        case .appNotInstalled:
+            Haptics.error()
+            watchMessage = "Install Travel Mapping on your Apple Watch from the Watch app on this iPhone, then try again."
+        case .disabled:
+            Haptics.error()
+            watchMessage = "Turn on Settings › Show on Apple Watch to send directions."
+        }
     }
 
-    enum MapLink { case apple, google, waze }
+    enum MapLink {
+        case apple, google, waze
+        var appName: String {
+            switch self { case .apple: "Apple Maps"; case .google: "Google Maps"; case .waze: "Waze" }
+        }
+        var icon: String {
+            switch self { case .apple: "map"; case .google: "globe"; case .waze: "car" }
+        }
+    }
 
     /// Waze links take only a destination; Waze routes from wherever the recipient is.
     private static func wazeURL(to end: CLLocationCoordinate2D) -> URL? {
@@ -924,8 +964,7 @@ struct RoutePlannerView: View {
 
         lines.append("Route: \(startQuery) → \(endQuery)")
         if let mapLink, let url = mapLinkURL(mapLink) {
-            let app = switch mapLink { case .apple: "Apple Maps"; case .google: "Google Maps"; case .waze: "Waze" }
-            lines.append("Open in \(app): \(url.absoluteString)")
+            lines.append("Open in \(mapLink.appName): \(url.absoluteString)")
         }
         lines.append("Distance: \(formatDistance(route.distance)) | Time: \(formatTime(route.expectedTravelTime))")
 

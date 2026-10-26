@@ -860,6 +860,9 @@ struct ListUpdateSheet: View {
     @State private var copiedFile = false
     @State private var copiedLines = false
     @State private var isOpeningPR = false
+    /// Remembered between sheets; a draft lets the user check the PR on GitHub before the TM team sees it
+    @AppStorage("listPROpenAsDraft") private var openAsDraft = true
+    @State private var openedAsDraft = false
     @State private var prError: String?
     @State private var openedPR: ListUpdatePR?
     /// Normalized original lines the replacements matched in the current file
@@ -963,8 +966,20 @@ struct ListUpdateSheet: View {
         Section {
             ForEach(result.placements) { placement in
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(placement.line.text)
-                        .font(.system(size: 14, weight: .medium, design: .monospaced))
+                    if let ext = placement.extended {
+                        // By position: a file can hold the same line twice
+                        ForEach(Array(([ext.from] + placement.absorbed).enumerated()), id: \.offset) { _, old in
+                            Text(old)
+                                .strikethrough()
+                                .foregroundStyle(TMDesign.tertiaryText)
+                                .font(.system(size: 14, weight: .medium, design: .monospaced))
+                        }
+                        Text(ext.to)
+                            .font(.system(size: 14, weight: .medium, design: .monospaced))
+                    } else {
+                        Text(placement.line.text)
+                            .font(.system(size: 14, weight: .medium, design: .monospaced))
+                    }
                     Text(placementDetail(placement))
                         .font(.system(size: 12))
                         .foregroundStyle(TMDesign.tertiaryText)
@@ -977,6 +992,8 @@ struct ListUpdateSheet: View {
                 Text("You don't have a \(fileName) yet — submit your first file from Get Started, then use this for updates.")
             } else if appendOnly {
                 Text("Added as one block at the end of your \(fileName) (change in Settings › GitHub). Nothing already in your file is changed.")
+            } else if result.placements.contains(where: { $0.extended != nil }) {
+                Text("Where you already have a line on the same route that this trip continues, that line's start or end is moved instead of adding a second line; if the trip joins two of your lines in the same block, they become one (crossed out above). Other lines are placed next to similar routes, following how your \(fileName) is organized.")
             } else {
                 Text("Placed next to similar routes, following how your \(fileName) is organized. Nothing already in your file is changed.")
             }
@@ -1013,11 +1030,15 @@ struct ListUpdateSheet: View {
                     }
                 }
                 .disabled(isOpeningPR || ((result?.placements.isEmpty ?? true) && appliedFixes.isEmpty) || !hasExistingFile)
+                if openPR == nil {
+                    Toggle("Open as a draft", isOn: $openAsDraft)
+                        .disabled(isOpeningPR)
+                }
             } else {
                 Button {
                     showSignIn = true
                 } label: {
-                    Label("Sign in with GitHub", systemImage: "person.badge.key")
+                    Label { Text("Sign in with GitHub") } icon: { GitHubMark() }
                         .font(.system(size: 16, weight: .semibold))
                 }
             }
@@ -1032,7 +1053,9 @@ struct ListUpdateSheet: View {
             if let openPR {
                 Text("Your pull request #\(openPR.number) hasn't been merged yet, so these lines are added to it instead of opening a second one that would conflict.")
             } else if let login = github.login, github.isSignedIn {
-                Text("As @\(login): forks TravelMapping/UserData to your account (first time only), commits the updated file to a new branch, and opens a pull request for the TM team to review.")
+                Text(openAsDraft
+                     ? "As @\(login): forks TravelMapping/UserData to your account (first time only), commits the updated file to a new branch, and opens a draft pull request. Look it over on GitHub, then tap “Ready for review” there to send it to the TM team."
+                     : "As @\(login): forks TravelMapping/UserData to your account (first time only), commits the updated file to a new branch, and opens a pull request for the TM team to review.")
             } else {
                 Text("Sign in once and the app opens the pull request for you — no copying and pasting.")
             }
@@ -1072,7 +1095,10 @@ struct ListUpdateSheet: View {
     private func copyLinesSection(_ result: ListFileMerger.Result) -> some View {
         Section {
             Button {
-                UIPasteboard.general.string = result.placements.map(\.line.text).joined(separator: "\n")
+                // A widened line is copied in its new form, marked with what it replaces
+                UIPasteboard.general.string = result.placements.map { placement in
+                    placement.extended.map { "\($0.to)  # replaces: " + ([$0.from] + placement.absorbed).joined(separator: " and ") } ?? placement.line.text
+                }.joined(separator: "\n")
                 copiedLines = true
                 breadcrumb("Copied new list lines only")
                 Haptics.success()
@@ -1091,7 +1117,7 @@ struct ListUpdateSheet: View {
 
     private var sentSummary: String {
         var parts: [String] = []
-        if sentLineCount > 0 { parts.append("\(sentLineCount.formatted()) new line\(sentLineCount == 1 ? "" : "s")") }
+        if sentLineCount > 0 { parts.append("\(sentLineCount.formatted()) added segment\(sentLineCount == 1 ? "" : "s")") }
         if !appliedFixes.isEmpty { parts.append("\(appliedFixes.count) fixed line\(appliedFixes.count == 1 ? "" : "s")") }
         return parts.joined(separator: " and ") + (sentLineCount + appliedFixes.count == 1 ? " is" : " are")
     }
@@ -1103,7 +1129,9 @@ struct ListUpdateSheet: View {
                       systemImage: "checkmark.circle.fill")
                     .font(.system(size: 17, weight: .bold))
                     .foregroundStyle(TMDesign.greenChipFG)
-                Text(sentSummary + " waiting for the TravelMapping team to merge. Once they do, the next nightly update adds them to your stats.")
+                Text(openedAsDraft
+                     ? sentSummary + " in a draft pull request. Check it on GitHub, then tap “Ready for review” there so the TravelMapping team can merge it."
+                     : sentSummary + " waiting for the TravelMapping team to merge. Once they do, the next nightly update adds them to your stats.")
                     .font(.system(size: 15))
                     .foregroundStyle(TMDesign.secondaryText)
             }
@@ -1126,7 +1154,7 @@ struct ListUpdateSheet: View {
                 .sorted { $0.createdAt > $1.createdAt }
                 .prefix(3)
             for pr in candidates where pr.branch != nil {
-                if (try? await github.pullRequestState(pr.number)) == .open {
+                if (try? await github.pullRequestState(pr.number))?.isOpen == true {
                     openPR = pr
                     break
                 }
@@ -1161,9 +1189,12 @@ struct ListUpdateSheet: View {
                 appendOnly: appendOnly,
                 tripNames: tripNames,
                 replacements: replacements,
-                appendingTo: openPR
+                appendingTo: openPR,
+                asDraft: openAsDraft
             )
             sentLineCount = merge.placements.count
+            // A fresh PR follows the toggle; lines added to an open PR keep that PR's state
+            openedAsDraft = pr.number != openPR?.number && openAsDraft
             if pr.number != openPR?.number { openPR = nil }  // a new PR was opened after all
             openedPR = pr
             onFixesSent?(sentFixKeys)
@@ -1177,7 +1208,9 @@ struct ListUpdateSheet: View {
     // MARK: Helpers
 
     private func placementDetail(_ placement: ListFileMerger.Placement) -> String {
-        var detail = "Line \(placement.lineNumber.formatted())"
+        var detail = placement.extended != nil
+            ? "Extends your line \(placement.lineNumber.formatted())"
+            : "Line \(placement.lineNumber.formatted())"
         if let section = placement.section, !section.isEmpty {
             detail += " · under “\(section)”"
         }

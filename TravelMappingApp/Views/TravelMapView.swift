@@ -17,7 +17,9 @@ struct TravelMapView: View {
     /// and checks it before every state write so stale loads can't overwrite newer state.
     @State private var loadGeneration = 0
     @State private var errorMessage: String?
-    @State private var showClinched = true
+    /// Traveled segments always show for the enabled modes — Roads + Rail together already
+    /// cover everything traveled, so a separate Traveled toggle was redundant
+    private let showClinched = true
     @State private var showUnclinched = false
     @State private var showRail = true
     /// Mode filter, independent of the Traveled/Remaining status filter — without it
@@ -688,22 +690,6 @@ struct TravelMapView: View {
                     TMDesign.sectionHeader("Show")
                     VStack(spacing: 0) {
                         layerToggleRow(
-                            icon: "checkmark.circle.fill",
-                            iconBG: TMDesign.blueChipBG,
-                            iconFG: TMDesign.blueChipFG,
-                            title: "Traveled",
-                            subtitle: "\(clinchedCount.formatted()) segments",
-                            swatch: AnyView(
-                                lineSwatch(
-                                    color: TMDesign.accent,
-                                    style: MapStyleService.parse(settings.roadLineStyle),
-                                    width: min(settings.roadLineWidth, 5)
-                                )
-                            ),
-                            isOn: $showClinched
-                        )
-                        Divider().padding(.leading, 57)
-                        layerToggleRow(
                             icon: "road.lanes",
                             iconBG: TMDesign.amberChipBG,
                             iconFG: TMDesign.amberChipFG,
@@ -1162,8 +1148,8 @@ struct TravelMapView: View {
     }
 
     /// Bottom filter pills with live counts — filled = on (audit §6). These drive
-    /// the same showRoads/showRail (mode) and showClinched/showUnclinched (status)
-    /// state as the Layers sheet. Mode pills come first: "only rail" = Roads off.
+    /// the same showRoads/showRail (mode) and showUnclinched (status) state as the
+    /// Layers sheet. "Only rail" = Roads off.
     private var filterPills: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
@@ -1186,14 +1172,6 @@ struct TravelMapView: View {
                 ) { showRail.toggle() }
 
                 filterPill(
-                    "Traveled \(clinchedCount.formatted())",
-                    isOn: showClinched,
-                    onBG: TMDesign.accent,
-                    offFG: TMDesign.accent,
-                    accessibilityLabel: "Show traveled segments: \(showClinched ? "on" : "off"), \(clinchedCount) segments"
-                ) { showClinched.toggle() }
-
-                filterPill(
                     "Remaining \((totalCount - clinchedCount).formatted())",
                     isOn: showUnclinched,
                     onBG: TMDesign.frontier,
@@ -1204,6 +1182,9 @@ struct TravelMapView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 2)
         }
+        // Scroll sideways only: pin the row to its content height and never bounce vertically
+        .fixedSize(horizontal: false, vertical: true)
+        .scrollBounceBehavior(.basedOnSize, axes: .vertical)
     }
 
     private func filterPill(

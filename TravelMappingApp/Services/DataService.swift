@@ -384,7 +384,9 @@ final class GitHubService: ObservableObject {
     }
 
     enum PRState: String {
-        case open, merged, closed
+        /// `draft` is open but not yet up for review — the user marks it ready on GitHub
+        case open, draft, merged, closed
+        var isOpen: Bool { self == .open || self == .draft }
     }
 
     private init() {
@@ -485,7 +487,8 @@ final class GitHubService: ObservableObject {
         appendOnly: Bool,
         tripNames: [String],
         replacements: [String: String] = [:],
-        appendingTo openPR: ListUpdatePR?
+        appendingTo openPR: ListUpdatePR?,
+        asDraft: Bool = false
     ) async throws -> (pr: ListUpdatePR, merge: ListFileMerger.Result) {
         guard isSignedIn else { throw GitHubError.notSignedIn }
         let path = "\(category.directoryName)/\(username).\(category.fileExtension)"
@@ -566,7 +569,11 @@ final class GitHubService: ObservableObject {
         var sections: [String] = []
         if !merge.placements.isEmpty {
             sections.append("Adds \(merge.placements.count) segment\(merge.placements.count == 1 ? "" : "s") recorded with GPS in the Travel Mapping iOS app (\(names)):\n\n"
-                + merge.placements.map { "- `\($0.line.text)`" }.joined(separator: "\n")
+                + merge.placements.map { placement in
+                    guard let ext = placement.extended else { return "- `\(placement.line.text)`" }
+                    let merged = placement.absorbed.isEmpty ? "" : "; merges and removes " + placement.absorbed.map { "`\($0)`" }.joined(separator: ", ")
+                    return "- `\(ext.from)` → `\(ext.to)` (extended to cover `\(placement.line.text)`\(merged))"
+                }.joined(separator: "\n")
                 + "\n\nNew lines were placed alongside similar routes.")
         }
         if !fixed.isEmpty {
@@ -584,6 +591,8 @@ final class GitHubService: ObservableObject {
             "base": "master",
             "body": prBody,
             "maintainer_can_modify": true,
+            // A draft isn't up for review until the user marks it ready on GitHub
+            "draft": asDraft,
         ]))
         login = forkRepo.owner.login
         UserDefaults.standard.set(forkRepo.owner.login, forKey: "githubLogin")
@@ -654,10 +663,11 @@ final class GitHubService: ObservableObject {
 
     /// Works signed out too (public repo), subject to the unauthenticated rate limit.
     func pullRequestState(_ number: Int) async throws -> PRState {
-        struct PR: Decodable { let state: String; let merged_at: String? }
+        struct PR: Decodable { let state: String; let merged_at: String?; let draft: Bool? }
         let pr = try JSONDecoder().decode(PR.self, from: try await api("GET", "/repos/\(Self.upstream)/pulls/\(number)"))
         if pr.merged_at != nil { return .merged }
-        return pr.state == "open" ? .open : .closed
+        guard pr.state == "open" else { return .closed }
+        return pr.draft == true ? .draft : .open
     }
 
     // MARK: HTTP

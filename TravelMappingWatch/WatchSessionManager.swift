@@ -71,6 +71,8 @@ class WatchSessionManager: NSObject, ObservableObject, WCSessionDelegate {
 
     @Published var tripState: TripState?
     @Published var directions: DirectionsData?
+    /// Bumped when new directions arrive so the app can switch to the directions page
+    @Published var directionsArrival = 0
     @Published var isRecording = false
 
     private override init() {
@@ -111,6 +113,13 @@ class WatchSessionManager: NSObject, ObservableObject, WCSessionDelegate {
         }
     }
 
+    /// Live delivery while the Watch app is open (same payloads as transferUserInfo)
+    func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
+        DispatchQueue.main.async {
+            self.handleUserInfo(message)
+        }
+    }
+
     // MARK: - Parsing
 
     private func handleContext(_ context: [String: Any]) {
@@ -140,6 +149,7 @@ class WatchSessionManager: NSObject, ObservableObject, WCSessionDelegate {
 
         if type == "directions" {
             directions = Self.parseDirections(info)
+            directionsArrival += 1
             // Persist for relaunch. The payload is plist-compatible (strings, doubles,
             // arrays of dictionaries), so it can go into UserDefaults as-is.
             UserDefaults.standard.set(info, forKey: Self.persistedDirectionsKey)
