@@ -250,6 +250,69 @@ class DataService: ObservableObject {
     }
 }
 
+// MARK: - Keychain
+
+/// A generic-password Keychain item that either stays on this device or syncs, end-to-end
+/// encrypted, to the user's other devices through iCloud Keychain.
+struct KeychainItem {
+    let service: String
+    let account: String
+
+    private var base: [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+    }
+
+    /// Finds the item whether it was saved device-only or synced.
+    func read() -> (value: String, synced: Bool)? {
+        var query = base
+        query[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny
+        query[kSecReturnData as String] = true
+        query[kSecReturnAttributes as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let attributes = item as? [String: Any],
+              let data = attributes[kSecValueData as String] as? Data,
+              let value = String(data: data, encoding: .utf8) else { return nil }
+        let synced = (attributes[kSecAttrSynchronizable as String] as? NSNumber)?.boolValue ?? false
+        return (value, synced)
+    }
+
+    /// Replaces any existing copy. Returns whether the item ended up synced — iCloud
+    /// Keychain can be unavailable (signed out, or turned off), in which case it falls
+    /// back to device-only rather than losing the value.
+    @discardableResult
+    func save(_ value: String, synced: Bool) -> Bool {
+        delete()
+        if synced, add(value, synced: true) == errSecSuccess { return true }
+        _ = add(value, synced: false)
+        return false
+    }
+
+    /// Deletes this device's copy and, when synced, the copy on every other device.
+    func delete() {
+        var query = base
+        query[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny
+        SecItemDelete(query as CFDictionary)
+    }
+
+    private func add(_ value: String, synced: Bool) -> OSStatus {
+        var query = base
+        query[kSecValueData as String] = Data(value.utf8)
+        query[kSecAttrSynchronizable as String] = synced
+        // Synced items can't use a ThisDeviceOnly class; device-only items never leave
+        // this device, not even in backups restored to another one.
+        query[kSecAttrAccessible as String] = synced
+            ? kSecAttrAccessibleAfterFirstUnlock
+            : kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        return SecItemAdd(query as CFDictionary, nil)
+    }
+}
+
 // MARK: - GitHub (in-app .list pull requests)
 
 /// A pull request the app opened against TravelMapping/UserData.
@@ -285,6 +348,10 @@ final class GitHubService: ObservableObject {
     var isSignedIn: Bool { token != nil }
 
     @Published private var token: String?
+    /// Whether the token syncs to the user's other devices via iCloud Keychain (opt-in)
+    @Published private(set) var syncsAcrossDevices = false
+
+    private static let tokenItem = KeychainItem(service: keychainService, account: "oauth-token")
 
     enum GitHubError: LocalizedError {
         case notConfigured
@@ -321,7 +388,10 @@ final class GitHubService: ObservableObject {
     }
 
     private init() {
-        token = Self.readToken()
+        if let stored = Self.tokenItem.read() {
+            token = stored.value
+            syncsAcrossDevices = stored.synced
+        }
         if token != nil {
             login = UserDefaults.standard.string(forKey: "githubLogin")
         }
@@ -364,7 +434,7 @@ final class GitHubService: ObservableObject {
             let response = try JSONDecoder().decode(TokenResponse.self, from: data)
             if let accessToken = response.access_token {
                 token = accessToken
-                Self.saveToken(accessToken)
+                syncsAcrossDevices = Self.tokenItem.save(accessToken, synced: syncsAcrossDevices)
                 try? await refreshLogin()  // login is re-fetched lazily if this fails
                 let crumb = Breadcrumb(level: .info, category: "github")
                 crumb.message = "Signed in with GitHub"
@@ -385,7 +455,8 @@ final class GitHubService: ObservableObject {
     func signOut() {
         token = nil
         login = nil
-        Self.deleteToken()
+        Self.tokenItem.delete()
+        syncsAcrossDevices = false
         UserDefaults.standard.removeObject(forKey: "githubLogin")
     }
 
@@ -644,37 +715,11 @@ final class GitHubService: ObservableObject {
         return formatter.string(from: Date())
     }
 
-    // MARK: Keychain
-
-    private static var keychainQuery: [String: Any] {
-        [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: keychainService,
-            kSecAttrAccount as String: "oauth-token",
-        ]
-    }
-
-    private static func readToken() -> String? {
-        var query = keychainQuery
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-              let data = item as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
-    }
-
-    private static func saveToken(_ token: String) {
-        deleteToken()
-        var query = keychainQuery
-        query[kSecValueData as String] = Data(token.utf8)
-        // This device only — never synced to iCloud Keychain or restored to another device
-        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        SecItemAdd(query as CFDictionary, nil)
-    }
-
-    private static func deleteToken() {
-        SecItemDelete(keychainQuery as CFDictionary)
+    /// Moves the token into (or out of) iCloud Keychain. Turning sync off signs the
+    /// other devices out, since the synced copy is removed everywhere.
+    func setSyncsAcrossDevices(_ on: Bool) {
+        guard let token else { syncsAcrossDevices = false; return }
+        syncsAcrossDevices = Self.tokenItem.save(token, synced: on)
     }
 }
 
@@ -785,14 +830,31 @@ final class AIService: ObservableObject {
 
     @Published private(set) var provider: AIProvider?
     @Published private(set) var hasKey = false
-    @Published var model: String { didSet { defaults.set(model, forKey: "aiModel") } }
+    @Published var model: String {
+        didSet {
+            defaults.set(model, forKey: "aiModel")
+            if hasKey { saveConfig() }
+        }
+    }
     @Published var isEnabled: Bool { didSet { defaults.set(isEnabled, forKey: "aiEnabled") } }
     @Published private(set) var consentDate: Date?
     @Published private(set) var activity: [AIActivityEntry] = []
 
+    /// Whether the key (and provider/model) sync to the user's other devices (opt-in)
+    @Published private(set) var syncsAcrossDevices = false
+
     private let defaults = UserDefaults.standard
     private var customBaseURL: String
     private static let keychainService = "com.psiegel18.TravelMapping.ai"
+    private static let keyItem = KeychainItem(service: keychainService, account: "api-key")
+    /// Provider / address / model, synced alongside the key so another device can use it
+    private static let configItem = KeychainItem(service: keychainService, account: "api-config")
+
+    private struct SyncedConfig: Codable {
+        let provider: String
+        let baseURL: String
+        let model: String
+    }
 
     /// Everything a feature needs before it may send anything
     var isReady: Bool { isEnabled && hasKey && provider != nil && consentDate != nil && !model.isEmpty }
@@ -815,7 +877,21 @@ final class AIService: ObservableObject {
         customBaseURL = defaults.string(forKey: "aiBaseURL") ?? ""
         model = defaults.string(forKey: "aiModel") ?? ""
         isEnabled = defaults.object(forKey: "aiEnabled") as? Bool ?? true
-        hasKey = Self.readKey() != nil
+        if let stored = Self.keyItem.read() {
+            hasKey = true
+            syncsAcrossDevices = stored.synced
+            // Key arrived from another device through iCloud Keychain: adopt its settings.
+            // Permission to share data is still asked on this device.
+            if provider == nil, let json = Self.configItem.read()?.value,
+               let config = try? JSONDecoder().decode(SyncedConfig.self, from: Data(json.utf8)),
+               let syncedProvider = AIProvider(rawValue: config.provider) {
+                provider = syncedProvider
+                customBaseURL = config.baseURL
+                model = config.model
+                defaults.set(config.provider, forKey: "aiProvider")
+                defaults.set(config.baseURL, forKey: "aiBaseURL")
+            }
+        }
         // Consent is tied to the provider + host it was given for
         if let stored = defaults.string(forKey: "aiConsentScope"), stored == consentScope,
            let date = defaults.object(forKey: "aiConsentDate") as? Date {
@@ -857,18 +933,34 @@ final class AIService: ObservableObject {
         self.customBaseURL = base
         defaults.set(provider.rawValue, forKey: "aiProvider")
         defaults.set(base, forKey: "aiBaseURL")
-        Self.saveKey(trimmedKey)
+        syncsAcrossDevices = Self.keyItem.save(trimmedKey, synced: syncsAcrossDevices)
         hasKey = true
         if scopeChanged { revokeConsent() }
         if model.isEmpty || !models.contains(model) || scopeChanged {
             model = provider.suggestedModel.flatMap { models.contains($0) ? $0 : nil } ?? models.first ?? ""
         }
+        saveConfig()
         return models
     }
 
     func availableModels() async throws -> [String] {
-        guard let provider, let baseURL, let key = Self.readKey() else { throw AIError.notReady }
+        guard let provider, let baseURL, let key = Self.keyItem.read()?.value else { throw AIError.notReady }
         return try await Self.listModels(provider: provider, baseURL: baseURL, key: key)
+    }
+
+    /// Moves the key and its settings into (or out of) iCloud Keychain. Turning sync off
+    /// removes the synced copy, so other devices lose the key.
+    func setSyncsAcrossDevices(_ on: Bool) {
+        guard let key = Self.keyItem.read()?.value else { syncsAcrossDevices = false; return }
+        syncsAcrossDevices = Self.keyItem.save(key, synced: on)
+        saveConfig()
+    }
+
+    private func saveConfig() {
+        guard let provider,
+              let data = try? JSONEncoder().encode(SyncedConfig(provider: provider.rawValue, baseURL: baseURL ?? "", model: model)),
+              let json = String(data: data, encoding: .utf8) else { return }
+        Self.configItem.save(json, synced: syncsAcrossDevices)
     }
 
     func grantConsent() {
@@ -885,8 +977,10 @@ final class AIService: ObservableObject {
 
     /// Removes the key and everything tied to it. AI features disappear immediately.
     func removeKey() {
-        Self.deleteKey()
+        Self.keyItem.delete()
+        Self.configItem.delete()
         hasKey = false
+        syncsAcrossDevices = false
         provider = nil
         customBaseURL = ""
         model = ""
@@ -905,7 +999,7 @@ final class AIService: ObservableObject {
     /// log shows — describe the data in plain words. Cancelling the calling Task cancels
     /// the request.
     func complete(system: String, prompt: String, feature: String, sentSummary: String) async throws -> String {
-        guard isReady, let provider, let baseURL, let key = Self.readKey() else { throw AIError.notReady }
+        guard isReady, let provider, let baseURL, let key = Self.keyItem.read()?.value else { throw AIError.notReady }
         var entry = AIActivityEntry(id: UUID(), date: Date(), feature: feature, provider: provider.displayName,
                                     host: host, model: model, sentSummary: sentSummary,
                                     charactersSent: system.count + prompt.count, outcome: "Sending…")
@@ -1035,36 +1129,4 @@ final class AIService: ObservableObject {
         return data
     }
 
-    // MARK: Keychain
-
-    private static var keychainQuery: [String: Any] {
-        [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: keychainService,
-            kSecAttrAccount as String: "api-key",
-        ]
-    }
-
-    private static func readKey() -> String? {
-        var query = keychainQuery
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-              let data = item as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
-    }
-
-    private static func saveKey(_ key: String) {
-        deleteKey()
-        var query = keychainQuery
-        query[kSecValueData as String] = Data(key.utf8)
-        // This device only — never synced to iCloud Keychain or restored elsewhere
-        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        SecItemAdd(query as CFDictionary, nil)
-    }
-
-    private static func deleteKey() {
-        SecItemDelete(keychainQuery as CFDictionary)
-    }
 }

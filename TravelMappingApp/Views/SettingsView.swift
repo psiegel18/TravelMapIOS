@@ -13,6 +13,7 @@ struct SettingsView: View {
     @State private var showTipJar = false
     @State private var showGitHubSignIn = false
     @State private var feedbackKind: FeedbackSheet.Kind?
+    @State private var githubSyncUnavailable = false
     @ObservedObject private var github = GitHubService.shared
     @ObservedObject private var ai = AIService.shared
     @AppStorage("listAppendOnly") private var listAppendOnly = false
@@ -85,6 +86,13 @@ struct SettingsView: View {
                 if github.isConfigured {
                     if github.isSignedIn {
                         LabeledContent("Signed in as", value: github.login.map { "@\($0)" } ?? "GitHub")
+                        Toggle("Stay Signed In on My Other Devices", isOn: Binding(
+                            get: { github.syncsAcrossDevices },
+                            set: { on in
+                                github.setSyncsAcrossDevices(on)
+                                githubSyncUnavailable = on && !github.syncsAcrossDevices
+                            }
+                        ))
                         Button("Sign Out of GitHub", role: .destructive) {
                             github.signOut()
                         }
@@ -103,9 +111,16 @@ struct SettingsView: View {
             } header: {
                 TMDesign.sectionHeader("GitHub")
             } footer: {
+                if githubSyncUnavailable {
+                    Text("iCloud Keychain isn't available, so you're signed in on this device only. Turn it on in Settings › [your name] › iCloud › Passwords and Keychain.")
+                        .foregroundStyle(TMDesign.rail)
+                } else {
                 Text(github.isConfigured
-                     ? "Lets the app open .list update pull requests for your recorded trips. Your GitHub token stays in this device's Keychain."
+                     ? (github.syncsAcrossDevices
+                        ? "Lets the app open .list update pull requests for your recorded trips. Your GitHub token is in your iCloud Keychain (end-to-end encrypted) and syncs to your other devices."
+                        : "Lets the app open .list update pull requests for your recorded trips. Your GitHub token stays in this device's Keychain.")
                      : "How recorded-trip segments are added to your .list file.")
+                }
             }
 
             // MARK: Appearance
@@ -1302,6 +1317,7 @@ struct AISettingsView: View {
                 }
                 if editingNewProvider {
                     SecureField("API key", text: $keyText)
+                        .textContentType(.password)  // offers Passwords AutoFill on the keyboard
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .sentryReplayMask()
@@ -1320,7 +1336,16 @@ struct AISettingsView: View {
                     .disabled(isConnecting || keyText.trimmingCharacters(in: .whitespaces).isEmpty
                               || (provider == .custom && customBaseURL.isEmpty))
                 } else {
-                    LabeledContent("API key", value: "Saved on this device")
+                    LabeledContent("API key", value: ai.syncsAcrossDevices ? "Saved in iCloud Keychain" : "Saved on this device")
+                    Toggle("Use on My Other Devices", isOn: Binding(
+                        get: { ai.syncsAcrossDevices },
+                        set: { on in
+                            ai.setSyncsAcrossDevices(on)
+                            if on && !ai.syncsAcrossDevices {
+                                errorMessage = "iCloud Keychain isn't available. Turn it on in Settings › [your name] › iCloud › Passwords and Keychain."
+                            }
+                        }
+                    ))
                 }
                 if let errorMessage {
                     Text(errorMessage)
@@ -1330,8 +1355,23 @@ struct AISettingsView: View {
             } header: {
                 Text("Provider")
             } footer: {
-                Text("Your key is stored only in this device's Keychain and sent only to \(provider == .custom ? (URL(string: customBaseURL)?.host ?? "the address above") : (URL(string: provider.defaultBaseURL ?? "")?.host ?? provider.companyName)). Usage is billed to your own \(provider.companyName) account — the app's developer never sees your key or your requests.")
+                Text(providerFooter)
             }
+
+            if editingNewProvider {
+                Section {
+                    Label {
+                        Text("Save your key in the **Passwords** app (as a password for \(provider == .custom ? "the service" : URL(string: provider.keysPageURL?.absoluteString ?? "")?.host ?? provider.companyName)). Then tap the key field and choose **Passwords** above the keyboard to fill it in on any device.")
+                            .font(.footnote)
+                    } icon: {
+                        Image(systemName: "key.fill")
+                            .foregroundStyle(TMDesign.goldChipFG)
+                    }
+                } header: {
+                    Text("Tip")
+                }
+            }
+
 
             if ai.hasKey && !editingNewProvider {
                 Section("Model") {
@@ -1396,6 +1436,16 @@ struct AISettingsView: View {
             guard ai.hasKey, !editingNewProvider else { return }
             models = (try? await ai.availableModels()) ?? []
         }
+    }
+
+    private var providerFooter: String {
+        let host = provider == .custom
+            ? (URL(string: customBaseURL)?.host ?? "the address above")
+            : (URL(string: provider.defaultBaseURL ?? "")?.host ?? provider.companyName)
+        let storage = ai.hasKey && !editingNewProvider && ai.syncsAcrossDevices
+            ? "Your key is in your iCloud Keychain (end-to-end encrypted) and syncs to devices signed in to your Apple Account. Turning this off removes it from your other devices."
+            : "Your key is stored only in this device's Keychain."
+        return "\(storage) It's sent only to \(host), and usage is billed to your own \(provider.companyName) account — the app's developer never sees your key or your requests."
     }
 
     private func connect() async {
