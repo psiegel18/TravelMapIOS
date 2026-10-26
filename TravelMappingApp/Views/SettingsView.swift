@@ -8,15 +8,10 @@ struct SettingsView: View {
     @ObservedObject private var favorites = FavoritesService.shared
     @AppStorage("watchUsername") private var watchUsername = ""
     @AppStorage("sendToWatch") private var sendToWatch = true
-    @State private var versionTapCount = 0
-    @State private var showSentryTestAlert = false
     @State private var showTipJar = false
-    @State private var showGitHubSignIn = false
     @State private var feedbackKind: FeedbackSheet.Kind?
-    @State private var githubSyncUnavailable = false
     @ObservedObject private var github = GitHubService.shared
     @ObservedObject private var ai = AIService.shared
-    @AppStorage("listAppendOnly") private var listAppendOnly = false
     @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var isValidatingUser = false
     @State private var userValidationResult: Bool? = Self.cachedValidationResult
@@ -58,14 +53,40 @@ struct SettingsView: View {
             }
 
             Section {
+                Picker("Distance", selection: $settings.useMiles) {
+                    Text("Miles").tag(true)
+                    Text("Kilometers").tag(false)
+                }
+                .onChange(of: settings.useMiles) {
+                    UserDefaults(suiteName: "group.com.psiegel18.TravelMapping")?
+                        .set(settings.useMiles, forKey: "widgetUseMiles")
+                    WidgetCenter.shared.reloadAllTimelines()
+                }
                 Toggle("iCloud Sync", isOn: $favorites.iCloudSyncEnabled)
                 Toggle("Show on Apple Watch", isOn: $sendToWatch)
+            } header: {
+                TMDesign.sectionHeader("General")
             } footer: {
                 Text("iCloud syncs favorites across devices. Apple Watch receives live trip status and route directions.")
             }
 
-            // MARK: AI Assistant (bring your own key)
+            // MARK: Features — details live on their own pages to keep this screen short
             Section {
+                NavigationLink {
+                    MapAppearanceSettingsView()
+                } label: {
+                    Label("Map Appearance", systemImage: "paintbrush")
+                }
+                NavigationLink {
+                    GitHubSettingsView()
+                } label: {
+                    LabeledContent {
+                        Text(github.isSignedIn ? (github.login.map { "@\($0)" } ?? "Signed in") : "Not signed in")
+                    } label: {
+                        Label("GitHub", systemImage: "arrow.triangle.pull")
+                    }
+                }
+                .sentryReplayMask()
                 NavigationLink {
                     AISettingsView()
                 } label: {
@@ -76,159 +97,9 @@ struct SettingsView: View {
                     }
                 }
             } header: {
-                TMDesign.sectionHeader("AI")
+                TMDesign.sectionHeader("Features")
             } footer: {
-                Text("Optional. Use your own Claude, ChatGPT, Grok, or compatible API key for help fixing your .list file. Nothing is sent until you allow it.")
-            }
-
-            // MARK: GitHub (.list updates)
-            Section {
-                if github.isConfigured {
-                    if github.isSignedIn {
-                        LabeledContent("Signed in as", value: github.login.map { "@\($0)" } ?? "GitHub")
-                            .sentryReplayMask()
-                        Toggle("Stay Signed In on My Other Devices", isOn: Binding(
-                            get: { github.syncsAcrossDevices },
-                            set: { on in
-                                github.setSyncsAcrossDevices(on)
-                                githubSyncUnavailable = on && !github.syncsAcrossDevices
-                            }
-                        ))
-                        Button(github.syncsAcrossDevices ? "Sign Out on All Devices" : "Sign Out of GitHub", role: .destructive) {
-                            github.signOut()
-                        }
-                    } else {
-                        Button {
-                            showGitHubSignIn = true
-                        } label: {
-                            Label("Sign in with GitHub", systemImage: "person.badge.key")
-                        }
-                    }
-                }
-                Picker("New lines go", selection: $listAppendOnly) {
-                    Text("Where they fit in my file").tag(false)
-                    Text("In a block at the end").tag(true)
-                }
-            } header: {
-                TMDesign.sectionHeader("GitHub")
-            } footer: {
-                if githubSyncUnavailable {
-                    Text("iCloud Keychain isn't available, so you're signed in on this device only. Turn it on in Settings › [your name] › iCloud › Passwords and Keychain.")
-                        .foregroundStyle(TMDesign.rail)
-                } else {
-                Text(github.isConfigured
-                     ? (github.syncsAcrossDevices
-                        ? "Lets the app open .list update pull requests for your recorded trips. Your GitHub token is in your iCloud Keychain (end-to-end encrypted) and syncs to your other devices."
-                        : "Lets the app open .list update pull requests for your recorded trips. Your GitHub token stays in this device's Keychain.")
-                     : "How recorded-trip segments are added to your .list file.")
-                }
-            }
-
-            // MARK: Appearance
-            Section {
-                Picker("Distance", selection: $settings.useMiles) {
-                    Text("Miles").tag(true)
-                    Text("Kilometers").tag(false)
-                }
-                .onChange(of: settings.useMiles) {
-                    UserDefaults(suiteName: "group.com.psiegel18.TravelMapping")?
-                        .set(settings.useMiles, forKey: "widgetUseMiles")
-                    WidgetCenter.shared.reloadAllTimelines()
-                }
-                Picker("Road Style", selection: $settings.roadLineStyle) {
-                    ForEach(MapStyleService.LineStyle.allCases) { style in
-                        HStack {
-                            LineStylePreview(style: style).frame(width: 40)
-                            Text(style.rawValue)
-                        }
-                        .tag(style.rawValue)
-                    }
-                }
-                HStack {
-                    Text("Road Width")
-                    Slider(value: $settings.roadLineWidth, in: 1...6, step: 0.5)
-                    Text("\(settings.roadLineWidth, specifier: "%.1f")")
-                        .font(.subheadline.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .frame(width: 32)
-                }
-                HStack {
-                    Text("Rail Width")
-                    Slider(value: $settings.railLineWidth, in: 1...6, step: 0.5)
-                    Text("\(settings.railLineWidth, specifier: "%.1f")")
-                        .font(.subheadline.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .frame(width: 32)
-                }
-                HStack {
-                    Text("Untraveled Routes")
-                    Slider(value: $settings.untraveledVisibility, in: 0.25...1.0, step: 0.05)
-                    Text("\(Int((settings.untraveledVisibility * 100).rounded()))%")
-                        .font(.subheadline.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .frame(width: 44)
-                }
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("Untraveled route visibility, \(Int((settings.untraveledVisibility * 100).rounded())) percent")
-            } header: {
-                TMDesign.sectionHeader("Appearance")
-            } footer: {
-                Text("Untraveled routes appear in amber on the map — raise the visibility if they're hard to see against the base map.")
-            }
-
-            Section {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Accent Color")
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 52))], spacing: 12) {
-                        ForEach(ThemeService.availableColors, id: \.name) { item in
-                            Button {
-                                Haptics.selection()
-                                settings.accentColorName = item.name
-                            } label: {
-                                Circle()
-                                    .fill(item.color)
-                                    .frame(width: 44, height: 44)
-                                    .overlay {
-                                        Circle()
-                                            .stroke(
-                                                settings.accentColorName == item.name ? Color.primary : Color.clear,
-                                                lineWidth: 3
-                                            )
-                                    }
-                                    .overlay {
-                                        if settings.accentColorName == item.name {
-                                            Image(systemName: "checkmark")
-                                                .font(.callout.bold())
-                                                .foregroundStyle(.white)
-                                        }
-                                    }
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel(item.name)
-                            .accessibilityAddTraits(settings.accentColorName == item.name ? [.isSelected] : [])
-                        }
-                    }
-                }
-                .padding(.vertical, 4)
-            } footer: {
-                Text("Controls tint for tab icons, buttons, links, and interactive elements throughout the app.")
-            }
-
-            // MARK: Data
-            Section {
-                CacheStatusView()
-
-                Button("Clear Cache") {
-                    Haptics.light()
-                    Task {
-                        await CacheService.shared.clearAll()
-                    }
-                }
-                .foregroundStyle(.red)
-            } header: {
-                TMDesign.sectionHeader("Data")
-            } footer: {
-                Text("Cached stats, user lists, and API responses (refreshes every 6\u{2013}24 hours). Pull down on any page to force-refresh.")
+                Text("GitHub and AI are optional. GitHub sends .list updates as pull requests. AI uses your own key to suggest .list fixes, and nothing is sent until you allow it.")
             }
 
             // MARK: Support
@@ -280,67 +151,24 @@ struct SettingsView: View {
                 Text("Tips go to the independent developer of this iPhone app — not to the Travel Mapping project, which runs the website and route data.")
             }
 
-            // MARK: About
             Section {
-                LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0")
-                    .onTapGesture {
-                        versionTapCount += 1
-                        if versionTapCount >= 7 {
-                            versionTapCount = 0
-                            showSentryTestAlert = true
-                        }
-                    }
-                LabeledContent("Data Source", value: "travelmapping.net + tmrail.teresco.org")
-                LabeledContent("User Data", value: "GitHub API")
                 NavigationLink {
-                    PrivacyPolicyView()
+                    AboutSettingsView()
                 } label: {
-                    Label("Privacy Policy", systemImage: "hand.raised")
-                }
-            } header: {
-                TMDesign.sectionHeader("About")
-            }
-
-            Section {
-                Link(destination: URL(string: "https://travelmapping.net")!) {
-                    Label("Travel Mapping (Roads)", systemImage: "car.fill")
-                }
-                Link(destination: URL(string: "https://tmrail.teresco.org")!) {
-                    Label("Travel Mapping (Rail)", systemImage: "tram.fill")
-                }
-                Link(destination: URL(string: "https://github.com/TravelMapping/UserData")!) {
-                    Label("User Data on GitHub", systemImage: "chevron.left.forwardslash.chevron.right")
-                }
-                Link(destination: URL(string: "https://github.com/psiegel18/TravelMapIOS/discussions")!) {
-                    Label("App Discussion Board", systemImage: "bubble.left.and.text.bubble.right")
-                }
-                Link(destination: URL(string: "https://forum.travelmapping.net/")!) {
-                    Label("TM Community Forum", systemImage: "person.3")
+                    LabeledContent {
+                        Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "")
+                    } label: {
+                        Label("About, Privacy & Data", systemImage: "info.circle")
+                    }
                 }
             }
         }
         .navigationTitle("Settings")
-        .sheet(isPresented: $showGitHubSignIn) {
-            GitHubSignInSheet()
-        }
         .sheet(item: $feedbackKind) { kind in
             FeedbackSheet(kind: kind)
         }
         .task {
             await github.ensureLogin()
-        }
-        .alert("Send Test Event", isPresented: $showSentryTestAlert) {
-            Button("Send", role: .destructive) {
-                SentrySDK.capture(error: NSError(
-                    domain: "com.psiegel18.TravelMapping.test",
-                    code: 0,
-                    userInfo: [NSLocalizedDescriptionKey: "Test event from Settings (version tapped 7 times)"]
-                ))
-                Haptics.success()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This will send a test error event to Sentry to verify the integration is working. Continue?")
         }
     }
 
@@ -447,6 +275,238 @@ struct SettingsView: View {
             "routeCount": routes.count,
         ])
         return found
+    }
+}
+
+// MARK: - Settings sub-pages
+
+struct MapAppearanceSettingsView: View {
+    @ObservedObject private var settings = SyncedSettingsService.shared
+
+    var body: some View {
+        Form {
+            Section {
+                Picker("Road Style", selection: $settings.roadLineStyle) {
+                    ForEach(MapStyleService.LineStyle.allCases) { style in
+                        HStack {
+                            LineStylePreview(style: style).frame(width: 40)
+                            Text(style.rawValue)
+                        }
+                        .tag(style.rawValue)
+                    }
+                }
+                HStack {
+                    Text("Road Width")
+                    Slider(value: $settings.roadLineWidth, in: 1...6, step: 0.5)
+                    Text("\(settings.roadLineWidth, specifier: "%.1f")")
+                        .font(.subheadline.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 32)
+                }
+                HStack {
+                    Text("Rail Width")
+                    Slider(value: $settings.railLineWidth, in: 1...6, step: 0.5)
+                    Text("\(settings.railLineWidth, specifier: "%.1f")")
+                        .font(.subheadline.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 32)
+                }
+                HStack {
+                    Text("Untraveled Routes")
+                    Slider(value: $settings.untraveledVisibility, in: 0.25...1.0, step: 0.05)
+                    Text("\(Int((settings.untraveledVisibility * 100).rounded()))%")
+                        .font(.subheadline.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 44)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Untraveled route visibility, \(Int((settings.untraveledVisibility * 100).rounded())) percent")
+            } header: {
+                TMDesign.sectionHeader("Map Lines")
+            } footer: {
+                Text("Untraveled routes appear in amber on the map — raise the visibility if they're hard to see against the base map.")
+            }
+
+            Section {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Accent Color")
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 52))], spacing: 12) {
+                        ForEach(ThemeService.availableColors, id: \.name) { item in
+                            Button {
+                                Haptics.selection()
+                                settings.accentColorName = item.name
+                            } label: {
+                                Circle()
+                                    .fill(item.color)
+                                    .frame(width: 44, height: 44)
+                                    .overlay {
+                                        Circle()
+                                            .stroke(
+                                                settings.accentColorName == item.name ? Color.primary : Color.clear,
+                                                lineWidth: 3
+                                            )
+                                    }
+                                    .overlay {
+                                        if settings.accentColorName == item.name {
+                                            Image(systemName: "checkmark")
+                                                .font(.callout.bold())
+                                                .foregroundStyle(.white)
+                                        }
+                                    }
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(item.name)
+                            .accessibilityAddTraits(settings.accentColorName == item.name ? [.isSelected] : [])
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+            } footer: {
+                Text("Controls tint for tab icons, buttons, links, and interactive elements throughout the app.")
+            }
+        }
+        .navigationTitle("Map Appearance")
+        .navigationBarTitleDisplayMode(.inline)
+        .sentryScreen("MapAppearanceSettings")
+    }
+}
+
+struct GitHubSettingsView: View {
+    @ObservedObject private var github = GitHubService.shared
+    @AppStorage("listAppendOnly") private var listAppendOnly = false
+    @State private var showGitHubSignIn = false
+    @State private var githubSyncUnavailable = false
+
+    var body: some View {
+        Form {
+            Section {
+                if github.isConfigured {
+                    if github.isSignedIn {
+                        LabeledContent("Signed in as", value: github.login.map { "@\($0)" } ?? "GitHub")
+                            .sentryReplayMask()
+                        Toggle("Stay Signed In on My Other Devices", isOn: Binding(
+                            get: { github.syncsAcrossDevices },
+                            set: { on in
+                                github.setSyncsAcrossDevices(on)
+                                githubSyncUnavailable = on && !github.syncsAcrossDevices
+                            }
+                        ))
+                        Button(github.syncsAcrossDevices ? "Sign Out on All Devices" : "Sign Out of GitHub", role: .destructive) {
+                            github.signOut()
+                        }
+                    } else {
+                        Button {
+                            showGitHubSignIn = true
+                        } label: {
+                            Label("Sign in with GitHub", systemImage: "person.badge.key")
+                        }
+                    }
+                }
+                Picker("New lines go", selection: $listAppendOnly) {
+                    Text("Where they fit in my file").tag(false)
+                    Text("In a block at the end").tag(true)
+                }
+            } footer: {
+                if githubSyncUnavailable {
+                    Text("iCloud Keychain isn't available, so you're signed in on this device only. Turn it on in Settings › [your name] › iCloud › Passwords and Keychain.")
+                        .foregroundStyle(TMDesign.rail)
+                } else {
+                Text(github.isConfigured
+                     ? (github.syncsAcrossDevices
+                        ? "Lets the app open .list update pull requests for your recorded trips. Your GitHub token is in your iCloud Keychain (end-to-end encrypted) and syncs to your other devices."
+                        : "Lets the app open .list update pull requests for your recorded trips. Your GitHub token stays in this device's Keychain.")
+                     : "How recorded-trip segments are added to your .list file.")
+                }
+            }
+        }
+        .navigationTitle("GitHub")
+        .navigationBarTitleDisplayMode(.inline)
+        .sentryScreen("GitHubSettings")
+        .sheet(isPresented: $showGitHubSignIn) {
+            GitHubSignInSheet()
+        }
+        .task {
+            await github.ensureLogin()
+        }
+    }
+}
+
+struct AboutSettingsView: View {
+    @State private var versionTapCount = 0
+    @State private var showSentryTestAlert = false
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0")
+                    .onTapGesture {
+                        versionTapCount += 1
+                        if versionTapCount >= 7 {
+                            versionTapCount = 0
+                            showSentryTestAlert = true
+                        }
+                    }
+                LabeledContent("Data Source", value: "travelmapping.net + tmrail.teresco.org")
+                LabeledContent("User Data", value: "GitHub API")
+                NavigationLink {
+                    PrivacyPolicyView()
+                } label: {
+                    Label("Privacy Policy", systemImage: "hand.raised")
+                }
+            }
+
+            Section {
+                CacheStatusView()
+
+                Button("Clear Cache") {
+                    Haptics.light()
+                    Task {
+                        await CacheService.shared.clearAll()
+                    }
+                }
+                .foregroundStyle(.red)
+            } header: {
+                TMDesign.sectionHeader("Data")
+            } footer: {
+                Text("Cached stats, user lists, and API responses (refreshes every 6\u{2013}24 hours). Pull down on any page to force-refresh.")
+            }
+
+            Section {
+                Link(destination: URL(string: "https://travelmapping.net")!) {
+                    Label("Travel Mapping (Roads)", systemImage: "car.fill")
+                }
+                Link(destination: URL(string: "https://tmrail.teresco.org")!) {
+                    Label("Travel Mapping (Rail)", systemImage: "tram.fill")
+                }
+                Link(destination: URL(string: "https://github.com/TravelMapping/UserData")!) {
+                    Label("User Data on GitHub", systemImage: "chevron.left.forwardslash.chevron.right")
+                }
+                Link(destination: URL(string: "https://github.com/psiegel18/TravelMapIOS/discussions")!) {
+                    Label("App Discussion Board", systemImage: "bubble.left.and.text.bubble.right")
+                }
+                Link(destination: URL(string: "https://forum.travelmapping.net/")!) {
+                    Label("TM Community Forum", systemImage: "person.3")
+                }
+            } header: {
+                TMDesign.sectionHeader("Links")
+            }
+        }
+        .navigationTitle("About")
+        .navigationBarTitleDisplayMode(.inline)
+        .sentryScreen("AboutSettings")
+        .alert("Send Test Event", isPresented: $showSentryTestAlert) {
+            Button("Send", role: .destructive) {
+                SentrySDK.capture(error: NSError(
+                    domain: "com.psiegel18.TravelMapping.test",
+                    code: 0,
+                    userInfo: [NSLocalizedDescriptionKey: "Test event from Settings (version tapped 7 times)"]
+                ))
+                Haptics.success()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will send a test error event to Sentry to verify the integration is working. Continue?")
+        }
     }
 }
 
@@ -793,10 +853,11 @@ struct PrivacyPolicyView: View {
 
                 // Sections
                 policyCard(icon: "location.fill", color: .blue, title: "Location Data") {
-                    bullet("Accessed only when you start a Road Trip or tap the location button")
-                    bullet("Stored locally on your device and in iCloud if enabled")
-                    bullet("Never sent to third-party servers")
-                    bullet("Stops when you end the recording session")
+                    bullet("Accessed only when you start a Road Trip, tap the location button, or choose Current Location in the Route Planner")
+                    bullet("Recorded trips are stored on your device and in iCloud if enabled, and never sent to third parties")
+                    bullet("Route Planner: your current location goes to Apple Maps for directions and nearby address suggestions, and the route's area to travelmapping.net for highway data")
+                    bullet("Navigating or sharing with Google Maps or Waze passes the start and end points to that app")
+                    bullet("Trip recording stops when you end the recording session")
                 }
 
                 policyCard(icon: "gear", color: .gray, title: "User Preferences") {
@@ -811,6 +872,7 @@ struct PrivacyPolicyView: View {
                     serviceRow("travelmapping.net", desc: "Route data & statistics")
                     serviceRow("tmrail.teresco.org", desc: "Rail route data")
                     serviceRow("GitHub", desc: "User travel list files")
+                    serviceRow("Apple Maps", desc: "Route Planner directions & address suggestions")
                     Text("No personal information is sent to the developer. The app has no accounts of its own. GitHub and AI providers are contacted only if you turn on the optional features below.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -1406,7 +1468,8 @@ struct AISettingsView: View {
                             Text("Choose…").tag("")
                             ForEach(models, id: \.self) { id in
                                 if let cost = AIModelCost.estimate(for: id) {
-                                    Text("\(id)  \(cost.symbol)").tag(id)
+                                    // Tier first: menu rows wrap long IDs, which pushed a trailing tier around
+                                    Text("\(cost.symbol)\u{2002}\(id)").tag(id)
                                 } else {
                                     Text(id).tag(id)
                                 }
@@ -1516,7 +1579,8 @@ struct AISettingsView: View {
         let storage = ai.hasKey && !editingNewProvider && ai.syncsAcrossDevices
             ? "Your key is in your iCloud Keychain (end-to-end encrypted) and syncs to devices signed in to your Apple Account. Turning this off removes it from your other devices."
             : "Your key is stored only in this device's Keychain."
-        return "\(storage) It's sent only to \(host), and usage is billed to your own \(provider.companyName) account — the app's developer never sees your key or your requests."
+        let account = provider == .custom ? "account with that service" : "\(provider.companyName) account"
+        return "\(storage) It's sent only to \(host), and usage is billed to your own \(account) — the app's developer never sees your key or your requests."
     }
 
     private func connect() async {
@@ -1525,6 +1589,8 @@ struct AISettingsView: View {
         defer { isConnecting = false }
         do {
             models = try await ai.connect(provider: provider, key: keyText, customBaseURL: customBaseURL)
+            // connect() may switch Other to the built-in provider whose address was entered
+            if let connected = ai.provider, connected != provider { provider = connected }
             keyText = ""
             Haptics.success()
             if ai.consentDate == nil { showConsent = true }

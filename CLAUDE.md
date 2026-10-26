@@ -6,7 +6,7 @@ iOS/watchOS/widget app for the TravelMapping community project. GitHub: `psiegel
 
 ```bash
 xcodebuild -project TravelMappingApp.xcodeproj -scheme TravelMappingApp \
-  -destination 'platform=iOS Simulator,name=iPhone 16' build
+  -destination 'generic/platform=iOS Simulator' build
 ```
 
 ### Architecture
@@ -24,6 +24,7 @@ xcodebuild -project TravelMappingApp.xcodeproj -scheme TravelMappingApp \
 - Recorded-trip → .list workflow: `TripLogAnalyzer` (in `TripStorageService.swift`) classifies each traveled hop as new / submitted / logged using `getRegionSegments(roots:traveler:)` clinch flags, extending ranges past hidden `+X` shaping points (not valid in .list files). `ListFileMerger` (in `ListFileGenerator.swift`) inserts lines into the user's *current* GitHub file (fetched uncached via `DataService.fetchCurrentListText`) by learning placement from neighbors — insert-only, never edits existing lines. Submitted state lives in one iCloud file (`TripStorageService.listSubmissions`, `list-submissions.tmsubmissions` — not .json, which listTrips() decodes as trips), not on trips — so it spans trips and stale trip saves can't drop it; entries clear when all hops are clinched or the PR closes unmerged. A still-open app PR gets new lines appended to its branch instead of a second PR. `GitHubService` (in `DataService.swift`) does device-flow sign-in (token in Keychain, this-device-only) and opens PRs: fork → branch at upstream head → commit merged file (text read from the commit-pinned raw URL — contents API omits bodies >1 MB) → PR. `GitHubService.clientID` must be set to the registered OAuth App's client ID (device flow enabled); empty hides in-app PRs
 - AI Assistant is bring-your-own-key only (`AIService` + `AIProvider` in `DataService.swift`; Anthropic Messages API raw HTTP with `anthropic-version: 2026-10-21`, OpenAI-style chat completions for OpenAI/xAI/custom). Features stay hidden unless key + per-provider/host consent (`AIConsentSheet`, Guideline 5.1.2(i)) + master toggle; disclosure text lives once in `AIDisclosure`. Key and GitHub token in Keychain via shared `KeychainItem` — device-only by default, opt-in iCloud Keychain sync (`kSecAttrSynchronizable`; AI provider/model synced alongside, consent stays per device); key field `.sentryReplayMask()`, AI-host failed requests dropped in Sentry `beforeSend`, trace headers limited to TM hosts. AI output is never applied unvalidated — List checkup suggestions must use labels from current route data
 - List checkup (`ListCheckup` in `TripStorageService.swift`, `ListLogParser` in `ListFileParser.swift`) reads TM's nightly per-user log, auto-fixes renamed routes / label case only when verified against route data, and edits existing lines via `ListFileMerger.applyReplacements` (keeps inline comments)
+- Route Planner (`RoutePlannerView.swift`) matches TM segments to an MKRoute with `RouteSegmentMatcher` + `RoutePolylineIndex` (in the same file): both waypoints within 80 m of the polyline (one end up to 150 m for segments ≥ 1 km = ramp entries), route distance between projections 0.7–1.6× the segment length (rejects crossing roads), and ±35° parallel. Thresholds were measured on real MapKit + TM data — don't go back to "midpoint near a sampled vertex" (dropped long freeway segments, counted crossing roads). One corridor fetch for all alternatives; searches go through `startSearch()` (cancels the in-flight one). "Current Location" is a text sentinel resolved via `LocationManager` (TravelMapView.swift); address suggestions via `AddressCompleter`
 - Stats prefetch on launch for primary user + up to 3 favorites
 - In-memory `StatsCache` (1hr TTL) for instant re-navigation
 - File-based `CacheService` for API responses; `purgeExpired()` runs on app launch to evict abandoned keys
@@ -60,7 +61,7 @@ TravelMappingApp/              # iOS app target sources
   ContentView.swift            # Tab bar (5 tabs), prefetch, widget cache
   Views/
     GetStartedView.swift       # Native onboarding (region picker, segment picker map, email composer)
-    SettingsView.swift         # Settings, TipJar, PrivacyPolicyView
+    SettingsView.swift         # Settings (short main page → Map Appearance / GitHub / AI Assistant / About sub-pages), TipJar, PrivacyPolicyView
     StatisticsView.swift       # Stats with StatsCache, cross-region route aggregation
     TravelMapView.swift        # Map with background polyline rebuild, bounding box tap filter
     RouteDetailView.swift      # Cross-region route detail with per-region breakdown

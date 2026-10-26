@@ -32,9 +32,10 @@ a { color: #0066cc; }
 
 <h3>Location Data</h3>
 <ul>
-<li><strong>When used:</strong> Only when you explicitly start recording a Road Trip via the Road Trips tab, or tap the location button on a map view.</li>
+<li><strong>When used:</strong> Only when you explicitly start recording a Road Trip via the Road Trips tab, tap the location button on a map view, or choose "Current Location" in the Route Planner.</li>
 <li><strong>How it's used:</strong> To record GPS coordinates of routes you drive so they can be matched to TravelMapping route segments.</li>
-<li><strong>Where it's stored:</strong> Locally on your device and, if you have iCloud Drive enabled, in your personal iCloud container. No location data is sent to any third-party server.</li>
+<li><strong>Where it's stored:</strong> Recorded trips are stored locally on your device and, if you have iCloud Drive enabled, in your personal iCloud container. Recorded trips and GPS traces are never sent to any third-party server.</li>
+<li><strong>Route Planner:</strong> If you choose "Current Location", that location is sent to Apple Maps (MapKit) to calculate directions and to rank nearby address suggestions, the same way an address you type is. Addresses you type are sent to Apple Maps for suggestions and directions. The planner then asks travelmapping.net for the highway segments in the area the route covers. Sharing a route (and any Apple Maps, Google Maps, or Waze link in it) happens only when you choose to share, with the app you pick. Tapping Navigate passes the start and end points to the navigation app you choose (Apple Maps, Google Maps, or Waze).</li>
 <li><strong>When it stops:</strong> GPS tracking stops when you tap "Stop Road Trip" or close the recording session.</li>
 </ul>
 
@@ -50,6 +51,7 @@ a { color: #0066cc; }
 <li><strong>travelmapping.net</strong> — route data, map segments, traveler statistics</li>
 <li><strong>tmrail.teresco.org</strong> — rail route data</li>
 <li><strong>github.com/TravelMapping/UserData</strong> — user travel list files</li>
+<li><strong>Apple Maps (MapKit)</strong> — map tiles, Route Planner directions, and address suggestions</li>
 </ul>
 <p>No personal information is transmitted to us. The app does not have its own user accounts.</p>
 
