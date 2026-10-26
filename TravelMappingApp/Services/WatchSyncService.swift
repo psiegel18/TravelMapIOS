@@ -108,9 +108,24 @@ class WatchSyncService: NSObject, ObservableObject, WCSessionDelegate {
 
     // MARK: - Directions
 
-    /// Send route directions to Watch.
-    func sendDirections(routeName: String, totalDistance: Double, totalTime: TimeInterval, steps: [(instruction: String, distance: Double, notice: String?)]) {
-        guard sendToWatchEnabled else { return }
+    enum DirectionsSendResult {
+        case delivered          // Watch app is open and got them now
+        case queued             // delivered next time the Watch app runs
+        case noWatch
+        case appNotInstalled
+        case disabled           // Settings › Show on Apple Watch is off
+    }
+
+    /// Send route directions to Watch. Uses a live message when the Watch app is open,
+    /// otherwise queues them for its next launch.
+    @discardableResult
+    func sendDirections(routeName: String, totalDistance: Double, totalTime: TimeInterval, steps: [(instruction: String, distance: Double, notice: String?)]) -> DirectionsSendResult {
+        guard sendToWatchEnabled else { return .disabled }
+        let session = WCSession.default
+        if session.activationState == .activated {
+            guard session.isPaired else { return .noWatch }
+            guard session.isWatchAppInstalled else { return .appNotInstalled }
+        }
 
         let stepDicts: [[String: Any]] = steps.map { step in
             var dict: [String: Any] = [
@@ -131,11 +146,19 @@ class WatchSyncService: NSObject, ObservableObject, WCSessionDelegate {
             "steps": stepDicts
         ]
 
-        guard WCSession.default.activationState == .activated else {
+        guard session.activationState == .activated else {
             stateQueue.sync { pendingDirections = data }
-            return
+            return .queued
         }
-        WCSession.default.transferUserInfo(data)
+        if session.isReachable {
+            session.sendMessage(data, replyHandler: nil) { _ in
+                // Watch went away mid-send: fall back to the queued path
+                WCSession.default.transferUserInfo(data)
+            }
+            return .delivered
+        }
+        session.transferUserInfo(data)
+        return .queued
     }
 
     /// Clear directions on Watch.

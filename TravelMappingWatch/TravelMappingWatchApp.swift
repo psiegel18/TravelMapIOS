@@ -52,6 +52,7 @@ struct WatchPulsingDot: View {
 @main
 struct TravelMappingWatchApp: App {
     @StateObject private var sessionManager = WatchSessionManager.shared
+    @State private var page = 0
 
     /// Mirrors the iOS channel detection in TravelMappingApp.swift: a sandbox receipt
     /// means TestFlight, otherwise App Store. Keeps watch events in the same Sentry
@@ -98,12 +99,15 @@ struct TravelMappingWatchApp: App {
 
     var body: some Scene {
         WindowGroup {
-            TabView {
-                WatchDashboardView()
-                WatchTripView(sessionManager: sessionManager)
-                WatchDirectionsView(sessionManager: sessionManager)
+            TabView(selection: $page) {
+                WatchDashboardView().tag(0)
+                WatchTripView(sessionManager: sessionManager).tag(1)
+                WatchDirectionsView(sessionManager: sessionManager).tag(2)
             }
             .tabViewStyle(.verticalPage)
+            .onChange(of: sessionManager.directionsArrival) {
+                page = 2  // show directions the iPhone just sent
+            }
         }
     }
 }

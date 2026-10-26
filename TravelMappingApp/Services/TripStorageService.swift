@@ -225,9 +225,11 @@ struct TripLogRange: Identifiable, Sendable {
     let coordinates: [CLLocationCoordinate2D]
     /// IDs of the trips that traveled this stretch
     let tripIDs: Set<UUID>
+    /// This route's waypoint labels in order (see `ListLine.routeLabels`)
+    var routeLabels: [String] = []
 
     var id: String { "\(root)|\(startWaypoint)|\(endWaypoint)|\(status.rawValue)" }
-    var line: ListLine { ListLine(region: region, route: route, waypoint1: startWaypoint, waypoint2: endWaypoint) }
+    var line: ListLine { ListLine(region: region, route: route, waypoint1: startWaypoint, waypoint2: endWaypoint, routeLabels: routeLabels) }
 }
 
 struct TripLogAnalysis: Sendable {
@@ -364,10 +366,23 @@ enum TripLogAnalyzer {
                 status: b.status,
                 hopKeys: hops.map(\.id),
                 coordinates: [first.start] + hops.map(\.end),
-                tripIDs: b.tripIDs
+                tripIDs: b.tripIDs,
+                routeLabels: Self.orderedLabels(routeHops)
             )
         }
         return TripLogAnalysis(ranges: ranges, unresolvedCount: unresolved)
+    }
+
+    /// Labels along the route in order. Where the route breaks (a hop that doesn't start
+    /// where the last ended) both sides are kept, so the merger never treats the two
+    /// pieces as touching. Hidden "+" shaping points are left out — they can't be in a .list.
+    static func orderedLabels(_ routeHops: [TravelMappingAPI.MapSegment]) -> [String] {
+        var labels: [String] = []
+        for hop in routeHops {
+            if labels.last != hop.startName { labels.append(hop.startName) }
+            labels.append(hop.endName)
+        }
+        return labels.filter { !$0.hasPrefix("+") }
     }
 
     /// Hidden shaping points ("+X04") can't appear in a .list, so a range that starts or

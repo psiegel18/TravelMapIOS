@@ -83,7 +83,7 @@ struct SettingsView: View {
                     LabeledContent {
                         Text(github.isSignedIn ? (github.login.map { "@\($0)" } ?? "Signed in") : "Not signed in")
                     } label: {
-                        Label("GitHub", systemImage: "arrow.triangle.pull")
+                        Label { Text("GitHub") } icon: { GitHubMark() }
                     }
                 }
                 .sentryReplayMask()
@@ -280,6 +280,20 @@ struct SettingsView: View {
 
 // MARK: - Settings sub-pages
 
+/// GitHub's mark (Octicons, MIT) as a template image, sized like an SF Symbol in a Label
+struct GitHubMark: View {
+    @ScaledMetric(relativeTo: .body) private var size: CGFloat = 20
+
+    var body: some View {
+        Image("GitHubMark")
+            .resizable()
+            .renderingMode(.template)
+            .scaledToFit()
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
+    }
+}
+
 struct MapAppearanceSettingsView: View {
     @ObservedObject private var settings = SyncedSettingsService.shared
 
@@ -398,7 +412,7 @@ struct GitHubSettingsView: View {
                         Button {
                             showGitHubSignIn = true
                         } label: {
-                            Label("Sign in with GitHub", systemImage: "person.badge.key")
+                            Label { Text("Sign in with GitHub") } icon: { GitHubMark() }
                         }
                     }
                 }

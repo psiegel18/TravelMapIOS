@@ -2,7 +2,7 @@
 APP STORE DESCRIPTION
 ================================================================
 
-Travel Mapping is the companion app for travelmapping.net — the community-driven project that tracks highway and rail travel across the world.
+Travel Mapping is an independent app for travelmapping.net — the community-driven project that tracks highway and rail travel across the world.
 
 Browse interactive maps showing every road and rail segment you've clinched. See your progress across regions, compare stats with other travelers on the leaderboard, and discover new routes to explore.
 
@@ -64,7 +64,7 @@ Privacy: No ads, no third-party analytics. Anonymous diagnostic data (crashes, p
 APP REVIEW NOTES
 ================================================================
 
-Travel Mapping is a companion app for the travelmapping.net community project. It displays highway and rail travel data from the public TravelMapping API.
+Travel Mapping is an independent app for the travelmapping.net community project. It displays highway and rail travel data from the public TravelMapping API.
 
 TESTING THE APP
 

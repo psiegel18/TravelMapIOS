@@ -689,6 +689,9 @@ struct ListUpdatePRRow: View {
                     switch state {
                     case .open:
                         TMChip(text: "Open", bg: TMDesign.blueChipBG, fg: TMDesign.blueChipFG)
+                    case .draft:
+                        // Not up for review until the user marks it ready on GitHub
+                        TMChip(text: "Draft · mark ready", bg: TMDesign.amberChipBG, fg: TMDesign.amberChipFG)
                     case .merged:
                         TMChip(text: "Merged", icon: "checkmark", bg: TMDesign.purpleChipBG, fg: TMDesign.purpleChipFG)
                     case .closed:

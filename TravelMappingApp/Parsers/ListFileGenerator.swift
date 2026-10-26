@@ -175,9 +175,16 @@ struct ListLine: Hashable, Identifiable, Sendable {
     let route: String
     let waypoint1: String
     let waypoint2: String
+    /// The visible waypoint labels of this exact TM route, in order, when known. Lets the
+    /// merger extend an existing line that touches or overlaps this one instead of adding
+    /// a second line for the same road.
+    var routeLabels: [String] = []
 
     var id: String { text }
     var text: String { "\(region) \(route) \(waypoint1) \(waypoint2)" }
+
+    static func == (a: ListLine, b: ListLine) -> Bool { a.text == b.text }
+    func hash(into hasher: inout Hasher) { hasher.combine(text) }
 }
 
 // MARK: - List File Merger
@@ -186,7 +193,9 @@ struct ListLine: Hashable, Identifiable, Sendable {
 /// People organize their files very differently (sectioned by country → system → state,
 /// sorted by region, sorted by route number, or chronological trip blocks), so placement
 /// is learned from the file's own neighbors rather than a fixed schema. Existing lines are
-/// never edited or reordered — the merge is insert-only.
+/// never reordered. The one edit: when a new stretch overlaps or shares an endpoint with a
+/// line already on the same route, that line's endpoints are widened instead of adding a
+/// second line for the same road. Separate pieces (a gap between them) stay separate.
 enum ListFileMerger {
 
     struct Placement: Identifiable, Sendable {
@@ -195,7 +204,15 @@ enum ListFileMerger {
         let lineNumber: Int
         /// Nearest section header above the inserted line, if any
         let section: String?
+        /// Set when `line` widened an existing entry instead of being inserted: that
+        /// entry's data before and after (no comment)
+        var extended: (from: String, to: String)? = nil
+        /// Other lines of the same route folded into the widened line and removed
+        /// from the file (reported once, on the first placement for that line)
+        var absorbed: [String] = []
         var id: String { line.id }
+        /// What this placement leaves in the file
+        var resultText: String { extended?.to ?? line.text }
     }
 
     struct Result: Sendable {
@@ -213,9 +230,13 @@ enum ListFileMerger {
     }
 
     private struct Entry {
-        let raw: String
-        let kind: Kind
+        var raw: String
+        var kind: Kind
         var inserted: ListLine? = nil
+        /// New lines that widened this entry, with the entry's data before each
+        var extendedBy: [(line: ListLine, from: String)] = []
+        /// Same-route lines merged into this one and removed
+        var absorbed: [String] = []
 
         var isData: Bool { if case .data = kind { return true } else { return false } }
         var isBoundary: Bool {
@@ -247,6 +268,7 @@ enum ListFileMerger {
         let newLineSuffix = crlfCount * 2 > rawLines.count ? "\r" : ""
 
         var entries = rawLines.map { Entry(raw: $0, kind: classify(Self.stripCR($0))) }
+        let placesByFit = !(appendOnly || isChronological(entries))
 
         // Dedup against the file and within the batch
         var seen = Set<String>()
@@ -265,11 +287,25 @@ enum ListFileMerger {
             }
         }
 
+        // Widen existing lines on the same route rather than adding a second line. Not for
+        // trip-block files or the append-only preference: there each trip gets its own block.
+        if placesByFit {
+            var removed = Set<Int>()
+            toInsert = toInsert.filter { line in
+                switch extend(line, in: &entries, removed: &removed) {
+                case .notApplicable: return true
+                case .covered: duplicates.append(line); return false
+                case .extended: return false
+                }
+            }
+            for index in removed.sorted(by: >) { entries.remove(at: index) }
+        }
+
         // Insert in sorted order so lines sharing an anchor stay ordered among themselves
         toInsert.sort { sortKey($0.region, $0.route) < sortKey($1.region, $1.route) }
 
         var leftovers: [ListLine] = []
-        if appendOnly || isChronological(entries) {
+        if !placesByFit {
             leftovers = toInsert
         } else {
             for line in toInsert {
@@ -299,6 +335,15 @@ enum ListFileMerger {
             if let line = entry.inserted {
                 placements.append(Placement(line: line, lineNumber: i + 1, section: currentHeader))
             }
+            if !entry.extendedBy.isEmpty {
+                // "to" is the line as it ends up, after every widening in this batch
+                let final = dataText(of: entry.raw)
+                let original = entry.extendedBy[0].from
+                for (n, ext) in entry.extendedBy.enumerated() {
+                    placements.append(Placement(line: ext.line, lineNumber: i + 1, section: currentHeader,
+                                                extended: (original, final), absorbed: n == 0 ? entry.absorbed : []))
+                }
+            }
         }
 
         var text = entries.map(\.raw).joined(separator: "\n")
@@ -308,6 +353,105 @@ enum ListFileMerger {
 
     private static func stripCR(_ s: String) -> String {
         s.hasSuffix("\r") ? String(s.dropLast()) : s
+    }
+
+    // MARK: Extending existing lines
+
+    private enum Extension { case notApplicable, covered, extended }
+
+    /// Widens the line(s) on `line`'s exact route that overlap it or share an endpoint.
+    /// A file line counts as the same route only if it has the same region and route name
+    /// and both its waypoints are on this route's own label list — so a same-named route
+    /// elsewhere, or a separate system (US20 vs US20Bus), never merges. Every touching
+    /// line folds into the first; the others are removed unless they carry a comment
+    /// (an overlap is harmless to TravelMapping, a lost note isn't).
+    private static func extend(_ line: ListLine, in entries: inout [Entry], removed: inout Set<Int>) -> Extension {
+        let labels = line.routeLabels.map { $0.uppercased() }
+        // A label used twice (loops, reused junction names) makes positions ambiguous
+        guard labels.count >= 2, Set(labels).count == labels.count,
+              let a = labels.firstIndex(of: line.waypoint1.uppercased()),
+              let b = labels.firstIndex(of: line.waypoint2.uppercased()) else { return .notApplicable }
+        var lo = min(a, b), hi = max(a, b)
+        let region = line.region.uppercased(), route = line.route.uppercased()
+
+        var touching: [(index: Int, i: Int, j: Int)] = []
+        for (index, entry) in entries.enumerated() where !removed.contains(index) {
+            // Single-region lines, written short (R Rt A B) or long (R Rt A R Rt B)
+            guard entry.isData, Set(entry.regions) == [region], Set(entry.routes) == [route],
+                  entry.waypoints.count == 2,
+                  let i = labels.firstIndex(of: entry.waypoints[0].uppercased()),
+                  let j = labels.firstIndex(of: entry.waypoints[1].uppercased()), i != j else { continue }
+            let (eLo, eHi) = (min(i, j), max(i, j))
+            if eLo <= lo && hi <= eHi { return .covered }
+            // Overlap or a shared endpoint; a gap (separate pieces) stays two lines
+            if lo <= eHi && eLo <= hi { touching.append((index, i, j)) }
+        }
+        guard let first = touching.first else { return .notApplicable }
+        // Other touching lines fold in only when they sit in the same block (no header or
+        // blank line between) and carry no comment; anything else stays as it is — an
+        // overlap is harmless to TravelMapping, a deleted line elsewhere would surprise.
+        let absorbable = touching.dropFirst().filter { t in
+            let range = min(first.index, t.index)...max(first.index, t.index)
+            return !entries[range].contains { $0.isBoundary } && !stripCR(entries[t.index].raw).contains("#")
+        }
+        for t in [first] + absorbable { lo = min(lo, t.i, t.j); hi = max(hi, t.i, t.j) }
+
+        // Rewrite the first line's waypoints in place, keeping its direction, column
+        // spacing, comment and \r
+        let raw = entries[first.index].raw
+        let tokens = tokenRanges(in: raw)
+        // Waypoints sit at token 2 and the last token in every single-region form;
+        // a 5-field line only counts as "R Rt A R B" when token 3 is a region
+        let fieldCount = tokens.count
+        guard fieldCount == 4 || fieldCount == 6
+                || (fieldCount == 5 && looksLikeRegion(String(raw[tokens[3]]), anyCase: true)) else { return .notApplicable }
+        let original = tokens.map { String(raw[$0]) }
+        func label(_ k: Int) -> String {
+            // Endpoints that don't move keep the user's spelling
+            if k == first.i { return original[2] }
+            if k == first.j { return original[fieldCount - 1] }
+            return line.routeLabels[k]
+        }
+        let (w1, w2) = first.i > first.j ? (label(hi), label(lo)) : (label(lo), label(hi))
+        // Splice by pieces (String indices don't survive mutation)
+        let rebuilt = String(raw[..<tokens[2].lowerBound]) + w1
+            + String(raw[tokens[2].upperBound..<tokens[fieldCount - 1].lowerBound]) + w2
+            + String(raw[tokens[fieldCount - 1].upperBound...])
+        let before = original.joined(separator: " ")
+        entries[first.index].raw = rebuilt
+        entries[first.index].kind = classify(stripCR(rebuilt))
+        entries[first.index].extendedBy.append((line, before))
+
+        for t in absorbable {
+            // Report the line as the user had it, even if this batch already widened it
+            entries[first.index].absorbed.append(entries[t.index].extendedBy.first?.from ?? dataText(of: entries[t.index].raw))
+            entries[first.index].absorbed += entries[t.index].absorbed
+            // Its own widenings now describe the surviving line
+            entries[first.index].extendedBy += entries[t.index].extendedBy.map { ($0.line, before) }
+            removed.insert(t.index)
+        }
+        return .extended
+    }
+
+    /// Whitespace-separated token ranges of a line's data (before any # comment or \r)
+    private static func tokenRanges(in raw: String) -> [Range<String.Index>] {
+        var end = raw.firstIndex(of: "#") ?? raw.endIndex
+        if end == raw.endIndex, raw.hasSuffix("\r") { end = raw.index(before: raw.endIndex) }
+        var ranges: [Range<String.Index>] = []
+        var i = raw.startIndex
+        while i < end {
+            while i < end, raw[i] == " " || raw[i] == "\t" || raw[i] == "\r" { i = raw.index(after: i) }
+            guard i < end else { break }
+            let start = i
+            while i < end, !(raw[i] == " " || raw[i] == "\t" || raw[i] == "\r") { i = raw.index(after: i) }
+            ranges.append(start..<i)
+        }
+        return ranges
+    }
+
+    /// A line's data, single-spaced, without comment or line ending
+    private static func dataText(of raw: String) -> String {
+        tokenRanges(in: raw).map { String(raw[$0]) }.joined(separator: " ")
     }
 
     // MARK: Fixing existing lines
