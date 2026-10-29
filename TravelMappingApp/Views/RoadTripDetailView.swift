@@ -1322,13 +1322,20 @@ struct ListUpdateSheet: View {
     private func load() async {
         errorMessage = nil
         if github.isSignedIn {
-            // Any open app PR takes the update, whichever file it started with
+            // Any open app PR takes the update. One that already changes this file comes
+            // first — with a .list PR and an .rlist PR both open (1.3 opened one per file),
+            // rail lines belong with the PR that has the current .rlist changes.
+            let fileExtension = category.fileExtension
+            var seen = Set<Int>()
             let candidates = await TripStorageService.shared.listSubmissions()
-                .compactMap(\.pr)
-                .sorted { $0.createdAt > $1.createdAt }
-                .prefix(3)
-            for pr in candidates where pr.branch != nil {
-                if (try? await github.pullRequestState(pr.number))?.isOpen == true {
+                .compactMap { submission in submission.pr.map { (sameFile: submission.fileExtension == fileExtension, pr: $0) } }
+                .sorted { ($0.sameFile ? 1 : 0, $0.pr.createdAt) > ($1.sameFile ? 1 : 0, $1.pr.createdAt) }
+                .filter { seen.insert($0.pr.number).inserted }
+                .prefix(4)
+            for candidate in candidates where candidate.pr.branch != nil {
+                if let state = try? await github.pullRequestState(candidate.pr.number), state.isOpen {
+                    var pr = candidate.pr
+                    pr.isDraft = state == .draft
                     openPR = pr
                     break
                 }
@@ -1380,11 +1387,13 @@ struct ListUpdateSheet: View {
             )
             sentLineCount = merge.placements.count
             // A fresh PR follows the toggle; lines added to an open PR keep that PR's state
-            openedAsDraft = pr.number != openPR?.number && openAsDraft
+            openedAsDraft = pr.number != openPR?.number ? openAsDraft : openPR?.isDraft == true
             if pr.number != openPR?.number { openPR = nil }  // a new PR was opened after all
             openedPR = pr
-            onFixesSent?(sentFixKeys)
+            // Before onFixesSent: List Checkup reads its selected fixes to record the PR,
+            // and marking them sent removes them from that selection
             onSubmitted(pr)
+            onFixesSent?(sentFixKeys)
             Haptics.success()
         } catch {
             prError = error.localizedDescription

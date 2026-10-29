@@ -507,7 +507,20 @@ final class GitHubService: ObservableObject {
                 openBranchSHA = nil
             }
         }
-        if let openPR, let fork = openPR.fork, let branch = openPR.branch, let headSHA = openBranchSHA {
+        if let openPR, let fork = openPR.fork, let branch = openPR.branch, var headSHA = openBranchSHA {
+            // A PR can sit for days: merge upstream master into its branch first, so this
+            // update builds on the current file (lines added on github.com since, other
+            // fixes) rather than the copy the branch was cut from. A conflict (409) leaves
+            // the branch as it was.
+            if let upstreamSHA = try? await refSHA(repo: Self.upstream, branch: "master"),
+               let data = try? await api("POST", "/repos/\(fork)/merges", body: [
+                   "base": branch, "head": upstreamSHA,
+                   "commit_message": "Merge TravelMapping/UserData master",
+               ], quietStatuses: [403, 404, 409, 422]) {
+                struct Merge: Decodable { let sha: String }
+                // 204 (already up to date) has an empty body; keep the old head then
+                if let merged = try? JSONDecoder().decode(Merge.self, from: data) { headSHA = merged.sha }
+            }
             let file = try await readFile(repo: fork, sha: headSHA, path: path)
             let (fixedText, fixed) = ListFileMerger.applyReplacements(file.text, replacements)
             let merge = await Self.merge(fixedText, lines, blockTitle, appendOnly)
@@ -518,7 +531,7 @@ final class GitHubService: ObservableObject {
                                      section: Self.describe(merge: merge, fixed: fixed, replacements: replacements, names: names),
                                      customTitle: customTitle)
             var updated = openPR
-            updated.lineCount += merge.placements.count
+            updated.lineCount += merge.placements.count + fixed.count
             breadcrumb("Added \(merge.placements.count) lines to PR #\(openPR.number)")
             return (updated, merge)
         }
@@ -588,8 +601,8 @@ final class GitHubService: ObservableObject {
         UserDefaults.standard.set(forkRepo.owner.login, forKey: "githubLogin")
 
         breadcrumb("Opened list update PR #\(pr.number) (\(merge.placements.count) lines)")
-        return (ListUpdatePR(number: pr.number, url: pr.html_url, createdAt: Date(), lineCount: merge.placements.count,
-                             branch: branch, fork: fork), merge)
+        return (ListUpdatePR(number: pr.number, url: pr.html_url, createdAt: Date(), lineCount: merge.placements.count + fixed.count,
+                             branch: branch, fork: fork, isDraft: asDraft), merge)
     }
 
     /// PR description for one update: the segments it adds and the lines it fixes
@@ -754,9 +767,12 @@ final class GitHubService: ObservableObject {
             }
             let number: Int
             let html_url: URL
+            let created_at: Date
             let draft: Bool?
             let head: Head
         }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
         var components = URLComponents()
         components.queryItems = [URLQueryItem(name: "q", value: "repo:\(Self.upstream) is:pr is:open author:\(login)")]
         guard let query = components.percentEncodedQuery,
@@ -764,9 +780,9 @@ final class GitHubService: ObservableObject {
               let search = try? JSONDecoder().decode(Search.self, from: data) else { return nil }
         for item in search.items {
             guard let data = try? await api("GET", "/repos/\(Self.upstream)/pulls/\(item.number)", quietStatuses: [403, 404, 429, 503]),
-                  let pr = try? JSONDecoder().decode(PR.self, from: data),
+                  let pr = try? decoder.decode(PR.self, from: data),
                   pr.head.ref.hasPrefix("tm-app-"), let fork = pr.head.repo?.full_name else { continue }
-            return ListUpdatePR(number: pr.number, url: pr.html_url, createdAt: Date(), lineCount: 0,
+            return ListUpdatePR(number: pr.number, url: pr.html_url, createdAt: pr.created_at, lineCount: 0,
                                 branch: pr.head.ref, fork: fork, isDraft: pr.draft)
         }
         return nil
@@ -871,7 +887,8 @@ final class GitHubService: ObservableObject {
 
     private var nextBranchCleanup = Date.distantPast
 
-    /// Deletes the app's "tm-app-" branches on the user's fork once they're done with:
+    /// Syncs the fork's default branch with TravelMapping/UserData, then deletes the app's
+    /// "tm-app-" branches on the user's fork once they're done with:
     /// their PR was merged or closed, or (no PR at all, after a failed send) the branch is
     /// over a day old. A branch with an open PR is never touched, and nothing else on the
     /// fork is. Runs at most every 6 hours; best effort.
@@ -885,6 +902,16 @@ final class GitHubService: ObservableObject {
         struct PR: Decodable { let state: String }
         guard let data = try? await api("GET", "/repos/\(fork)/branches?per_page=100", quietStatuses: [403, 404, 429, 503]),
               let branches = try? JSONDecoder().decode([Branch].self, from: data) else { return }
+        // Bring the fork's own default branch up to date with TravelMapping's first, so
+        // what the merged PRs changed is on it before their branches go. (Not a merge of
+        // the PR branches themselves: an unmerged one would leave the fork disagreeing
+        // with the file TravelMapping actually reads, and break the next Sync fork.)
+        struct Repo: Decodable { let default_branch: String }
+        if let repoData = try? await api("GET", "/repos/\(fork)", quietStatuses: [403, 404, 429, 503]),
+           let repo = try? JSONDecoder().decode(Repo.self, from: repoData) {
+            _ = try? await api("POST", "/repos/\(fork)/merge-upstream", body: ["branch": repo.default_branch],
+                               quietStatuses: [403, 404, 409, 422, 429, 503])
+        }
         var deleted = 0
         for branch in branches.map(\.name) where branch.hasPrefix("tm-app-") {
             guard let prData = try? await api("GET", "/repos/\(Self.upstream)/pulls?state=all&head=\(login):\(branch)",
