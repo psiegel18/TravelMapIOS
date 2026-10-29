@@ -490,7 +490,8 @@ final class GitHubService: ObservableObject {
         tripNames: [String],
         replacements: [String: String] = [:],
         appendingTo openPR: ListUpdatePR?,
-        asDraft: Bool = false
+        asDraft: Bool = false,
+        title customTitle: String? = nil
     ) async throws -> (pr: ListUpdatePR, merge: ListFileMerger.Result) {
         guard isSignedIn else { throw GitHubError.notSignedIn }
         let path = "\(category.directoryName)/\(username).\(category.fileExtension)"
@@ -513,6 +514,9 @@ final class GitHubService: ObservableObject {
             guard !merge.placements.isEmpty || !fixed.isEmpty else { throw GitHubError.nothingNew }
             try await commit(repo: fork, branch: branch, path: path, text: merge.text, fileSHA: file.sha,
                              message: Self.commitSummary(added: merge.placements.count, fixed: fixed.count, from: names, more: true))
+            await refreshDescription(number: openPR.number, username: username, fileExtension: category.fileExtension,
+                                     section: Self.describe(merge: merge, fixed: fixed, replacements: replacements, names: names),
+                                     customTitle: customTitle)
             var updated = openPR
             updated.lineCount += merge.placements.count
             breadcrumb("Added \(merge.placements.count) lines to PR #\(openPR.number)")
@@ -568,6 +572,28 @@ final class GitHubService: ObservableObject {
                          message: "Update \(username).\(category.fileExtension): " + Self.commitSummary(added: merge.placements.count, fixed: fixed.count, from: names, more: false))
 
         // 5. Pull request — head owner from the fork itself (survives GitHub renames)
+        let prBody = Self.describe(merge: merge, fixed: fixed, replacements: replacements, names: names)
+        struct PR: Decodable { let number: Int; let html_url: URL }
+        let pr = try JSONDecoder().decode(PR.self, from: try await api("POST", "/repos/\(Self.upstream)/pulls", body: [
+            "title": customTitle ?? Self.autoTitle(username: username, added: merge.placements.count, fixed: fixed.count,
+                                                    fileExtensions: [category.fileExtension]),
+            "head": "\(forkRepo.owner.login):\(branch)",
+            "base": "master",
+            "body": prBody,
+            "maintainer_can_modify": true,
+            // A draft isn't up for review until the user marks it ready on GitHub
+            "draft": asDraft,
+        ]))
+        login = forkRepo.owner.login
+        UserDefaults.standard.set(forkRepo.owner.login, forKey: "githubLogin")
+
+        breadcrumb("Opened list update PR #\(pr.number) (\(merge.placements.count) lines)")
+        return (ListUpdatePR(number: pr.number, url: pr.html_url, createdAt: Date(), lineCount: merge.placements.count,
+                             branch: branch, fork: fork), merge)
+    }
+
+    /// PR description for one update: the segments it adds and the lines it fixes
+    private static func describe(merge: ListFileMerger.Result, fixed: [String], replacements: [String: String], names: String) -> String {
         var sections: [String] = []
         if !merge.placements.isEmpty {
             sections.append("Adds \(merge.placements.count) segment\(merge.placements.count == 1 ? "" : "s") recorded with GPS in the Travel Mapping iOS app (\(names)):\n\n"
@@ -585,23 +611,60 @@ final class GitHubService: ObservableObject {
                     return "- `\(old)` → `\(new)`"
                 }.joined(separator: "\n"))
         }
-        let prBody = sections.joined(separator: "\n\n")
-        struct PR: Decodable { let number: Int; let html_url: URL }
-        let pr = try JSONDecoder().decode(PR.self, from: try await api("POST", "/repos/\(Self.upstream)/pulls", body: [
-            "title": "\(username): " + Self.commitSummary(added: merge.placements.count, fixed: fixed.count, from: nil, more: false),
-            "head": "\(forkRepo.owner.login):\(branch)",
-            "base": "master",
-            "body": prBody,
-            "maintainer_can_modify": true,
-            // A draft isn't up for review until the user marks it ready on GitHub
-            "draft": asDraft,
-        ]))
-        login = forkRepo.owner.login
-        UserDefaults.standard.set(forkRepo.owner.login, forKey: "githubLogin")
+        return sections.joined(separator: "\n\n")
+    }
 
-        breadcrumb("Opened list update PR #\(pr.number) (\(merge.placements.count) lines)")
-        return (ListUpdatePR(number: pr.number, url: pr.html_url, createdAt: Date(), lineCount: merge.placements.count,
-                             branch: branch, fork: fork), merge)
+    /// The title the app gives a PR, e.g. "psiegel18: Add 8 lines, fix 1 line (list + rlist)".
+    /// `fileExtensions` lists the files the PR changes; two get named in the title.
+    static func autoTitle(username: String, added: Int, fixed: Int, fileExtensions: [String]) -> String {
+        var parts: [String] = []
+        if added > 0 { parts.append("add \(added) line\(added == 1 ? "" : "s")") }
+        if fixed > 0 { parts.append("fix \(fixed) line\(fixed == 1 ? "" : "s")") }
+        var summary = parts.isEmpty ? "update list" : parts.joined(separator: ", ")
+        summary = summary.prefix(1).uppercased() + summary.dropFirst()
+        let files = Set(fileExtensions).sorted()
+        if files.count > 1 { summary += " (" + files.joined(separator: " + ") + ")" }
+        return "\(username): \(summary)"
+    }
+
+    /// A title the app wrote (so it's safe to rewrite), not one the user typed
+    static func isAutoTitle(_ title: String, username: String) -> Bool {
+        title.hasPrefix("\(username): ")
+            && title.dropFirst(username.count + 2).range(of: #"^((Add|Fix) \d+ |Update list)"#, options: .regularExpression) != nil
+    }
+
+    /// Current title of a PR, to prefill the title field when adding to it
+    func pullRequestTitle(_ number: Int) async -> String? {
+        struct PR: Decodable { let title: String }
+        guard let data = try? await api("GET", "/repos/\(Self.upstream)/pulls/\(number)", quietStatuses: [403, 404, 429, 503]) else { return nil }
+        return (try? JSONDecoder().decode(PR.self, from: data))?.title
+    }
+
+    /// After commits land on an open PR, keep its title and description in step: the new
+    /// commit's changes are appended to the description, and an app-written title is
+    /// recomputed from the whole PR. A title the user typed is kept (or replaced by
+    /// `customTitle` when they edited it this time). Best effort — the commit already landed.
+    private func refreshDescription(number: Int, username: String, fileExtension: String, section: String, customTitle: String?) async {
+        struct PR: Decodable { let title: String; let body: String? }
+        struct File: Decodable { let filename: String; let additions: Int; let deletions: Int }
+        guard let prData = try? await api("GET", "/repos/\(Self.upstream)/pulls/\(number)", quietStatuses: [403, 404, 429, 503]),
+              let pr = try? JSONDecoder().decode(PR.self, from: prData),
+              let filesData = try? await api("GET", "/repos/\(Self.upstream)/pulls/\(number)/files?per_page=100", quietStatuses: [403, 404, 429, 503]),
+              let files = try? JSONDecoder().decode([File].self, from: filesData) else { return }
+        var title = pr.title
+        if let customTitle {
+            title = customTitle
+        } else if Self.isAutoTitle(pr.title, username: username) {
+            // A replaced line is one deletion + one addition
+            let fixed = files.reduce(0) { $0 + $1.deletions }
+            let added = max(0, files.reduce(0) { $0 + $1.additions } - fixed)
+            title = Self.autoTitle(username: username, added: added, fixed: fixed,
+                                   fileExtensions: files.map { ($0.filename as NSString).pathExtension })
+        }
+        let update = "**\(username).\(fileExtension)**, added \(Date().formatted(date: .abbreviated, time: .omitted)):\n\n\(section)"
+        let body = [pr.body ?? "", update].filter { !$0.isEmpty }.joined(separator: "\n\n---\n\n")
+        _ = try? await api("PATCH", "/repos/\(Self.upstream)/pulls/\(number)", body: ["title": title, "body": body],
+                           quietStatuses: [403, 404, 422, 429, 503])
     }
 
     private static func commitSummary(added: Int, fixed: Int, from names: String?, more: Bool) -> String {

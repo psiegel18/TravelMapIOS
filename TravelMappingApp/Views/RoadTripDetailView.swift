@@ -1033,6 +1033,9 @@ struct ListUpdateSheet: View {
     @State private var openedAsDraft = false
     @State private var prError: String?
     @State private var openedPR: ListUpdatePR?
+    /// PR title field, prefilled with the app's title (or the open PR's current one)
+    @State private var prTitle = ""
+    @State private var prefilledTitle = ""
     /// Normalized original lines the replacements matched in the current file
     @State private var appliedFixes: [String] = []
     /// Lines this send added (an appended PR's lineCount is its running total)
@@ -1183,6 +1186,10 @@ struct ListUpdateSheet: View {
     private var pullRequestSection: some View {
         Section {
             if github.isSignedIn {
+                TextField("Pull request title", text: $prTitle, axis: .vertical)
+                    .font(.system(size: 15))
+                    .disabled(isOpeningPR)
+                    .accessibilityLabel("Pull request title")
                 Button {
                     isOpeningPR = true  // before the Task starts, so a double tap can't send twice
                     Task { await openPullRequest() }
@@ -1219,7 +1226,7 @@ struct ListUpdateSheet: View {
             Text("Send the update")
         } footer: {
             if let openPR {
-                Text("Your pull request #\(openPR.number) hasn't been merged yet, so these lines are added to it instead of opening a second one that would conflict.")
+                Text("Your pull request #\(openPR.number) hasn't been merged yet, so this update is added to it as another commit — one pull request for the TM team instead of several. Its description gets these changes, and an app-written title is updated to cover everything in it.")
             } else if let login = github.login, github.isSignedIn {
                 Text(openAsDraft
                      ? "As @\(login): forks TravelMapping/UserData to your account (first time only), commits the updated file to a new branch, and opens a draft pull request. Look it over on GitHub, then tap “Ready for review” there to send it to the TM team."
@@ -1342,6 +1349,13 @@ struct ListUpdateSheet: View {
             result = await Task.detached(priority: .userInitiated) {
                 ListFileMerger.merge(existing: text, newLines: lines, blockTitle: blockTitle, appendOnly: appendOnly)
             }.value
+            if let openPR {
+                prefilledTitle = await github.pullRequestTitle(openPR.number) ?? ""
+            } else {
+                prefilledTitle = GitHubService.autoTitle(username: username, added: result?.placements.count ?? 0,
+                                                         fixed: applied.count, fileExtensions: [category.fileExtension])
+            }
+            prTitle = prefilledTitle
         } catch {
             SentrySDK.capture(error: error)
             errorMessage = "Couldn't download your current \(fileName) from GitHub. Check your connection and try again."
@@ -1361,7 +1375,8 @@ struct ListUpdateSheet: View {
                 tripNames: tripNames,
                 replacements: replacements,
                 appendingTo: openPR,
-                asDraft: openAsDraft
+                asDraft: openAsDraft,
+                title: editedTitle
             )
             sentLineCount = merge.placements.count
             // A fresh PR follows the toggle; lines added to an open PR keep that PR's state
@@ -1377,6 +1392,12 @@ struct ListUpdateSheet: View {
     }
 
     // MARK: Helpers
+
+    /// The typed title, or nil to let the app write (and keep updating) one
+    private var editedTitle: String? {
+        let typed = prTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        return typed.isEmpty || typed == prefilledTitle ? nil : typed
+    }
 
     private func placementDetail(_ placement: ListFileMerger.Placement) -> String {
         var detail = placement.extended != nil
