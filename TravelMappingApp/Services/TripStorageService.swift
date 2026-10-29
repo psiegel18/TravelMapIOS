@@ -237,6 +237,9 @@ struct TripLogAnalysis: Sendable {
     /// Matched segments that couldn't be located on current route data (route
     /// renumbered/relocated since the trip, or metadata missing)
     let unresolvedCount: Int
+    /// Unlogged hops the route matcher caught but the GPS track didn't follow end to end
+    /// (`verifiedHops`), so they were left out
+    var unverifiedCount = 0
 
     var newRanges: [TripLogRange] { ranges.filter { $0.status == .new } }
     var submittedRanges: [TripLogRange] { ranges.filter { $0.status == .submitted } }
@@ -286,6 +289,7 @@ enum TripLogAnalyzer {
         var builders: [Builder] = []
         var seenHops = Set<String>()
         var unresolved = 0
+        var unverified = Set<String>()
 
         for trip in trips.sorted(by: { $0.startDate < $1.startDate }) {
             let paths = trip.matchedSegments.sorted(by: { $0.entryTime < $1.entryTime }).map { matched in
@@ -301,6 +305,9 @@ enum TripLogAnalyzer {
                 guard let path else {
                     unresolved += 1
                     continue
+                }
+                if let verified {
+                    unverified.formUnion(path.filter { !$0.isClinched && !verified.contains($0.id) }.map(\.id))
                 }
                 for hop in path where verified?.contains(hop.id) ?? true {
                     guard seenHops.insert(hop.id).inserted else {
@@ -378,7 +385,9 @@ enum TripLogAnalyzer {
                 routeLabels: Self.orderedLabels(routeHops)
             )
         }
-        return TripLogAnalysis(ranges: ranges, unresolvedCount: unresolved)
+        // A hop another trip did drive end to end isn't "left out"
+        return TripLogAnalysis(ranges: ranges, unresolvedCount: unresolved,
+                               unverifiedCount: unverified.subtracting(seenHops).count)
     }
 
     /// Hops the GPS track really drove. The live matcher accepts any segment the track runs

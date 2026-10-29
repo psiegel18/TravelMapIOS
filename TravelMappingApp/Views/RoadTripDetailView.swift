@@ -23,6 +23,10 @@ struct RoadTripDetailView: View {
     @State private var copiedLines = false
     /// PRs that include segments from this trip
     @State private var tripPRs: [ListUpdatePR] = []
+    @State private var confirmDelete = false
+    /// Set once deleted so the onDisappear notes save can't write the trip back
+    @State private var isDeleted = false
+    @Environment(\.dismiss) private var dismiss
     @ObservedObject private var settings = SyncedSettingsService.shared
 
     private var useMiles: Bool {
@@ -68,11 +72,30 @@ struct RoadTripDetailView: View {
                     } label: {
                         Label("Share Image", systemImage: "photo")
                     }
+                    Divider()
+                    // The list's long-press menu has Delete too; this is the discoverable one
+                    Button(role: .destructive) {
+                        confirmDelete = true
+                    } label: {
+                        Label("Delete Trip", systemImage: "trash")
+                    }
                 } label: {
-                    Image(systemName: "square.and.arrow.up")
+                    Image(systemName: "ellipsis.circle")
                 }
-                .accessibilityLabel("Share options")
+                .accessibilityLabel("Trip options")
             }
+        }
+        .alert("Delete Trip?", isPresented: $confirmDelete) {
+            Button("Delete", role: .destructive) {
+                isDeleted = true
+                Task {
+                    try? await TripStorageService.shared.delete(id: trip.id)
+                    dismiss()
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Delete \"\(trip.name)\"? This will also delete \(trip.rawPoints.count.formatted()) GPS points and the exported .list file. This cannot be undone.")
         }
         .sheet(item: $shareContent) { content in
             SharePreviewSheet(content: content)
@@ -475,6 +498,11 @@ struct RoadTripDetailView: View {
                         .font(.system(size: 13))
                         .foregroundStyle(TMDesign.tertiaryText)
                 }
+                if analysis.unverifiedCount > 0 {
+                    Text("\(analysis.unverifiedCount.formatted()) segment\(analysis.unverifiedCount == 1 ? " wasn't" : "s weren't") followed end to end by your GPS track — like a side road next to the route — so \(analysis.unverifiedCount == 1 ? "it was" : "they were") left out.")
+                        .font(.system(size: 13))
+                        .foregroundStyle(TMDesign.tertiaryText)
+                }
             } else if let error = logAnalysisError {
                 HStack {
                     Text(error)
@@ -540,7 +568,7 @@ struct RoadTripDetailView: View {
     }
 
     private func saveNotes() {
-        guard notesText != lastSavedNotes else { return }
+        guard !isDeleted, notesText != lastSavedNotes else { return }
         lastSavedNotes = notesText
         trip.notes = notesText
         let updatedTrip = trip

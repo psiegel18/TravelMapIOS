@@ -17,9 +17,9 @@ struct TravelMapView: View {
     /// and checks it before every state write so stale loads can't overwrite newer state.
     @State private var loadGeneration = 0
     @State private var errorMessage: String?
-    /// Traveled segments always show for the enabled modes — Roads + Rail together already
-    /// cover everything traveled, so a separate Traveled toggle was redundant
-    private let showClinched = true
+    /// Status filter (Traveled / Remaining), applied within the enabled modes. At least one
+    /// stays on — turning one off with the other already off switches the other on.
+    @State private var showClinched = true
     @State private var showUnclinched = false
     @State private var showRail = true
     /// Mode filter, independent of the Traveled/Remaining status filter — without it
@@ -124,6 +124,17 @@ struct TravelMapView: View {
         (showRoads ? segments.filter(\.isClinched).count : 0) + (showRail ? railSegments.filter(\.isClinched).count : 0)
     }
     private var totalCount: Int { (showRoads ? segments.count : 0) + (showRail ? railSegments.count : 0) }
+
+    private var showClinchedBinding: Binding<Bool> {
+        Binding(get: { showClinched }, set: { setStatus(traveled: $0, remaining: $0 ? showUnclinched : true) })
+    }
+    private var showUnclinchedBinding: Binding<Bool> {
+        Binding(get: { showUnclinched }, set: { setStatus(traveled: $0 ? showClinched : true, remaining: $0) })
+    }
+    private func setStatus(traveled: Bool, remaining: Bool) {
+        showClinched = traveled
+        showUnclinched = remaining
+    }
 
     /// Merge consecutive 2-point segments on the same route into multi-point polylines.
     /// Runs the expensive sort/merge on a background thread to avoid main-thread hangs.
@@ -705,8 +716,22 @@ struct TravelMapView: View {
                     .accessibilityAddTraits(.isHeader)
 
                 VStack(alignment: .leading, spacing: 8) {
-                    TMDesign.sectionHeader("Show")
+                    TMDesign.sectionHeader("Segments")
                     VStack(spacing: 0) {
+                        layerToggleRow(
+                            icon: "checkmark",
+                            iconBG: TMDesign.blueChipBG,
+                            iconFG: TMDesign.blueChipFG,
+                            title: "Traveled",
+                            subtitle: "\(clinchedCount.formatted()) segments",
+                            swatch: AnyView(lineSwatch(
+                                color: TMDesign.accent,
+                                style: .solid,
+                                width: min(settings.roadLineWidth, 5)
+                            )),
+                            isOn: showClinchedBinding
+                        )
+                        Divider().padding(.leading, 57)
                         layerToggleRow(
                             icon: "road.lanes",
                             iconBG: TMDesign.amberChipBG,
@@ -718,9 +743,15 @@ struct TravelMapView: View {
                                 style: .solid,
                                 width: max(1.5, settings.roadLineWidth * 0.75)
                             )),
-                            isOn: $showUnclinched
+                            isOn: showUnclinchedBinding
                         )
-                        Divider().padding(.leading, 57)
+                    }
+                    .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    TMDesign.sectionHeader("Modes")
+                    VStack(spacing: 0) {
                         layerToggleRow(
                             icon: "car.fill",
                             iconBG: TMDesign.blueChipBG,
@@ -1166,43 +1197,66 @@ struct TravelMapView: View {
     }
 
     /// Bottom filter pills with live counts — filled = on (audit §6). These drive
-    /// the same showRoads/showRail (mode) and showUnclinched (status) state as the
-    /// Layers sheet. "Only rail" = Roads off.
+    /// the same showRoads/showRail (mode) and showClinched/showUnclinched (status) state
+    /// as the Layers sheet. "Only rail" = Roads off; "only what I haven't driven" =
+    /// Traveled off.
     private var filterPills: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                filterPill(
-                    "Roads \(segments.count.formatted())",
-                    icon: "car.fill",
-                    isOn: showRoads,
-                    onBG: TMDesign.neutralChipFG,
-                    offFG: TMDesign.neutralChipFG,
-                    accessibilityLabel: "Show roads: \(showRoads ? "on" : "off"), \(segments.count) segments"
-                ) { showRoads.toggle() }
-
-                filterPill(
-                    "Rail \(railSegments.count.formatted())",
-                    icon: "tram.fill",
-                    isOn: showRail,
-                    onBG: TMDesign.rail,
-                    offFG: TMDesign.redChipFG,
-                    accessibilityLabel: "Show rail: \(showRail ? "on" : "off"), \(railSegments.count) segments"
-                ) { showRail.toggle() }
-
-                filterPill(
-                    "Remaining \((totalCount - clinchedCount).formatted())",
-                    isOn: showUnclinched,
-                    onBG: TMDesign.frontier,
-                    offFG: TMDesign.amberChipFG,
-                    accessibilityLabel: "Show remaining segments: \(showUnclinched ? "on" : "off"), \(totalCount - clinchedCount) segments"
-                ) { showUnclinched.toggle() }
+        // A fixed row when the pills fit; scroll sideways only when they don't
+        ViewThatFits(in: .horizontal) {
+            filterPillRow
+            ScrollView(.horizontal, showsIndicators: false) {
+                filterPillRow
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 2)
+            .scrollBounceBehavior(.basedOnSize, axes: [.horizontal, .vertical])
         }
-        // Scroll sideways only: pin the row to its content height and never bounce vertically
         .fixedSize(horizontal: false, vertical: true)
-        .scrollBounceBehavior(.basedOnSize, axes: .vertical)
+    }
+
+    private var filterPillRow: some View {
+        HStack(spacing: 6) {
+            filterPill(
+                // Mode pills are icon-only so all four fit; counts live in the Layers sheet
+                "",
+                icon: "car.fill",
+                isOn: showRoads,
+                onBG: TMDesign.neutralChipFG,
+                offFG: TMDesign.neutralChipFG,
+                accessibilityLabel: "Show roads: \(showRoads ? "on" : "off"), \(segments.count) segments"
+            ) { showRoads.toggle() }
+
+            filterPill(
+                "",
+                icon: "tram.fill",
+                isOn: showRail,
+                onBG: TMDesign.rail,
+                offFG: TMDesign.redChipFG,
+                accessibilityLabel: "Show rail: \(showRail ? "on" : "off"), \(railSegments.count) segments"
+            ) { showRail.toggle() }
+
+            // Divider between the mode pills (Roads/Rail) and the status pills (Traveled/Remaining)
+            Capsule()
+                .fill(.secondary.opacity(0.5))
+                .frame(width: 1.5, height: 18)
+                .accessibilityHidden(true)
+
+            filterPill(
+                "Traveled \(clinchedCount.formatted())",
+                isOn: showClinched,
+                onBG: TMDesign.accent,
+                offFG: TMDesign.blueChipFG,
+                accessibilityLabel: "Show traveled segments: \(showClinched ? "on" : "off"), \(clinchedCount) segments"
+            ) { showClinchedBinding.wrappedValue.toggle() }
+
+            filterPill(
+                "Remaining \((totalCount - clinchedCount).formatted())",
+                isOn: showUnclinched,
+                onBG: TMDesign.frontier,
+                offFG: TMDesign.amberChipFG,
+                accessibilityLabel: "Show remaining segments: \(showUnclinched ? "on" : "off"), \(totalCount - clinchedCount) segments"
+            ) { showUnclinchedBinding.wrappedValue.toggle() }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 2)
     }
 
     private func filterPill(
@@ -1218,7 +1272,7 @@ struct TravelMapView: View {
             Haptics.selection()
             action()
         } label: {
-            HStack(spacing: 6) {
+            HStack(spacing: 5) {
                 if let icon {
                     Image(systemName: icon)
                         .font(.system(size: 12, weight: .bold))
@@ -1227,14 +1281,16 @@ struct TravelMapView: View {
                         .fill(isOn ? Color.white : offFG)
                         .frame(width: 10, height: 10)
                 }
-                Text(label)
-                    .font(.system(size: 13, weight: .bold))
-                    .monospacedDigit()
+                if !label.isEmpty {
+                    Text(label)
+                        .font(.system(size: 13, weight: .bold))
+                        .monospacedDigit()
+                }
             }
             .foregroundStyle(isOn ? Color.white : offFG)
-            // Tight enough that all three pills fit without scrolling on a 402pt screen
-            .padding(.horizontal, 10)
-            .frame(minHeight: 44)
+            // Tight enough that all four pills fit without scrolling on a 402pt screen
+            .padding(.horizontal, label.isEmpty ? 0 : 9)
+            .frame(minWidth: 44, minHeight: 44)
             .background(isOn ? onBG : TMDesign.cardBG, in: Capsule())
             .overlay(Capsule().stroke(isOn ? Color.clear : TMDesign.hairline, lineWidth: 1))
             .shadow(color: .black.opacity(0.1), radius: 5, y: 2)

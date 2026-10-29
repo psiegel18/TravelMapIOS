@@ -11,6 +11,8 @@ struct RoadTripListView: View {
     @State private var showLocationDeniedAlert = false
     @State private var showTripTypeChooser = false
     @State private var pendingSummary: (lines: Int, trips: Int, waiting: Int)?
+    /// The last pending check couldn't reach TravelMapping — the tile must not claim "up to date"
+    @State private var pendingCheckFailed = false
     /// Bumped on reappear; `.task(id:)` cancels a still-running refresh when it changes
     @State private var refreshToken = 0
     /// Inputs of the last summary — re-analysis is skipped when nothing changed
@@ -41,7 +43,7 @@ struct RoadTripListView: View {
                 if showEmptyState {
                     emptyStateCard
                 } else {
-                    if searchText.isEmpty {
+                    if searchText.isEmpty && !isLoading {
                         heroCard
                         if !settings.primaryUser.isEmpty && !isLoading {
                             actionTiles
@@ -156,15 +158,16 @@ struct RoadTripListView: View {
     private var heroCard: some View {
         let completed = trips.filter { $0.status == .completed }
         let meters = completed.reduce(0) { $0 + (summaries[$1.id]?.distanceMeters ?? 0) }
-        let routes = Set(completed.flatMap { $0.matchedSegments.map(\.root) }).count
+        // By root base name so il.i090 / in.i090 count as one route (I-90)
+        let routes = Set(completed.flatMap { $0.matchedSegments.map { $0.root.split(separator: ".").last.map(String.init) ?? $0.root } }).count
         return VStack(spacing: 16) {
             HStack(spacing: 0) {
-                heroStat(isLoading ? "–" : completed.count.formatted(), completed.count == 1 ? "Trip" : "Trips")
+                heroStat(completed.count.formatted(), completed.count == 1 ? "Trip" : "Trips")
                 Divider().frame(height: 34)
-                heroStat(isLoading ? "–" : Int((meters / (settings.useMiles ? 1609.344 : 1000)).rounded()).formatted(),
+                heroStat(Int((meters / (settings.useMiles ? 1609.344 : 1000)).rounded()).formatted(),
                          settings.useMiles ? "Miles" : "Kilometers")
                 Divider().frame(height: 34)
-                heroStat(isLoading ? "–" : routes.formatted(), routes == 1 ? "Route" : "Routes")
+                heroStat(routes.formatted(), routes == 1 ? "Route" : "Routes")
             }
             if !recorder.isRecording {
                 startTripButton
@@ -205,6 +208,9 @@ struct RoadTripListView: View {
                     actionTile(icon: "paperplane.fill", fg: TMDesign.purpleChipFG, bg: TMDesign.purpleChipBG,
                                title: "\(pending.waiting.formatted()) line\(pending.waiting == 1 ? "" : "s") sent",
                                subtitle: "Waiting on TravelMapping")
+                } else if pendingCheckFailed {
+                    actionTile(icon: "exclamationmark.icloud", fg: TMDesign.neutralChipFG, bg: TMDesign.neutralChipBG,
+                               title: "Your .list", subtitle: "Couldn't check your trips")
                 } else if pendingSummary == nil {
                     actionTile(icon: "text.magnifyingglass", fg: TMDesign.neutralChipFG, bg: TMDesign.neutralChipBG,
                                title: "Your .list", subtitle: "Checking your trips…")
@@ -284,7 +290,16 @@ struct RoadTripListView: View {
                 }
             }
         } else if filteredTrips.isEmpty {
-            ContentUnavailableView.search(text: searchText)
+            if searchText.isEmpty {
+                // Only reachable while recording the first trip
+                Text("Your first trip will show up here when you stop recording.")
+                    .font(.system(size: 15))
+                    .foregroundStyle(TMDesign.secondaryText)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 24)
+            } else {
+                ContentUnavailableView.search(text: searchText)
+            }
         } else {
             ForEach(monthGroups, id: \.month) { group in
                 VStack(alignment: .leading, spacing: 10) {
@@ -437,39 +452,50 @@ struct RoadTripListView: View {
     private func loadPendingSummary() async {
         let username = settings.primaryUser
         let candidates = trips.filter { $0.status == .completed && !$0.matchedSegments.isEmpty }
+        let storage = TripStorageService.shared
         guard !username.isEmpty, !candidates.isEmpty else {
-            pendingSummary = nil
+            // Nothing to check — a settled state, not "Checking…"
+            pendingCheckFailed = false
+            pendingSummary = (0, 0, await storage.listSubmissions().reduce(0) { $0 + $1.lines.count })
+            newLinesByTrip = [:]
+            summarySignature = ""
             return
         }
-        let storage = TripStorageService.shared
         let roadKeys = await storage.submittedHopKeys(fileExtension: "list")
         let railKeys = await storage.submittedHopKeys(fileExtension: "rlist")
         let waiting = await storage.listSubmissions().reduce(0) { $0 + $1.lines.count }
         let signature = "\(waiting)|\(username)|\(candidates.map { "\($0.id)\($0.matchedSegments.count)" }.sorted().joined())|\(roadKeys.count)|\(railKeys.count)"
-        guard signature != summarySignature || pendingSummary == nil else { return }
+        guard signature != summarySignature || pendingSummary == nil || pendingCheckFailed else { return }
 
         var lines = 0
         var tripIDs = Set<UUID>()
         var byTrip: [UUID: Int] = [:]
         var loggedKeys = Set<String>()
+        var failed = false
         for type in [TripType.road, .rail] {
             let typed = candidates.filter { $0.tripType == type }
-            guard !typed.isEmpty,
-                  let analysis = try? await TripLogAnalyzer.analyze(
+            guard !typed.isEmpty else { continue }
+            guard let analysis = try? await TripLogAnalyzer.analyze(
                     trips: typed, username: username,
-                    submittedKeys: type == .rail ? railKeys : roadKeys) else { continue }
+                    submittedKeys: type == .rail ? railKeys : roadKeys) else {
+                failed = true
+                continue
+            }
             lines += analysis.newRanges.count
             tripIDs.formUnion(analysis.newRanges.flatMap(\.tripIDs))
             for id in analysis.newRanges.flatMap(\.tripIDs) { byTrip[id, default: 0] += 1 }
             loggedKeys.formUnion(analysis.loggedRanges.flatMap(\.hopKeys))
         }
         guard !Task.isCancelled else { return }
+        pendingCheckFailed = failed && lines == 0
         // Clear submissions the nightly update has picked up, so "waiting" goes away on its own
-        await storage.removeSubmissions { !$0.hopKeys.isEmpty && $0.hopKeys.allSatisfy(loggedKeys.contains) }
+        let logged = loggedKeys
+        await storage.removeSubmissions { !$0.hopKeys.isEmpty && $0.hopKeys.allSatisfy(logged.contains) }
         let stillWaiting = await storage.listSubmissions().reduce(0) { $0 + $1.lines.count }
         pendingSummary = (lines, tripIDs.count, stillWaiting)
         newLinesByTrip = byTrip
-        summarySignature = signature
+        // A failed check leaves the signature unset so the next load retries it
+        summarySignature = failed ? "" : signature
     }
 
     private func performDelete(trip: RoadTrip) {
@@ -477,6 +503,8 @@ struct RoadTripListView: View {
             try? await TripStorageService.shared.delete(id: trip.id)
             await MainActor.run {
                 trips.removeAll { $0.id == trip.id }
+                summaries[trip.id] = nil
+                refreshToken += 1
             }
         }
     }
@@ -781,8 +809,13 @@ struct PendingListUpdatesView: View {
         } header: {
             Text(type == .rail ? "Rail & Transit" : "Roads")
         } footer: {
-            if analysis.unresolvedCount > 0 {
-                Text("\(analysis.unresolvedCount.formatted()) recorded segments couldn't be matched to current route data.")
+            VStack(alignment: .leading, spacing: 4) {
+                if analysis.unresolvedCount > 0 {
+                    Text("\(analysis.unresolvedCount.formatted()) recorded segments couldn't be matched to current route data.")
+                }
+                if analysis.unverifiedCount > 0 {
+                    Text("\(analysis.unverifiedCount.formatted()) more segment\(analysis.unverifiedCount == 1 ? " wasn't" : "s weren't") followed end to end by your GPS track, so \(analysis.unverifiedCount == 1 ? "it was" : "they were") left out.")
+                }
             }
         }
         ForEach(grouped.keys.sorted(), id: \.self) { region in
@@ -856,7 +889,8 @@ struct PendingListUpdatesView: View {
         }
         // A closed (unmerged) PR will never land — put its segments back in the queue
         guard !closed.isEmpty else { return }
-        await TripStorageService.shared.removeSubmissions { closed.contains($0.pr?.number ?? -1) }
+        let closedNumbers = closed
+        await TripStorageService.shared.removeSubmissions { closedNumbers.contains($0.pr?.number ?? -1) }
         await analyze()
     }
 
@@ -978,6 +1012,7 @@ struct ListCheckupView: View {
     @AppStorage("checkupSentLines") private var sentLinesData = Data()
     /// Flagged lines an open GitHub PR already changes (any device, or made on github.com)
     @State private var prLines: [String: ListUpdatePR] = [:]
+    @State private var prCheckFailed = false
 
     private var fixes: [CheckupFix] { result?.fixes ?? [] }
 
@@ -1013,6 +1048,12 @@ struct ListCheckupView: View {
                 .pickerStyle(.segmented)
                 .listRowBackground(Color.clear)
                 .listRowInsets(EdgeInsets())
+            } footer: {
+                if prCheckFailed && !isLoading {
+                    Label("Couldn't check your open pull requests on GitHub — lines already fixed there may show again.",
+                          systemImage: "exclamationmark.triangle")
+                        .font(.footnote)
+                }
             }
 
             if isLoading {
@@ -1165,7 +1206,14 @@ struct ListCheckupView: View {
         do {
             async let changed = GitHubService.shared.openPRChangedLines(username: username, category: category)
             result = try await ListCheckup.run(username: username, category: category)
-            prLines = await changed
+            // On a failed check keep what we knew, and say so — the user may be about to
+            // resend a fix that's already in an open PR
+            if let changed = await changed {
+                prLines = changed
+                prCheckFailed = false
+            } else {
+                prCheckFailed = true
+            }
             pruneSentLines()
         } catch {
             errorMessage = category == .rail
