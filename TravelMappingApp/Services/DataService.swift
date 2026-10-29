@@ -670,6 +670,41 @@ final class GitHubService: ObservableObject {
         return pr.draft == true ? .draft : .open
     }
 
+    /// Lines the signed-in user's open UserData PRs change or remove in their list file,
+    /// keyed by `ListFileMerger.normalizedLine` (comment stripped). Covers PRs opened on
+    /// any device or on github.com, so List Checkup can leave those lines alone.
+    func openPRChangedLines(username: String, category: RouteCategory) async -> [String: ListUpdatePR] {
+        guard isSignedIn else { return [:] }
+        await ensureLogin()
+        guard let login else { return [:] }
+        let path = "\(category.directoryName)/\(username).\(category.fileExtension)"
+
+        struct Search: Decodable {
+            struct Item: Decodable { let number: Int; let html_url: URL }
+            let items: [Item]
+        }
+        var components = URLComponents()
+        components.queryItems = [URLQueryItem(name: "q", value: "repo:\(Self.upstream) is:pr is:open author:\(login)")]
+        guard let query = components.percentEncodedQuery,
+              let data = try? await api("GET", "/search/issues?\(query)&per_page=10", quietStatuses: [403, 422, 503]),
+              let search = try? JSONDecoder().decode(Search.self, from: data) else { return [:] }
+
+        struct File: Decodable { let filename: String; let patch: String? }
+        var changed: [String: ListUpdatePR] = [:]
+        for item in search.items.prefix(5) {
+            guard let data = try? await api("GET", "/repos/\(Self.upstream)/pulls/\(item.number)/files?per_page=100", quietStatuses: [403, 503]),
+                  let files = try? JSONDecoder().decode([File].self, from: data),
+                  let patch = files.first(where: { $0.filename == path })?.patch else { continue }
+            let pr = ListUpdatePR(number: item.number, url: item.html_url, createdAt: Date(), lineCount: 0, branch: nil, fork: nil)
+            for line in patch.components(separatedBy: "\n") where line.hasPrefix("-") && !line.hasPrefix("---") {
+                let entry = line.dropFirst().split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
+                let key = ListFileMerger.normalizedLine(entry)
+                if !key.isEmpty { changed[key] = pr }
+            }
+        }
+        return changed
+    }
+
     // MARK: HTTP
 
     /// `quietStatuses` are expected failures the caller handles — not worth a Sentry issue.

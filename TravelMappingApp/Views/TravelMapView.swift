@@ -38,7 +38,14 @@ struct TravelMapView: View {
     @State private var mapStyle: MapStyleOption = .standard
     @State private var currentSpanLat: Double = 5.0
     @State private var currentSpanLng: Double = 5.0
-    @State private var visibleRegion: MKCoordinateRegion?
+    /// Last camera region, for tap hit-testing and zoom buttons. A plain reference, not
+    /// @State: writing @State on every camera change re-ran this body and made SwiftUI
+    /// re-diff thousands of MapPolylines after each pan (Sentry app-hang TRAVELMAPPING-H)
+    @State private var camera = CameraTracker()
+
+    private final class CameraTracker {
+        var region: MKCoordinateRegion?
+    }
     @StateObject private var locationManager = LocationManager()
     @State private var showLayersSheet = false
     @State private var zoomToUserOnNextFix = false
@@ -127,7 +134,9 @@ struct TravelMapView: View {
 
         Task.detached(priority: .userInitiated) {
             let roads = Self.buildMergedPolylines(from: roadSegs, startID: 0, maxCoords: maxCoords)
-            let rails = Self.buildMergedPolylines(from: railSegs, startID: 500_000, maxCoords: maxCoords)
+            // Rail draws as a solid double stroke, never dashed, so it doesn't need the
+            // dash cap — which also doubled its overlay count
+            let rails = Self.buildMergedPolylines(from: railSegs, startID: 500_000, maxCoords: 200)
             await MainActor.run {
                 mergedPolylines = roads
                 mergedRailPolylines = rails
@@ -449,7 +458,7 @@ struct TravelMapView: View {
             }
             .mapStyle(mapStyle.style)
             .onMapCameraChange { context in
-                visibleRegion = context.region
+                camera.region = context.region
             }
             .mapControls {
                 // Only show compass and scale — suppress all other default controls
@@ -470,7 +479,7 @@ struct TravelMapView: View {
 
     private func handleSegmentTap(at coordinate: CLLocationCoordinate2D) {
         // Pre-filter to segments within the visible map region to avoid iterating all segments
-        let region = visibleRegion ?? MKCoordinateRegion(
+        let region = camera.region ?? MKCoordinateRegion(
             center: coordinate,
             span: MKCoordinateSpan(latitudeDelta: 1, longitudeDelta: 1)
         )
@@ -1128,7 +1137,7 @@ struct TravelMapView: View {
 
     private func adjustZoom(factor: Double) {
         // Use the tracked visible region so zoom stays in place
-        guard let currentRegion = visibleRegion else { return }
+        guard let currentRegion = camera.region else { return }
         let center = currentRegion.center
 
         currentSpanLat = min(max(currentRegion.span.latitudeDelta * factor, 0.001), 180)

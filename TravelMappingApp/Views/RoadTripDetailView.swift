@@ -705,6 +705,9 @@ struct TripFullScreenMap: View {
     @Binding var isPlaying: Bool
     let onTogglePlay: () -> Void
     let onStopPlay: () -> Void
+    /// Opens zoomed to these coordinates (one segment) instead of the whole trip
+    var focus: [CLLocationCoordinate2D] = []
+    var showsReplay = true
 
     @Environment(\.dismiss) private var dismiss
     @State private var position: MapCameraPosition = .automatic
@@ -774,7 +777,7 @@ struct TripFullScreenMap: View {
                     }
                     .accessibilityElement(children: .combine)
                 }
-                if trip.rawPoints.count > 1 {
+                if showsReplay && trip.rawPoints.count > 1 {
                     HStack(spacing: 12) {
                         Button {
                             Haptics.light()
@@ -800,6 +803,15 @@ struct TripFullScreenMap: View {
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             .padding(.horizontal)
             .padding(.bottom, 8)
+        }
+        .onAppear {
+            guard !focus.isEmpty else { return }
+            let rect = focus.reduce(MKMapRect.null) {
+                $0.union(MKMapRect(origin: MKMapPoint($1), size: MKMapSize(width: 0, height: 0)))
+            }
+            // Room around the segment to see which road the drive actually took
+            let pad = max(rect.width, rect.height) * 0.6 + 800
+            position = .rect(rect.insetBy(dx: -pad, dy: -pad))
         }
         .onDisappear(perform: onStopPlay)
         .sentryScreen("RoadTripFullMap")

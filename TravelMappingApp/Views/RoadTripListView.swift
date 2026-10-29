@@ -16,6 +16,11 @@ struct RoadTripListView: View {
     /// Inputs of the last summary — re-analysis is skipped when nothing changed
     @State private var summarySignature = ""
     @ObservedObject private var settings = SyncedSettingsService.shared
+    @State private var searchText = ""
+    /// Distance and route shape per trip, computed off the main thread from GPS points
+    @State private var summaries: [UUID: TripSummary] = [:]
+    /// Segments not in the user's list yet, per trip — shown as a chip on the trip card
+    @State private var newLinesByTrip: [UUID: Int] = [:]
 
     private var locationPermissionDenied: Bool {
         let status = CLLocationManager().authorizationStatus
@@ -28,98 +33,28 @@ struct RoadTripListView: View {
     }
 
     var body: some View {
-        List {
-            // Recording status / start button
-            Section {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 16) {
                 if recorder.isRecording {
-                    NavigationLink {
-                        RoadTripRecordingView()
-                    } label: {
-                        HStack(spacing: 10) {
-                            TMPulsingDot(color: TMDesign.rail, size: 10)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(recorder.currentTrip?.name ?? "Recording...")
-                                    .font(.headline)
-                                Text("\(recorder.elapsedFormatted) - \(recorder.pointCount.formatted()) points")
-                                    .font(.subheadline)
-                                    .monospacedDigit()
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                    .accessibilityLabel("Recording in progress: \(recorder.currentTrip?.name ?? "trip"). Tap to view.")
-                } else if !showEmptyState {
-                    startTripButton
-                        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
-                        .listRowBackground(Color.clear)
+                    recordingCard
                 }
-            }
-
-            if let pending = pendingSummary, pending.lines > 0 || pending.waiting > 0 {
-                Section {
-                    NavigationLink {
-                        PendingListUpdatesView(trips: trips, username: settings.primaryUser) {
-                            await loadTrips()
-                        }
-                    } label: {
-                        pendingRow(pending)
-                    }
-                }
-            }
-
-            if !settings.primaryUser.isEmpty {
-                Section {
-                    NavigationLink {
-                        ListCheckupView(username: settings.primaryUser)
-                    } label: {
-                        HStack(spacing: 12) {
-                            Image(systemName: "stethoscope")
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(TMDesign.blueChipFG)
-                                .frame(width: 34, height: 34)
-                                .background(TMDesign.blueChipBG, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                                .accessibilityHidden(true)
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text("List checkup")
-                                    .font(.system(size: 17, weight: .bold))
-                                Text("Find lines that didn't count in TravelMapping's last update")
-                                    .font(.system(size: 15))
-                                    .foregroundStyle(TMDesign.secondaryText)
-                            }
-                        }
-                        .padding(.vertical, 6)
-                        .accessibilityElement(children: .combine)
-                    }
-                }
-            }
-
-            // Past trips
-            Section {
-                if isLoading {
-                    ForEach(0..<3, id: \.self) { _ in
-                        TMSkeletonRow()
-                    }
-                } else if trips.isEmpty {
+                if showEmptyState {
                     emptyStateCard
-                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-                        .listRowBackground(Color.clear)
-                        .listRowSeparator(.hidden)
                 } else {
-                    ForEach(trips) { trip in
-                        NavigationLink {
-                            RoadTripDetailView(trip: trip)
-                        } label: {
-                            TripRowView(trip: trip)
+                    if searchText.isEmpty {
+                        heroCard
+                        if !settings.primaryUser.isEmpty && !isLoading {
+                            actionTiles
                         }
                     }
-                    .onDelete(perform: confirmDelete)
-                }
-            } header: {
-                if !showEmptyState {
-                    TMDesign.sectionHeader("Past Trips")
+                    tripSections
                 }
             }
+            .padding(.horizontal)
+            .padding(.bottom, 24)
         }
+        .background(Color(.systemGroupedBackground))
+        .searchable(text: $searchText, prompt: "Trips, routes or notes")
         .navigationTitle("Road Trips")
         .alert("Delete Trip?", isPresented: Binding(
             get: { tripToDelete != nil },
@@ -187,6 +122,210 @@ struct RoadTripListView: View {
         .onChange(of: settings.primaryUser) {
             refreshToken += 1
         }
+    }
+
+    // MARK: Sections
+
+    private var recordingCard: some View {
+        NavigationLink {
+            RoadTripRecordingView()
+        } label: {
+            HStack(spacing: 12) {
+                TMPulsingDot(color: TMDesign.rail, size: 10)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(recorder.currentTrip?.name ?? "Recording...")
+                        .font(.system(size: 17, weight: .bold))
+                    Text("\(recorder.elapsedFormatted) · \(recorder.pointCount.formatted()) points")
+                        .font(.system(size: 15))
+                        .monospacedDigit()
+                        .foregroundStyle(TMDesign.secondaryText)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(TMDesign.chevron)
+            }
+            .padding(16)
+            .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Recording in progress: \(recorder.currentTrip?.name ?? "trip"). Tap to view.")
+    }
+
+    /// Lifetime totals over every recorded trip, with the one primary action under them
+    private var heroCard: some View {
+        let completed = trips.filter { $0.status == .completed }
+        let meters = completed.reduce(0) { $0 + (summaries[$1.id]?.distanceMeters ?? 0) }
+        let routes = Set(completed.flatMap { $0.matchedSegments.map(\.root) }).count
+        return VStack(spacing: 16) {
+            HStack(spacing: 0) {
+                heroStat(isLoading ? "–" : completed.count.formatted(), completed.count == 1 ? "Trip" : "Trips")
+                Divider().frame(height: 34)
+                heroStat(isLoading ? "–" : Int((meters / (settings.useMiles ? 1609.344 : 1000)).rounded()).formatted(),
+                         settings.useMiles ? "Miles" : "Kilometers")
+                Divider().frame(height: 34)
+                heroStat(isLoading ? "–" : routes.formatted(), routes == 1 ? "Route" : "Routes")
+            }
+            if !recorder.isRecording {
+                startTripButton
+            }
+        }
+        .padding(16)
+        .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
+    private func heroStat(_ value: String, _ label: String) -> some View {
+        VStack(spacing: 2) {
+            Text(value)
+                .font(.system(size: 24, weight: .heavy))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+            Text(label)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(TMDesign.secondaryText)
+        }
+        .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .combine)
+    }
+
+    /// The two .list tools side by side instead of stacked rows
+    private var actionTiles: some View {
+        HStack(alignment: .top, spacing: 12) {
+            NavigationLink {
+                PendingListUpdatesView(trips: trips, username: settings.primaryUser) {
+                    await loadTrips()
+                }
+            } label: {
+                if let pending = pendingSummary, pending.lines > 0 {
+                    actionTile(icon: "text.badge.plus", fg: TMDesign.amberChipFG, bg: TMDesign.amberChipBG,
+                               title: "\(pending.lines.formatted()) new segment\(pending.lines == 1 ? "" : "s")",
+                               subtitle: "Not in your list yet · from \(pending.trips.formatted()) trip\(pending.trips == 1 ? "" : "s")")
+                } else if let pending = pendingSummary, pending.waiting > 0 {
+                    actionTile(icon: "paperplane.fill", fg: TMDesign.purpleChipFG, bg: TMDesign.purpleChipBG,
+                               title: "\(pending.waiting.formatted()) line\(pending.waiting == 1 ? "" : "s") sent",
+                               subtitle: "Waiting on TravelMapping")
+                } else if pendingSummary == nil {
+                    actionTile(icon: "text.magnifyingglass", fg: TMDesign.neutralChipFG, bg: TMDesign.neutralChipBG,
+                               title: "Your .list", subtitle: "Checking your trips…")
+                } else {
+                    actionTile(icon: "checkmark.seal.fill", fg: TMDesign.greenChipFG, bg: TMDesign.greenChipBG,
+                               title: "List up to date", subtitle: "Every recorded segment is logged")
+                }
+            }
+            .buttonStyle(.plain)
+
+            NavigationLink {
+                ListCheckupView(username: settings.primaryUser)
+            } label: {
+                actionTile(icon: "stethoscope", fg: TMDesign.blueChipFG, bg: TMDesign.blueChipBG,
+                           title: "List checkup", subtitle: "Lines that didn't count last night")
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func actionTile(icon: String, fg: Color, bg: Color, title: String, subtitle: String) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(fg)
+                .frame(width: 34, height: 34)
+                .background(bg, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.85)
+                Text(subtitle)
+                    .font(.system(size: 13))
+                    .foregroundStyle(TMDesign.secondaryText)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, minHeight: 112, alignment: .topLeading)
+        .padding(14)
+        .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .accessibilityElement(children: .combine)
+    }
+
+    /// Trips matching the search: name, notes, or any route driven ("I-94", "NL")
+    private var filteredTrips: [RoadTrip] {
+        let query = searchText.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return trips }
+        return trips.filter { trip in
+            trip.name.localizedCaseInsensitiveContains(query)
+                || trip.notes.localizedCaseInsensitiveContains(query)
+                || trip.matchedSegments.contains { $0.listName.localizedCaseInsensitiveContains(query) }
+        }
+    }
+
+    /// Trips grouped by month, newest first — long histories scan by date instead of one long list
+    private var monthGroups: [(month: Date, trips: [RoadTrip])] {
+        let calendar = Calendar.current
+        let grouped = Dictionary(grouping: filteredTrips) {
+            calendar.date(from: calendar.dateComponents([.year, .month], from: $0.startDate)) ?? $0.startDate
+        }
+        return grouped.keys.sorted(by: >).map { ($0, grouped[$0] ?? []) }
+    }
+
+    @ViewBuilder
+    private var tripSections: some View {
+        if isLoading {
+            VStack(spacing: 10) {
+                ForEach(0..<3, id: \.self) { _ in
+                    TMSkeletonRow()
+                        .padding(.horizontal, 14)
+                        .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                }
+            }
+        } else if filteredTrips.isEmpty {
+            ContentUnavailableView.search(text: searchText)
+        } else {
+            ForEach(monthGroups, id: \.month) { group in
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(group.month.formatted(.dateTime.month(.wide).year()))
+                            .font(.system(size: 20, weight: .bold))
+                        Spacer()
+                        Text(monthDetail(group.trips))
+                            .font(.system(size: 13, weight: .medium))
+                            .monospacedDigit()
+                            .foregroundStyle(TMDesign.secondaryText)
+                    }
+                    .padding(.top, 8)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityAddTraits(.isHeader)
+
+                    ForEach(group.trips) { trip in
+                        NavigationLink {
+                            RoadTripDetailView(trip: trip)
+                        } label: {
+                            TripCard(trip: trip, summary: summaries[trip.id],
+                                     newLines: newLinesByTrip[trip.id] ?? 0, useMiles: settings.useMiles)
+                        }
+                        .buttonStyle(.plain)
+                        .contextMenu {
+                            Button(role: .destructive) {
+                                tripToDelete = trip
+                            } label: {
+                                Label("Delete Trip", systemImage: "trash")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func monthDetail(_ trips: [RoadTrip]) -> String {
+        let meters = trips.reduce(0) { $0 + (summaries[$1.id]?.distanceMeters ?? 0) }
+        let distance = Int((meters / (settings.useMiles ? 1609.344 : 1000)).rounded())
+        return "\(trips.count.formatted()) trip\(trips.count == 1 ? "" : "s") · \(distance.formatted()) \(settings.useMiles ? "mi" : "km")"
     }
 
     /// Single entry point (audit §4): one Start Trip button opening a Road/Rail choice.
@@ -281,6 +420,14 @@ struct RoadTripListView: View {
         // Newest trip first by when it happened — file modification order changes
         // whenever a trip is re-saved (notes edits, iCloud sync)
         trips = loaded.filter { $0.status != .recording }.sorted { $0.startDate > $1.startDate }
+        let missing = trips.filter { summaries[$0.id]?.pointCount != $0.rawPoints.count }
+        if !missing.isEmpty {
+            let inputs = missing.map { ($0.id, $0.rawPoints) }
+            let computed = await Task.detached(priority: .userInitiated) {
+                Dictionary(uniqueKeysWithValues: inputs.map { ($0.0, TripSummary(points: $0.1)) })
+            }.value
+            summaries.merge(computed) { _, new in new }
+        }
         isLoading = false
         await loadPendingSummary()
     }
@@ -303,6 +450,7 @@ struct RoadTripListView: View {
 
         var lines = 0
         var tripIDs = Set<UUID>()
+        var byTrip: [UUID: Int] = [:]
         var loggedKeys = Set<String>()
         for type in [TripType.road, .rail] {
             let typed = candidates.filter { $0.tripType == type }
@@ -312,6 +460,7 @@ struct RoadTripListView: View {
                     submittedKeys: type == .rail ? railKeys : roadKeys) else { continue }
             lines += analysis.newRanges.count
             tripIDs.formUnion(analysis.newRanges.flatMap(\.tripIDs))
+            for id in analysis.newRanges.flatMap(\.tripIDs) { byTrip[id, default: 0] += 1 }
             loggedKeys.formUnion(analysis.loggedRanges.flatMap(\.hopKeys))
         }
         guard !Task.isCancelled else { return }
@@ -319,41 +468,8 @@ struct RoadTripListView: View {
         await storage.removeSubmissions { !$0.hopKeys.isEmpty && $0.hopKeys.allSatisfy(loggedKeys.contains) }
         let stillWaiting = await storage.listSubmissions().reduce(0) { $0 + $1.lines.count }
         pendingSummary = (lines, tripIDs.count, stillWaiting)
+        newLinesByTrip = byTrip
         summarySignature = signature
-    }
-
-    private func pendingRow(_ pending: (lines: Int, trips: Int, waiting: Int)) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: "text.badge.plus")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(TMDesign.amberChipFG)
-                .frame(width: 34, height: 34)
-                .background(TMDesign.amberChipBG, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 3) {
-                if pending.lines > 0 {
-                    Text("\(pending.lines.formatted()) segment\(pending.lines == 1 ? "" : "s") not in your list yet")
-                        .font(.system(size: 17, weight: .bold))
-                    Text("From \(pending.trips.formatted()) trip\(pending.trips == 1 ? "" : "s") · tap to update your .list")
-                        .font(.system(size: 15))
-                        .foregroundStyle(TMDesign.secondaryText)
-                } else {
-                    Text("\(pending.waiting.formatted()) line\(pending.waiting == 1 ? "" : "s") waiting on TravelMapping")
-                        .font(.system(size: 17, weight: .bold))
-                    Text("Submitted · tap for status")
-                        .font(.system(size: 15))
-                        .foregroundStyle(TMDesign.secondaryText)
-                }
-            }
-        }
-        .padding(.vertical, 6)
-        .accessibilityElement(children: .combine)
-    }
-
-    private func confirmDelete(at offsets: IndexSet) {
-        if let idx = offsets.first {
-            tripToDelete = trips[idx]
-        }
     }
 
     private func performDelete(trip: RoadTrip) {
@@ -366,52 +482,134 @@ struct RoadTripListView: View {
     }
 }
 
-struct TripRowView: View {
+/// Distance and a normalized outline of a trip's GPS track, for the list cards
+struct TripSummary: Sendable {
+    let distanceMeters: Double
+    /// Track shape in a unit square (aspect kept, y down), at most ~80 points
+    let shape: [CGPoint]
+    let pointCount: Int
+
+    init(points: [GPSPoint]) {
+        pointCount = points.count
+        let coords = points.filter { $0.horizontalAccuracy >= 0 && $0.horizontalAccuracy < 200 }.map(\.coordinate)
+        var total = 0.0
+        for (a, b) in zip(coords, coords.dropFirst()) {
+            total += CLLocation(latitude: a.latitude, longitude: a.longitude)
+                .distance(from: CLLocation(latitude: b.latitude, longitude: b.longitude))
+        }
+        distanceMeters = total
+
+        guard coords.count > 1 else { shape = []; return }
+        let stride = max(1, coords.count / 80)
+        let sampled = Swift.stride(from: 0, to: coords.count, by: stride).map { coords[$0] } + [coords[coords.count - 1]]
+        let lats = sampled.map(\.latitude), lngs = sampled.map(\.longitude)
+        let cosLat = cos(((lats.min()! + lats.max()!) / 2) * .pi / 180)
+        let width = (lngs.max()! - lngs.min()!) * cosLat
+        let height = lats.max()! - lats.min()!
+        let span = max(width, height, 1e-6)
+        // Center the shorter axis so the outline sits in the middle of the square
+        let xOffset = (span - width) / 2, yOffset = (span - height) / 2
+        shape = sampled.map {
+            CGPoint(x: (($0.longitude - lngs.min()!) * cosLat + xOffset) / span,
+                    y: (lats.max()! - $0.latitude + yOffset) / span)
+        }
+    }
+}
+
+/// The drive's outline drawn on a tile — recognizable at a glance without a map snapshot
+struct RouteShapeThumbnail: View {
+    let shape: [CGPoint]
+    let color: Color
+
+    var body: some View {
+        Canvas { context, size in
+            guard shape.count > 1 else { return }
+            let inset: CGFloat = 10
+            let side = min(size.width, size.height) - inset * 2
+            var path = Path()
+            path.addLines(shape.map { CGPoint(x: inset + $0.x * side, y: inset + $0.y * side) })
+            context.stroke(path, with: .color(color.opacity(0.25)), style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round))
+            context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
+            // Start as a solid dot, finish as a ringed one
+            if let first = shape.first, let end = path.currentPoint {
+                let start = CGPoint(x: inset + first.x * side, y: inset + first.y * side)
+                let finish = Path(ellipseIn: CGRect(x: end.x - 3.5, y: end.y - 3.5, width: 7, height: 7))
+                context.fill(Path(ellipseIn: CGRect(x: start.x - 3, y: start.y - 3, width: 6, height: 6)), with: .color(color))
+                context.fill(finish, with: .color(.white))
+                context.stroke(finish, with: .color(color), lineWidth: 2)
+            }
+        }
+        .background(TMDesign.secondarySurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .accessibilityHidden(true)
+    }
+}
+
+struct TripCard: View {
     let trip: RoadTrip
+    let summary: TripSummary?
+    let newLines: Int
+    let useMiles: Bool
 
     private var isRail: Bool { trip.tripType == .rail }
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: isRail ? "tram.fill" : "car.fill")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(isRail ? TMDesign.redChipFG : TMDesign.blueChipFG)
-                .frame(width: 34, height: 34)
-                .background(
-                    isRail ? TMDesign.redChipBG : TMDesign.blueChipBG,
-                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-                )
-                .accessibilityHidden(true)
+        HStack(spacing: 14) {
+            RouteShapeThumbnail(shape: summary?.shape ?? [], color: isRail ? TMDesign.rail : TMDesign.accent)
+                .frame(width: 64, height: 64)
+                .overlay(alignment: .topLeading) {
+                    if summary?.shape.isEmpty ?? true {
+                        Image(systemName: isRail ? "tram.fill" : "car.fill")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(isRail ? TMDesign.redChipFG : TMDesign.blueChipFG)
+                            .frame(width: 64, height: 64)
+                    }
+                }
 
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 5) {
                 Text(trip.name)
-                    .font(.system(size: 17, weight: .bold))
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(.primary)
                     .lineLimit(1)
                 Text(metadataLine)
-                    .font(.system(size: 15))
+                    .font(.system(size: 13))
                     .monospacedDigit()
                     .foregroundStyle(TMDesign.secondaryText)
-                    .lineLimit(2)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+                HStack(spacing: 6) {
+                    if !trip.matchedSegments.isEmpty {
+                        TMChip(text: "\(trip.matchedSegments.count.formatted()) segment\(trip.matchedSegments.count == 1 ? "" : "s")",
+                               icon: isRail ? "tram.fill" : "point.topleft.down.to.point.bottomright.curvepath",
+                               bg: TMDesign.neutralChipBG, fg: TMDesign.neutralChipFG, fontSize: 11)
+                    }
+                    if newLines > 0 {
+                        TMChip(text: "\(newLines.formatted()) new", icon: "plus",
+                               bg: TMDesign.amberChipBG, fg: TMDesign.amberChipFG, fontSize: 11)
+                    }
+                }
             }
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.right")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(TMDesign.chevron)
         }
-        .padding(.vertical, 6)
-        .frame(minHeight: 60)
+        .padding(12)
+        .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .accessibilityElement(children: .combine)
     }
 
     private var metadataLine: String {
-        var parts = [trip.startDate.formatted(date: .abbreviated, time: .shortened)]
+        var parts = [trip.startDate.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())]
         if let dur = trip.duration {
-            parts.append(formatDuration(dur))
+            let hours = Int(dur) / 3600, minutes = (Int(dur) % 3600) / 60
+            parts.append(hours > 0 ? "\(hours)h \(minutes)m" : "\(minutes)m")
         }
-        parts.append("\(trip.matchedSegments.count.formatted()) segments")
+        if let meters = summary?.distanceMeters, meters > 0 {
+            let value = meters / (useMiles ? 1609.344 : 1000)
+            parts.append("\(value.formatted(.number.precision(.fractionLength(value < 10 ? 1 : 0)))) \(useMiles ? "mi" : "km")")
+        }
         return parts.joined(separator: " · ")
-    }
-
-    private func formatDuration(_ dur: TimeInterval) -> String {
-        let hours = Int(dur) / 3600
-        let minutes = (Int(dur) % 3600) / 60
-        return hours > 0 ? "\(hours)h \(minutes)m" : "\(minutes)m"
     }
 }
 
@@ -455,6 +653,14 @@ struct PendingListUpdatesView: View {
     @State private var localTrips: [RoadTrip] = []
     @State private var prStates: [Int: GitHubService.PRState] = [:]
     @State private var submissions: [ListSubmission] = []
+    @State private var preview: RangePreview?
+
+    /// A pending line shown on the map of a trip that drove it, to check it's real
+    struct RangePreview: Identifiable {
+        let trip: RoadTrip
+        let range: TripLogRange
+        var id: String { "\(trip.id)|\(range.id)" }
+    }
 
     var body: some View {
         List {
@@ -524,6 +730,18 @@ struct PendingListUpdatesView: View {
         }
         .navigationTitle("Pending .list Updates")
         .navigationBarTitleDisplayMode(.inline)
+        .fullScreenCover(item: $preview) { item in
+            TripFullScreenMap(
+                trip: item.trip,
+                ranges: [item.range],
+                replayProgress: .constant(1),
+                isPlaying: .constant(false),
+                onTogglePlay: {},
+                onStopPlay: {},
+                focus: item.range.coordinates,
+                showsReplay: false
+            )
+        }
         .sentryScreen("PendingListUpdates")
         .sheet(item: $sheetType) { type in
             ListUpdateSheet(
@@ -570,25 +788,54 @@ struct PendingListUpdatesView: View {
         ForEach(grouped.keys.sorted(), id: \.self) { region in
             Section(region) {
                 ForEach(grouped[region] ?? []) { range in
-                    VStack(alignment: .leading, spacing: 4) {
-                        ListLineToggleRow(
-                            range: range,
-                            isIncluded: !excludedRangeIDs.contains(range.id),
-                            onToggle: {
-                                if excludedRangeIDs.contains(range.id) {
-                                    excludedRangeIDs.remove(range.id)
-                                } else {
-                                    excludedRangeIDs.insert(range.id)
+                    HStack(spacing: 8) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ListLineToggleRow(
+                                range: range,
+                                isIncluded: !excludedRangeIDs.contains(range.id),
+                                onToggle: {
+                                    if excludedRangeIDs.contains(range.id) {
+                                        excludedRangeIDs.remove(range.id)
+                                    } else {
+                                        excludedRangeIDs.insert(range.id)
+                                    }
                                 }
-                            }
-                        )
-                        Text(tripNames(for: range))
-                            .font(.system(size: 12))
-                            .foregroundStyle(TMDesign.tertiaryText)
-                            .padding(.leading, 28)
+                            )
+                            Text(tripNames(for: range))
+                                .font(.system(size: 12))
+                                .foregroundStyle(TMDesign.tertiaryText)
+                                .padding(.leading, 28)
+                        }
+                        previewButton(for: range)
                     }
                 }
             }
+        }
+    }
+
+    /// Map button: the segment on the trip that recorded it (a menu when several did)
+    @ViewBuilder
+    private func previewButton(for range: TripLogRange) -> some View {
+        let drove = localTrips.filter { range.tripIDs.contains($0.id) }.sorted { $0.startDate > $1.startDate }
+        let icon = Image(systemName: "map")
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(TMDesign.accent)
+            .frame(width: 40, height: 40)
+            .background(TMDesign.blueChipBG, in: Circle())
+        if drove.count > 1 {
+            Menu {
+                ForEach(drove) { trip in
+                    Button(trip.name) { preview = RangePreview(trip: trip, range: range) }
+                }
+            } label: { icon }
+            .accessibilityLabel("Show on a trip map")
+        } else if let trip = drove.first {
+            Button {
+                Haptics.light()
+                preview = RangePreview(trip: trip, range: range)
+            } label: { icon }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Show on the map of \(trip.name)")
         }
     }
 
@@ -729,6 +976,8 @@ struct ListCheckupView: View {
     @State private var pickerFix: CheckupFix?
     /// Lines whose fix was sent, so they don't show as open until the next nightly update
     @AppStorage("checkupSentLines") private var sentLinesData = Data()
+    /// Flagged lines an open GitHub PR already changes (any device, or made on github.com)
+    @State private var prLines: [String: ListUpdatePR] = [:]
 
     private var fixes: [CheckupFix] { result?.fixes ?? [] }
 
@@ -736,13 +985,22 @@ struct ListCheckupView: View {
         (try? JSONDecoder().decode([String: Date].self, from: sentLinesData)) ?? [:]
     }
 
+    private func openPR(for fix: CheckupFix) -> ListUpdatePR? {
+        prLines[ListFileMerger.normalizedLine(fix.issue.line)]
+    }
+
+    /// Already sent from this device, or changed by an open PR — leave it alone until TM updates
+    private func isPending(_ fix: CheckupFix) -> Bool {
+        sentLines[fix.issue.line] != nil || openPR(for: fix) != nil
+    }
+
     private var selectedFixes: [CheckupFix] {
-        fixes.filter { $0.replacement != nil && !excluded.contains($0.id) && sentLines[$0.issue.line] == nil }
+        fixes.filter { $0.replacement != nil && !excluded.contains($0.id) && !isPending($0) }
     }
 
     /// Fixes AI could help with: no fix yet, but the route's waypoints are known
     private var needsSuggestion: [CheckupFix] {
-        fixes.filter { $0.replacement == nil && $0.canPickWaypoints && sentLines[$0.issue.line] == nil }
+        fixes.filter { $0.replacement == nil && $0.canPickWaypoints && !isPending($0) }
     }
 
     var body: some View {
@@ -785,6 +1043,7 @@ struct ListCheckupView: View {
                             fix: fix,
                             isIncluded: !excluded.contains(fix.id),
                             sentDate: sentLines[fix.issue.line],
+                            openPR: openPR(for: fix),
                             onToggle: {
                                 if excluded.contains(fix.id) { excluded.remove(fix.id) } else { excluded.insert(fix.id) }
                             },
@@ -904,7 +1163,9 @@ struct ListCheckupView: View {
         errorMessage = nil
         aiMessage = nil
         do {
+            async let changed = GitHubService.shared.openPRChangedLines(username: username, category: category)
             result = try await ListCheckup.run(username: username, category: category)
+            prLines = await changed
             pruneSentLines()
         } catch {
             errorMessage = category == .rail
@@ -968,6 +1229,7 @@ struct CheckupFixRow: View {
     let fix: CheckupFix
     let isIncluded: Bool
     let sentDate: Date?
+    let openPR: ListUpdatePR?
     let onToggle: () -> Void
     let onPick: () -> Void
     let onCommentOut: () -> Void
@@ -1002,7 +1264,12 @@ struct CheckupFixRow: View {
                     .foregroundStyle(.secondary)
             }
 
-            if let sentDate {
+            if let openPR {
+                Link(destination: openPR.url) {
+                    TMChip(text: "Fixed in pull request #\(openPR.number) · waiting for merge",
+                           icon: "arrow.triangle.pull", bg: TMDesign.purpleChipBG, fg: TMDesign.purpleChipFG)
+                }
+            } else if let sentDate {
                 TMChip(text: "Fix sent \(sentDate.formatted(date: .abbreviated, time: .omitted)) · waiting for nightly update",
                        icon: "paperplane", bg: TMDesign.purpleChipBG, fg: TMDesign.purpleChipFG)
             } else if let replacement = fix.replacement {
@@ -1034,7 +1301,7 @@ struct CheckupFixRow: View {
                 .accessibilityValue(isIncluded ? "Included" : "Excluded")
             }
 
-            if sentDate == nil {
+            if sentDate == nil && openPR == nil {
                 HStack(spacing: 16) {
                     if fix.canPickWaypoints {
                         Button(fix.replacement == nil ? "Choose waypoints…" : "Change…", action: onPick)
