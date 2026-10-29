@@ -644,8 +644,9 @@ final class GitHubService: ObservableObject {
     static func isAutoTitle(_ title: String, username: String) -> Bool {
         title.hasPrefix("\(username): ")
             && title.dropFirst(username.count + 2).range(
-                of: #"^((Add \d+ lines?(, fix \d+ lines?)?|Fix \d+ lines?|Update list)( \([^)]*\))?|Add \d+ (more )?recorded segments?( from .*)?)$"#,
-                options: .regularExpression) != nil
+                // 1.3 wrote "add N recorded segments" in lowercase
+                of: #"^((Add \d+ lines?(, fix \d+ lines?)?|Fix \d+ lines?|Update list)( \([^)]*\))?|Add \d+ (more )?recorded segments?(, fix \d+ lines?)?( from .*)?)$"#,
+                options: [.regularExpression, .caseInsensitive]) != nil
     }
 
     /// Current title of a PR, to prefill the title field when adding to it
@@ -869,7 +870,7 @@ final class GitHubService: ObservableObject {
             if status != 404 && !quietStatuses.contains(status) {
                 SentrySDK.capture(error: error) { scope in
                     scope.setTag(value: method, key: "github.method")
-                    scope.setExtra(value: Self.scrubbed(path, login: self.login), key: "github.path")
+                    scope.setExtra(value: Self.scrubbed(path), key: "github.path")
                 }
             }
             throw error
@@ -878,9 +879,10 @@ final class GitHubService: ObservableObject {
     }
 
     /// API path for Sentry without the user's GitHub login or list file name
-    private static func scrubbed(_ path: String, login: String?) -> String {
+    private static func scrubbed(_ path: String) -> String {
         var path = path.components(separatedBy: "?").first ?? path
-        if let login, !login.isEmpty { path = path.replacingOccurrences(of: "/repos/\(login)/", with: "/repos/{login}/") }
+        // Any owner but TravelMapping is the user (works even when `login` is unknown or stale)
+        path = path.replacingOccurrences(of: #"/repos/(?!TravelMapping/)[^/]+/"#, with: "/repos/{login}/", options: .regularExpression)
         // Cross-repo compare: ".../compare/master...login:UserData:master"
         path = path.replacingOccurrences(of: #"\.\.\.[^:/]+:"#, with: "...{login}:", options: .regularExpression)
         return path.replacingOccurrences(of: #"/[^/]+\.([rf]?list)$"#, with: "/{user}.$1", options: .regularExpression)
@@ -953,9 +955,10 @@ final class GitHubService: ObservableObject {
         let mode = BranchCleanup.current
         guard mode != .off, isSignedIn, Date() >= nextBranchCleanup else { return }
         nextBranchCleanup = Date().addingTimeInterval(6 * 3600)
-        // Offline or GitHub hiccup before the branches could be listed: try again soon
-        var listed = false
-        defer { if !listed { nextBranchCleanup = Date().addingTimeInterval(15 * 60) } }
+        // Offline or a GitHub hiccup before the branches could be listed: try again soon.
+        // Settled cases (no fork yet, not a fork of UserData) wait the full 6 hours.
+        var settled = false
+        defer { if !settled { nextBranchCleanup = Date().addingTimeInterval(15 * 60) } }
         // Fresh login, not the cached one: after a GitHub rename the old name still
         // redirects for branches and deletes, but no longer matches its PRs, so every
         // branch would look PR-less. And only ever touch the real fork of UserData.
@@ -970,15 +973,26 @@ final class GitHubService: ObservableObject {
             let parent: Parent?
             let default_branch: String
         }
-        guard let repoData = try? await api("GET", "/repos/\(login)/UserData", quietStatuses: [403, 404, 429, 503]),
-              let repo = try? JSONDecoder().decode(Repo.self, from: repoData),
-              repo.fork, repo.parent?.full_name == Self.upstream, repo.owner.login == login else { return }
+        let repoData: Data
+        do {
+            repoData = try await api("GET", "/repos/\(login)/UserData", quietStatuses: [403, 404, 429, 503])
+        } catch GitHubError.api(let status, _) where status == 404 {
+            settled = true  // no fork yet: nothing to tidy
+            return
+        } catch {
+            return
+        }
+        guard let repo = try? JSONDecoder().decode(Repo.self, from: repoData) else { return }
+        guard repo.fork, repo.parent?.full_name == Self.upstream, repo.owner.login == login else {
+            settled = true
+            return
+        }
         let fork = repo.full_name
         struct Branch: Decodable { let name: String }
         struct PR: Decodable { let state: String; let merged_at: String? }
         guard let data = try? await api("GET", "/repos/\(fork)/branches?per_page=100", quietStatuses: [403, 404, 429, 503]),
               let branches = try? JSONDecoder().decode([Branch].self, from: data) else { return }
-        listed = true
+        settled = true
 
         var merged: [String] = []
         var abandoned: [String] = []
@@ -1003,8 +1017,11 @@ final class GitHubService: ObservableObject {
         // has commits of its own (work the user hasn't sent yet), it's left exactly as it
         // is: no merge commit on top of their work. The merged branches can still go, since
         // their changes are upstream. If GitHub can't be checked, keep them for a later try.
+        // The setting may have changed while this ran
+        let currentMode = BranchCleanup.current
+        guard currentMode != .off else { return }
         var toDelete = abandoned
-        if mode == .deleteOnly {
+        if currentMode == .deleteOnly {
             toDelete += merged
         } else if !merged.isEmpty {
             struct Compare: Decodable { let ahead_by: Int }

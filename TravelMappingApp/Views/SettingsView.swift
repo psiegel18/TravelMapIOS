@@ -420,6 +420,7 @@ struct GitHubSettingsView: View {
                         }
                         .onChange(of: branchCleanup) { github.runBranchCleanupSoon() }
                         Button(github.syncsAcrossDevices ? "Sign Out on All Devices" : "Sign Out of GitHub", role: .destructive) {
+                            githubSyncUnavailable = false
                             github.signOut()
                         }
                     } else {
@@ -431,15 +432,21 @@ struct GitHubSettingsView: View {
                     }
                 }
             } footer: {
-                if githubSyncUnavailable {
-                    Text("iCloud Keychain isn't available, so you're signed in on this device only. Turn it on in Settings › [your name] › iCloud › Passwords and Keychain.")
-                        .foregroundStyle(TMDesign.rail)
-                } else if github.isConfigured {
+                if github.isConfigured {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text(github.syncsAcrossDevices
-                             ? "Lets the app open .list update pull requests for your recorded trips. Your GitHub token is in your iCloud Keychain (end-to-end encrypted) and syncs to your other devices."
-                             : "Lets the app open .list update pull requests for your recorded trips. Your GitHub token stays in this device's Keychain.")
-                        if github.isSignedIn { Text(branchCleanupNote) }
+                        if githubSyncUnavailable {
+                            Text("iCloud Keychain isn't available, so you're signed in on this device only. Turn it on in Settings › [your name] › iCloud › Passwords and Keychain.")
+                                .foregroundStyle(TMDesign.rail)
+                        }
+                        if github.isSignedIn {
+                            Text(github.syncsAcrossDevices
+                                 ? "Lets the app open pull requests that update your .list (roads) and .rlist (rail & transit) from your recorded trips. Your GitHub token is in your iCloud Keychain (end-to-end encrypted) and syncs to your other devices."
+                                 : "Lets the app open pull requests that update your .list (roads) and .rlist (rail & transit) from your recorded trips. Your GitHub token stays in this device's Keychain.")
+                            Text(branchCleanupNote)
+                        } else {
+                            // Signing in isn't needed to update a .list
+                            Text("Optional. Without signing in, you can still update your .list (roads) and .rlist (rail & transit): the app builds each updated file from your trips for you to copy and paste into GitHub. Sign in and the app opens the pull request for you.")
+                        }
                     }
                 }
             }
@@ -450,7 +457,7 @@ struct GitHubSettingsView: View {
                     Text("In a block at the end").tag(true)
                 }
             } footer: {
-                Text("How recorded-trip segments are added to your .list file.")
+                Text("Where recorded segments are placed: road segments in your .list, rail & transit in your .rlist, whether the app sends the file or you copy it.")
             }
         }
         .navigationTitle("GitHub")

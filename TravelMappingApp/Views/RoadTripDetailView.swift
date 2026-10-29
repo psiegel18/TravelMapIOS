@@ -1192,7 +1192,7 @@ struct ListUpdateSheet: View {
                     .onChange(of: prTitle) {
                         // Return dismisses rather than inserting a newline GitHub would reject
                         if prTitle.contains(where: \.isNewline) {
-                            let pressedReturn = prTitle.last?.isNewline == true && prTitle.filter(\.isNewline).count == 1
+                            let pressedReturn = prTitle.filter(\.isNewline).count == 1  // Return, wherever the cursor is
                             prTitle = String(prTitle.map { $0.isNewline ? " " : $0 })  // pasted lines stay apart
                             if pressedReturn {
                                 prTitle = prTitle.trimmingCharacters(in: .whitespaces)
