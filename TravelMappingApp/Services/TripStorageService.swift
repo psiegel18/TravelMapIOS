@@ -646,8 +646,14 @@ enum ListCheckup {
                     if match.caseInsensitiveCompare(label) != .orderedSame {
                         // Name the exact characters — a lone "." is easy to miss in the before/after
                         let original = in1 ? entry.waypoint1 : entry.waypoint2
-                        let removed = original.filter { ".,;:".contains($0) }
-                        punctuation.append("Removed the \(removed.map { "“\($0)”" }.joined(separator: " and ")) after “\(match)” — TravelMapping's label has no punctuation.")
+                        let edge = CharacterSet(charactersIn: ".,;:")
+                        let isEdge = { (c: Character) in c.unicodeScalars.allSatisfy(edge.contains) }
+                        let lead = original.prefix(while: isEdge)
+                        let trail = original.dropFirst(lead.count).reversed().prefix(while: isEdge)
+                        let removed = (String(lead) + String(trail.reversed())).map { "“\($0)”" }
+                        punctuation.append(removed.isEmpty
+                            ? "Label corrected to “\(match)”."
+                            : "Removed the \(removed.joined(separator: " and ")): “\(original)” → “\(match)”.")
                     }
                     if in1 { repaired.waypoint1 = match }
                     if in2 { repaired.waypoint2 = match }

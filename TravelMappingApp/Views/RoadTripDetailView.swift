@@ -620,31 +620,55 @@ struct RoadTripDetailView: View {
 
     // MARK: - Matched segments
 
-    /// Consecutive segments on one route, in the order driven — one row per road
+    /// Consecutive, touching segments on one route, in the order driven — one row per road
     /// instead of one per waypoint hop, which ran to hundreds of rows on long trips
     struct RouteRun: Identifiable {
-        let segments: [MatchedSegment]
+        var segments: [MatchedSegment]
+        /// Waypoint labels in driving order. Segments carry TM's route order, so a road
+        /// driven against it arrives as (12,13), (11,12) — the chain is built from which
+        /// ends touch, not from start/end.
+        var labels: [String]
         var id: UUID { segments[0].id }
         var listName: String { segments[0].listName }
         /// First and last labels, skipping hidden "+" shaping points where the run has others
-        var from: String {
-            segments.map(\.startWaypoint).first { !$0.hasPrefix("+") } ?? segments[0].startWaypoint
+        var from: String { labels.first { !$0.hasPrefix("+") } ?? labels[0] }
+        var to: String { labels.last { !$0.hasPrefix("+") } ?? labels[labels.count - 1] }
+        /// One segment says nothing about which way it was driven
+        var arrow: String { segments.count == 1 ? "–" : "→" }
+
+        init(_ seg: MatchedSegment) {
+            segments = [seg]
+            labels = [seg.startWaypoint, seg.endWaypoint]
         }
-        var to: String {
-            segments.map(\.endWaypoint).last { !$0.hasPrefix("+") } ?? segments[segments.count - 1].endWaypoint
+
+        /// Adds the next segment when it continues this run; false when it doesn't touch
+        /// (a gap with nothing matched between stays a separate row, like the .list merger)
+        mutating func extend(with seg: MatchedSegment) -> Bool {
+            guard seg.root == segments[0].root, let last = labels.last else { return false }
+            if seg.startWaypoint == last {
+                labels.append(seg.endWaypoint)
+            } else if seg.endWaypoint == last {
+                labels.append(seg.startWaypoint)
+            } else if segments.count == 1, seg.startWaypoint == labels[0] || seg.endWaypoint == labels[0] {
+                // The first segment was driven the other way
+                labels.reverse()
+                labels.append(seg.startWaypoint == labels[labels.count - 1] ? seg.endWaypoint : seg.startWaypoint)
+            } else {
+                return false
+            }
+            segments.append(seg)
+            return true
         }
     }
 
     private var routeRuns: [RouteRun] {
-        var runs: [[MatchedSegment]] = []
+        var runs: [RouteRun] = []
         for seg in trip.matchedSegments.sorted(by: { $0.entryTime < $1.entryTime }) {
-            if let last = runs.last?.last, last.root == seg.root {
-                runs[runs.count - 1].append(seg)
-            } else {
-                runs.append([seg])
+            if runs.isEmpty || !runs[runs.count - 1].extend(with: seg) {
+                runs.append(RouteRun(seg))
             }
         }
-        return runs.map(RouteRun.init)
+        return runs
     }
 
     private var segmentsList: some View {
@@ -708,7 +732,7 @@ struct RoadTripDetailView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(run.listName)
                         .font(.system(size: 16, weight: .bold))
-                    Text("\(run.from) → \(run.to)")
+                    Text("\(run.from) \(run.arrow) \(run.to)")
                         .font(.system(size: 13))
                         .foregroundStyle(TMDesign.tertiaryText)
                 }
@@ -729,6 +753,7 @@ struct RoadTripDetailView: View {
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(run.listName), \(run.from) to \(run.to), \(run.segments.count) \(run.segments.count == 1 ? "segment" : "segments")")
+        .accessibilityValue(expanded ? "Expanded" : "Collapsed")
         .accessibilityHint(expanded ? "Hides the segments" : "Shows each segment")
         .accessibilityAddTraits(.isButton)
     }
