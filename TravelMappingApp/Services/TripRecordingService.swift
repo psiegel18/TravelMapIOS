@@ -30,6 +30,9 @@ class TripRecordingService: NSObject, ObservableObject {
     private var timer: Timer?
     private var saveTimer: Timer?
     private var lastFetchLocation: CLLocationCoordinate2D?
+    private var segmentFetchInFlight = false
+    /// After a failed segment download, retry soon instead of waiting for the next 5 km
+    private var nextSegmentFetchRetry = Date.distantPast
     private var liveActivity: Activity<RoadTripAttributes>?
 
     // Active-time accounting: paused time (and dead time before an orphan resume)
@@ -183,6 +186,11 @@ class TripRecordingService: NSObject, ObservableObject {
     func startTrip(name: String? = nil, tripType: TripType = .road) {
         guard !isRecording else { return }
 
+        if tripType != currentTripType {
+            segmentMatcher.clearCache()  // road and rail segments come from different databases
+            lastFetchLocation = nil
+        }
+        nextSegmentFetchRetry = .distantPast
         currentTripType = tripType
         // System permission dialog blocks the main thread — pause hang tracking so Sentry
         // doesn't report it as a false-positive app hang. Resume after the dialog has
@@ -492,7 +500,8 @@ class TripRecordingService: NSObject, ObservableObject {
     }
 
     private func fetchSegmentsIfNeeded(near coordinate: CLLocationCoordinate2D) {
-        guard segmentMatcher.needsRefetch(for: coordinate) else { return }
+        guard segmentMatcher.needsRefetch(for: coordinate),
+              !segmentFetchInFlight, Date() >= nextSegmentFetchRetry else { return }
 
         // Avoid re-fetching for same area
         if let last = lastFetchLocation {
@@ -501,10 +510,11 @@ class TripRecordingService: NSObject, ObservableObject {
             if dist < 5000 { return } // less than 5km since last fetch
         }
 
-        lastFetchLocation = coordinate
         let bbox = segmentMatcher.boundingBox(for: coordinate)
+        segmentFetchInFlight = true
 
         Task {
+            defer { segmentFetchInFlight = false }
             do {
                 let api = currentTripType == .rail ? TravelMappingAPI.rail : TravelMappingAPI.shared
                 let result = try await api.getVisibleSegments(
@@ -515,7 +525,14 @@ class TripRecordingService: NSObject, ObservableObject {
                     maxLng: bbox.maxLng
                 )
                 segmentMatcher.updateCache(segments: result.segments, routes: result.routes, bbox: bbox)
+                // Only a successful download counts; a failed one used to block retries for 5 km
+                lastFetchLocation = coordinate
             } catch {
+                nextSegmentFetchRetry = Date().addingTimeInterval(30)
+                // Timeouts and dropped connections are filtered out of Sentry issues, so
+                // leave a trace on the trip either way
+                Self.tripBreadcrumb("Segment download failed", data: ["error": (error as NSError).code])
+                SentrySDK.logger.warn("Segment download failed during trip", attributes: ["code": (error as NSError).code])
                 SentrySDK.capture(error: error)
             }
         }
