@@ -1254,6 +1254,16 @@ final class AIService: ObservableObject {
     /// Everything a feature needs before it may send anything
     var isReady: Bool { isEnabled && hasKey && provider != nil && consentDate != nil && !model.isEmpty }
 
+    /// Settings row status: says what's missing rather than "Not set up" once a key exists
+    /// (a key synced from another device still needs this device's permission)
+    var statusLabel: String {
+        if isReady { return providerLabel }
+        guard hasKey, provider != nil else { return "Not set up" }
+        if !isEnabled { return "Off" }
+        if consentDate == nil { return "Needs permission" }
+        return "Choose a model"
+    }
+
     var baseURL: String? {
         guard let provider else { return nil }
         return provider == .custom ? customBaseURL : provider.defaultBaseURL
