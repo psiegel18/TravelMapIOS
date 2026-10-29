@@ -569,7 +569,7 @@ struct AboutSettingsView: View {
                 Link(destination: URL(string: "https://github.com/psiegel18/TravelMapIOS/discussions")!) {
                     Label("App Discussion Board", systemImage: "bubble.left.and.text.bubble.right")
                 }
-                Link(destination: URL(string: "https://forum.travelmapping.net/")!) {
+                Link(destination: URL(string: "https://forum.travelmapping.net/index.php?topic=7535.0")!) {
                     Label("TM Community Forum", systemImage: "person.3")
                 }
             } header: {
