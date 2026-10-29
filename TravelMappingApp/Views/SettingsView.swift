@@ -1452,6 +1452,7 @@ struct AISettingsView: View {
     @State private var isConnecting = false
     @State private var errorMessage: String?
     @State private var showConsent = false
+    @State private var promptedForConsent = false
     @State private var confirmRemove = false
 
     private var editingNewProvider: Bool { provider != ai.provider || !ai.hasKey }
@@ -1642,6 +1643,12 @@ struct AISettingsView: View {
             ai.refreshFromKeychain()
             // Settings just adopted from a synced key: show them instead of the picker default
             if !hadProvider, let adopted = ai.provider { provider = adopted }
+            // A key from another device still needs this device's permission: ask right
+            // away (once per visit) instead of leaving the button below the fold
+            if !promptedForConsent, ai.hasKey, ai.provider != nil, ai.isEnabled, ai.consentDate == nil {
+                promptedForConsent = true
+                showConsent = true
+            }
             guard ai.hasKey, !editingNewProvider else { return }
             models = (try? await ai.availableModels()) ?? []
         }
