@@ -60,7 +60,7 @@ a { color: #0066cc; }
 <ul>
 <li>Sign-in uses GitHub's device authorization flow — you approve access on github.com; your GitHub password never passes through the app.</li>
 <li>The app requests the <code>public_repo</code> scope only, and uses it solely on your fork of <strong>TravelMapping/UserData</strong> and the pull requests the app opens: to fork the repository, commit your updated list file to a new branch, open a pull request, add later updates to a pull request that is still open (bringing its branch up to date with TravelMapping first, and keeping its title and description current), and look up whether its pull requests are open, merged, or closed.</li>
-<li>Under Settings &gt; GitHub &gt; Finished PRs you choose what happens after a pull request is finished: the app can delete the branches it created on your fork once their pull request is merged or closed, and bring your fork's main branch up to date with TravelMapping — only when that branch has no changes of its own. You can limit this to deleting branches, or turn it off. The app never touches branches it didn't create or ones with an open pull request.</li>
+<li>Under Settings &gt; GitHub &gt; Finished PRs you choose what happens after a pull request is finished: the app can delete the branches it created on your fork once their pull request is merged or closed (or a day after a send that failed before opening one), and bring your fork's main branch up to date with TravelMapping — only when that branch has no changes of its own. You can limit this to deleting branches, or turn it off. The app never touches branches it didn't create or ones with an open pull request.</li>
 <li>The access token is stored in this device's Keychain and sent only to api.github.com. It stays on that device unless you turn on "Stay Signed In on My Other Devices", which syncs it end-to-end encrypted through your iCloud Keychain. Signing out deletes it (from all your devices, if syncing is on).</li>
 <li>Pull requests, and the route segments they add, are public on GitHub like any other contribution to TravelMapping/UserData.</li>
 </ul>
@@ -99,7 +99,7 @@ a { color: #0066cc; }
 <h2>Data Storage</h2>
 <ul>
 <li><strong>Device:</strong> User preferences, favorites, recent users, cached data, and road trip recordings.</li>
-<li><strong>iCloud (optional):</strong> Favorites, user preferences, road trip files, the list update pull requests the app opened (number and the segments they add), and segments you marked "Didn't Travel" sync across your Apple devices if enabled.</li>
+<li><strong>iCloud (optional):</strong> Favorites, user preferences, road trip files, the list update pull requests the app opened (number, branch, and the lines they add), and segments you marked "Didn't Travel" sync across your Apple devices if enabled.</li>
 <li><strong>Keychain:</strong> Your GitHub token and AI API key, if you add them (iCloud Keychain sync is optional).</li>
 <li><strong>External servers:</strong> None run by the developer. The app reads public data from the sources listed above and, only if you turn them on, talks to GitHub and the AI provider you chose.</li>
 </ul>

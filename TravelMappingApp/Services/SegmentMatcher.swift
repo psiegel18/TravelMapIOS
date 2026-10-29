@@ -212,7 +212,8 @@ class SegmentMatcher {
         let matcher = SegmentMatcher()
         let api = tripType == .rail ? TravelMappingAPI.rail : TravelMappingAPI.shared
         let track = points.sorted { $0.timestamp < $1.timestamp }
-        for point in track {
+        // Same filter as processPoint, so a wild fix doesn't trigger a download
+        for point in track where point.horizontalAccuracy >= 0 && point.horizontalAccuracy < 200 {
             if matcher.needsRefetch(for: point.coordinate) {
                 let bbox = matcher.boundingBox(for: point.coordinate)
                 let result = try await api.getVisibleSegments(

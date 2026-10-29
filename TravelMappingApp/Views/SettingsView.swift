@@ -274,7 +274,12 @@ struct SettingsView: View {
                 Self.cachedValidationResult = nil
                 return
             }
-            guard !usernameFocused, username != lastValidatedUsername else { return }
+            guard !usernameFocused else { return }
+            guard username != lastValidatedUsername else {
+                // Typing cleared the indicator; editing back to the checked name restores it
+                if username == Self.cachedValidatedUsername { userValidationResult = Self.cachedValidationResult }
+                return
+            }
             isValidatingUser = true
             // A name from the traveler list needs no network check
             let result = dataService.users.contains(where: { $0.username == username })
@@ -968,7 +973,7 @@ struct PrivacyPolicyView: View {
                     bullet("Off unless you sign in under Settings › GitHub. Without it, the app still builds your updated file for you to copy")
                     bullet("You approve access on github.com. Your password never passes through the app")
                     bullet("Used only on your UserData fork and the app's pull requests: fork, commit your updated .list or .rlist, open a pull request, add later updates to one still open, and check whether it was merged")
-                    bullet("Finished PRs (your choice): delete the app's branches once their pull request is done, and update your fork's main branch only if it has no changes of its own")
+                    bullet("Finished PRs (your choice): delete the app's branches once their pull request is done (or a day after a send that failed), and update your fork's main branch only if it has no changes of its own")
                     bullet("Token stored in your Keychain and sent only to api.github.com. Syncs through iCloud Keychain only if you turn that on")
                     bullet("Pull requests are public on GitHub, like any UserData contribution")
                 }
@@ -1015,7 +1020,7 @@ struct PrivacyPolicyView: View {
 
                 policyCard(icon: "externaldrive.fill", color: .indigo, title: "Data Storage") {
                     storagePill(icon: "iphone", label: "Device", detail: "Preferences, favorites, cache, trips")
-                    storagePill(icon: "icloud", label: "iCloud", detail: "Favorites, preferences, trips, your app pull requests & \"Didn't Travel\" choices (optional)")
+                    storagePill(icon: "icloud", label: "iCloud", detail: "Favorites, preferences, trips, your app pull requests (branch & lines added) & \"Didn't Travel\" choices (optional)")
                     storagePill(icon: "key.fill", label: "Keychain", detail: "GitHub token & AI key, if added (iCloud Keychain sync optional)")
                     storagePill(icon: "server.rack", label: "Sentry", detail: "Anonymous crash, performance, and session replay data (no PII)")
                 }

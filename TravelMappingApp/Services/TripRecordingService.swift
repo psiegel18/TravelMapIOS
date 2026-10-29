@@ -33,6 +33,8 @@ class TripRecordingService: NSObject, ObservableObject {
     private var segmentFetchInFlight = false
     /// After a failed segment download, retry soon instead of waiting for the next 5 km
     private var nextSegmentFetchRetry = Date.distantPast
+    /// Failed downloads in a row: backs off the retry and reports only the first to Sentry
+    private var segmentFetchFailures = 0
     private var liveActivity: Activity<RoadTripAttributes>?
 
     // Active-time accounting: paused time (and dead time before an orphan resume)
@@ -191,6 +193,7 @@ class TripRecordingService: NSObject, ObservableObject {
             lastFetchLocation = nil
         }
         nextSegmentFetchRetry = .distantPast
+        segmentFetchFailures = 0
         currentTripType = tripType
         // System permission dialog blocks the main thread — pause hang tracking so Sentry
         // doesn't report it as a false-positive app hang. Resume after the dialog has
@@ -527,13 +530,16 @@ class TripRecordingService: NSObject, ObservableObject {
                 segmentMatcher.updateCache(segments: result.segments, routes: result.routes, bbox: bbox)
                 // Only a successful download counts; a failed one used to block retries for 5 km
                 lastFetchLocation = coordinate
+                segmentFetchFailures = 0
             } catch {
-                nextSegmentFetchRetry = Date().addingTimeInterval(30)
+                // 30 s, doubling up to 5 min through a long outage
+                nextSegmentFetchRetry = Date().addingTimeInterval(min(30 * pow(2, Double(segmentFetchFailures)), 300))
+                segmentFetchFailures += 1
                 // Timeouts and dropped connections are filtered out of Sentry issues, so
                 // leave a trace on the trip either way
                 Self.tripBreadcrumb("Segment download failed", data: ["error": (error as NSError).code])
                 SentrySDK.logger.warn("Segment download failed during trip", attributes: ["code": (error as NSError).code])
-                SentrySDK.capture(error: error)
+                if segmentFetchFailures == 1 { SentrySDK.capture(error: error) }
             }
         }
     }

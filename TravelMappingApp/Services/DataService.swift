@@ -942,6 +942,7 @@ final class GitHubService: ObservableObject {
 
     /// A changed Finished PRs setting applies on the next Road Trips load, not in 6 hours
     func runBranchCleanupSoon() { nextBranchCleanup = .distantPast }
+    private var isCleaningUpBranches = false
 
     /// Tidies the app's "tm-app-" branches on the user's fork. When a branch's PR has been
     /// merged into TravelMapping/UserData, the fork's default branch is fast-forwarded to
@@ -953,12 +954,14 @@ final class GitHubService: ObservableObject {
     /// `BranchCleanup` can skip the fork update, or turn all of this off.
     func deleteFinishedBranches() async {
         let mode = BranchCleanup.current
-        guard mode != .off, isSignedIn, Date() >= nextBranchCleanup else { return }
+        guard mode != .off, isSignedIn, !isCleaningUpBranches, Date() >= nextBranchCleanup else { return }
+        isCleaningUpBranches = true
         nextBranchCleanup = Date().addingTimeInterval(6 * 3600)
         // Offline or a GitHub hiccup before the branches could be listed: try again soon.
         // Settled cases (no fork yet, not a fork of UserData) wait the full 6 hours.
         var settled = false
         defer {
+            isCleaningUpBranches = false
             // Not when the setting changed meanwhile (runBranchCleanupSoon): that run is due now
             if !settled, nextBranchCleanup != .distantPast { nextBranchCleanup = Date().addingTimeInterval(15 * 60) }
         }
