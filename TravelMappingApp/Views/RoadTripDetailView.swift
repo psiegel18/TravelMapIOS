@@ -25,6 +25,8 @@ struct RoadTripDetailView: View {
     /// PRs that include segments from this trip
     @State private var tripPRs: [ListUpdatePR] = []
     @State private var confirmDelete = false
+    @State private var isRematching = false
+    @State private var rematchMessage: String?
     /// Set once deleted so the onDisappear notes save can't write the trip back
     @State private var isDeleted = false
     @Environment(\.dismiss) private var dismiss
@@ -608,6 +610,32 @@ struct RoadTripDetailView: View {
         }
     }
 
+    private func rematchSegments() async {
+        isRematching = true
+        rematchMessage = nil
+        defer { isRematching = false }
+        do {
+            let segments = try await SegmentMatcher.rematch(points: trip.rawPoints, tripType: trip.tripType)
+            SentrySDK.logger.info("Trip re-matched from GPS track", attributes: ["matchedSegments": segments.count])
+            guard !segments.isEmpty else {
+                rematchMessage = "No TM route segments run along this trip's GPS track."
+                return
+            }
+            trip.matchedSegments = segments
+            trip.notes = notesText  // keep unsaved notes in the saved copy
+            let updatedTrip = trip
+            try await TripStorageService.shared.save(updatedTrip)
+            lastSavedNotes = notesText
+            exportURL = try? await TripStorageService.shared.exportListFile(
+                for: updatedTrip, excluding: Set(settings.dismissedHopKeys))
+            await analyzeLog()
+            Haptics.success()
+        } catch {
+            SentrySDK.capture(error: error)
+            rematchMessage = "Couldn't download TravelMapping's route data. Check your connection and try again."
+        }
+    }
+
     private func saveNotes() {
         guard !isDeleted, notesText != lastSavedNotes else { return }
         lastSavedNotes = notesText
@@ -681,10 +709,33 @@ struct RoadTripDetailView: View {
             )
 
             if trip.matchedSegments.isEmpty {
-                Text("No TM route segments were matched for this trip.")
+                Text(rematchMessage ?? "No TM route segments were matched for this trip.")
                     .font(.system(size: 15))
                     .foregroundStyle(TMDesign.secondaryText)
                     .padding(.vertical, 8)
+                // Live matching can miss a whole trip when segment downloads fail on the
+                // road; the saved GPS track can be matched again
+                if trip.status == .completed && trip.rawPoints.count > 1 {
+                    Button {
+                        Task { await rematchSegments() }
+                    } label: {
+                        HStack(spacing: 8) {
+                            if isRematching {
+                                ProgressView()
+                            } else {
+                                Image(systemName: "arrow.triangle.2.circlepath")
+                            }
+                            Text(isRematching ? "Matching…" : "Match Segments from GPS Track")
+                        }
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(TMDesign.accent.opacity(0.15), in: RoundedRectangle(cornerRadius: 12))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(TMDesign.accent)
+                    .disabled(isRematching)
+                }
             } else {
                 ForEach(runs) { run in
                     routeRunRow(run)
@@ -1033,6 +1084,9 @@ struct ListUpdateSheet: View {
     @State private var openedAsDraft = false
     @State private var prError: String?
     @State private var openedPR: ListUpdatePR?
+    /// PR title field, prefilled with the app's title (or the open PR's current one)
+    @State private var prTitle = ""
+    @State private var prefilledTitle = ""
     /// Normalized original lines the replacements matched in the current file
     @State private var appliedFixes: [String] = []
     /// Lines this send added (an appended PR's lineCount is its running total)
@@ -1099,6 +1153,8 @@ struct ListUpdateSheet: View {
             .task { await load() }
             .interactiveDismissDisabled(isOpeningPR)
         }
+        // The title, file name and "As @login" rows show the user's names
+        .sentryReplayMask()
         .sentryScreen("ListUpdate")
     }
 
@@ -1183,6 +1239,23 @@ struct ListUpdateSheet: View {
     private var pullRequestSection: some View {
         Section {
             if github.isSignedIn {
+                TextField("Pull request title", text: $prTitle, axis: .vertical)
+                    .lineLimit(1...3)
+                    .submitLabel(.done)
+                    .onChange(of: prTitle) {
+                        // Return dismisses rather than inserting a newline GitHub would reject
+                        if prTitle.contains(where: \.isNewline) {
+                            let pressedReturn = prTitle.filter(\.isNewline).count == 1  // Return, wherever the cursor is
+                            prTitle = String(prTitle.map { $0.isNewline ? " " : $0 })  // pasted lines stay apart
+                            if pressedReturn {
+                                prTitle = prTitle.trimmingCharacters(in: .whitespaces)
+                                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                            }
+                        }
+                    }
+                    .font(.system(size: 15))
+                    .disabled(isOpeningPR)
+                    .accessibilityLabel("Pull request title")
                 Button {
                     isOpeningPR = true  // before the Task starts, so a double tap can't send twice
                     Task { await openPullRequest() }
@@ -1219,7 +1292,7 @@ struct ListUpdateSheet: View {
             Text("Send the update")
         } footer: {
             if let openPR {
-                Text("Your pull request #\(openPR.number) hasn't been merged yet, so these lines are added to it instead of opening a second one that would conflict.")
+                Text("Your pull request #\(openPR.number) hasn't been merged yet, so this update is added to it as another commit — one pull request for the TM team instead of several. Its description gets these changes, and an app-written title is updated to cover everything in it.")
             } else if let login = github.login, github.isSignedIn {
                 Text(openAsDraft
                      ? "As @\(login): forks TravelMapping/UserData to your account (first time only), commits the updated file to a new branch, and opens a draft pull request. Look it over on GitHub, then tap “Ready for review” there to send it to the TM team."
@@ -1315,17 +1388,27 @@ struct ListUpdateSheet: View {
     private func load() async {
         errorMessage = nil
         if github.isSignedIn {
+            // Any open app PR takes the update. One that already changes this file comes
+            // first — with a .list PR and an .rlist PR both open (1.3 opened one per file),
+            // rail lines belong with the PR that has the current .rlist changes.
             let fileExtension = category.fileExtension
+            var seen = Set<Int>()
             let candidates = await TripStorageService.shared.listSubmissions()
-                .filter { $0.fileExtension == fileExtension }
-                .compactMap(\.pr)
-                .sorted { $0.createdAt > $1.createdAt }
-                .prefix(3)
-            for pr in candidates where pr.branch != nil {
-                if (try? await github.pullRequestState(pr.number))?.isOpen == true {
+                .compactMap { submission in submission.pr.map { (sameFile: submission.fileExtension == fileExtension, pr: $0) } }
+                .sorted { ($0.sameFile ? 1 : 0, $0.pr.createdAt) > ($1.sameFile ? 1 : 0, $1.pr.createdAt) }
+                .filter { seen.insert($0.pr.number).inserted }
+                .prefix(4)
+            for candidate in candidates where candidate.pr.branch != nil {
+                if let state = try? await github.pullRequestState(candidate.pr.number), state.isOpen {
+                    var pr = candidate.pr
+                    pr.isDraft = state == .draft
                     openPR = pr
                     break
                 }
+            }
+            // One opened from another device, or by List Checkup before it recorded its PRs
+            if openPR == nil {
+                openPR = await github.latestOpenAppPR()
             }
         }
         do {
@@ -1339,6 +1422,16 @@ struct ListUpdateSheet: View {
             result = await Task.detached(priority: .userInitiated) {
                 ListFileMerger.merge(existing: text, newLines: lines, blockTitle: blockTitle, appendOnly: appendOnly)
             }.value
+            let typedSoFar = prTitle
+            let previousPrefill = prefilledTitle
+            if let openPR {
+                prefilledTitle = await github.pullRequestTitle(openPR.number) ?? ""
+            } else {
+                prefilledTitle = GitHubService.autoTitle(username: username, added: result?.placements.count ?? 0,
+                                                         fixed: applied.count, fileExtensions: [category.fileExtension])
+            }
+            // The field is already showing while the open PR's title loads; keep any typing
+            if prTitle == typedSoFar && (typedSoFar.isEmpty || typedSoFar == previousPrefill) { prTitle = prefilledTitle }
         } catch {
             SentrySDK.capture(error: error)
             errorMessage = "Couldn't download your current \(fileName) from GitHub. Check your connection and try again."
@@ -1358,15 +1451,18 @@ struct ListUpdateSheet: View {
                 tripNames: tripNames,
                 replacements: replacements,
                 appendingTo: openPR,
-                asDraft: openAsDraft
+                asDraft: openAsDraft,
+                title: editedTitle
             )
             sentLineCount = merge.placements.count
             // A fresh PR follows the toggle; lines added to an open PR keep that PR's state
-            openedAsDraft = pr.number != openPR?.number && openAsDraft
+            openedAsDraft = pr.number != openPR?.number ? openAsDraft : openPR?.isDraft == true
             if pr.number != openPR?.number { openPR = nil }  // a new PR was opened after all
             openedPR = pr
-            onFixesSent?(sentFixKeys)
+            // Before onFixesSent: List Checkup reads its selected fixes to record the PR,
+            // and marking them sent removes them from that selection
             onSubmitted(pr)
+            onFixesSent?(sentFixKeys)
             Haptics.success()
         } catch {
             prError = error.localizedDescription
@@ -1374,6 +1470,13 @@ struct ListUpdateSheet: View {
     }
 
     // MARK: Helpers
+
+    /// The typed title, or nil to let the app write (and keep updating) one
+    private var editedTitle: String? {
+        // One line, within GitHub's 256-character limit
+        let typed = String(prTitle.split(whereSeparator: \.isWhitespace).joined(separator: " ").prefix(256))
+        return typed.isEmpty || typed == prefilledTitle ? nil : typed
+    }
 
     private func placementDetail(_ placement: ListFileMerger.Placement) -> String {
         var detail = placement.extended != nil

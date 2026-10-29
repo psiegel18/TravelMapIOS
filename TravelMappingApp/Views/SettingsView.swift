@@ -4,7 +4,10 @@ import WidgetKit
 import Sentry
 
 struct SettingsView: View {
+    /// Its traveler list (the Travelers tab's) feeds the username suggestions
+    @ObservedObject var dataService: DataService
     @ObservedObject private var settings = SyncedSettingsService.shared
+    @FocusState private var usernameFocused: Bool
     @ObservedObject private var favorites = FavoritesService.shared
     @AppStorage("watchUsername") private var watchUsername = ""
     @AppStorage("sendToWatch") private var sendToWatch = true
@@ -41,6 +44,24 @@ struct SettingsView: View {
             // MARK: You
             Section {
                 identityCard
+                ForEach(usernameSuggestions) { user in
+                    Button {
+                        settings.primaryUser = user.username
+                        usernameFocused = false
+                    } label: {
+                        HStack {
+                            Image(systemName: "person.crop.circle")
+                                .foregroundStyle(TMDesign.tertiaryText)
+                            Text(user.username)
+                                .foregroundStyle(.primary)
+                                .sentryReplayMask()
+                            Spacer()
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Use \(user.username)")
+                }
             } header: {
                 TMDesign.sectionHeader("You")
             } footer: {
@@ -176,6 +197,19 @@ struct SettingsView: View {
     // Primary User pulled into a top identity card: monogram avatar + username field
     // with the live validation check. Behavior (widget/watch/Sentry sync + debounced
     // validation) is unchanged from the old mid-form text field.
+    /// Travelers whose names start with (then contain) what's typed, while the field is
+    /// being edited — picking one rules out typos and gets the exact capitalization
+    private var usernameSuggestions: [DataService.UserSummary] {
+        let typed = settings.primaryUser.trimmingCharacters(in: .whitespaces)
+        guard usernameFocused, !typed.isEmpty else { return [] }
+        let matches = dataService.users.filter { $0.username.range(of: typed, options: .caseInsensitive) != nil }
+        // Typed exactly (same case): nothing left to suggest
+        if matches.contains(where: { $0.username == typed }) { return [] }
+        let prefix = matches.filter { $0.username.lowercased().hasPrefix(typed.lowercased()) }
+        let rest = matches.filter { !$0.username.lowercased().hasPrefix(typed.lowercased()) }
+        return Array((prefix + rest).prefix(5))
+    }
+
     private var identityCard: some View {
         HStack(spacing: 12) {
             TMMonogramAvatar(
@@ -189,6 +223,8 @@ struct SettingsView: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(TMDesign.tertiaryText)
                 TextField("username", text: $settings.primaryUser)
+                    .focused($usernameFocused)
+                    .submitLabel(.done)
                     .sentryReplayMask()
                     .font(.system(size: 17, weight: .semibold))
                     .textFieldStyle(.plain)
@@ -222,7 +258,14 @@ struct SettingsView: View {
             }
         }
         .padding(.vertical, 6)
-        .task(id: settings.primaryUser) {
+        .onChange(of: usernameFocused) {
+            // Settings can open before the Travelers tab has loaded the list
+            if usernameFocused && dataService.users.isEmpty && !dataService.isLoading {
+                dataService.loadUserList()
+            }
+        }
+        // Checked once editing ends (or a suggestion is picked), not on every letter
+        .task(id: "\(settings.primaryUser)|\(usernameFocused)") {
             let username = settings.primaryUser.trimmingCharacters(in: .whitespaces)
             guard !username.isEmpty else {
                 userValidationResult = nil
@@ -231,11 +274,17 @@ struct SettingsView: View {
                 Self.cachedValidationResult = nil
                 return
             }
-            guard username != lastValidatedUsername else { return }
-            try? await Task.sleep(for: .milliseconds(600))
-            guard !Task.isCancelled else { return }
+            guard !usernameFocused else { return }
+            guard username != lastValidatedUsername else {
+                // Typing cleared the indicator; editing back to the checked name restores it
+                if username == Self.cachedValidatedUsername { userValidationResult = Self.cachedValidationResult }
+                return
+            }
             isValidatingUser = true
-            let result = await validateUsername(username)
+            // A name from the traveler list needs no network check
+            let result = dataService.users.contains(where: { $0.username == username })
+                ? true
+                : await validateUsername(username)
             if let result {
                 // Only cache definitive results, not network failures
                 userValidationResult = result
@@ -385,8 +434,21 @@ struct MapAppearanceSettingsView: View {
 struct GitHubSettingsView: View {
     @ObservedObject private var github = GitHubService.shared
     @AppStorage("listAppendOnly") private var listAppendOnly = false
+    @AppStorage(GitHubService.BranchCleanup.storageKey) private var branchCleanup = GitHubService.BranchCleanup.syncAndDelete
     @State private var showGitHubSignIn = false
     @State private var githubSyncUnavailable = false
+
+    /// Finished PRs explanation, under the account section
+    private var branchCleanupNote: String {
+        switch branchCleanup {
+        case .syncAndDelete:
+            return "Finished PRs: once a pull request is merged, the app deletes its branch on your UserData fork and brings your fork's main branch up to date with TravelMapping. If your main branch has commits of its own, it's left as is. Branches of closed pull requests are deleted."
+        case .deleteOnly:
+            return "Finished PRs: once a pull request is merged or closed, the app deletes its branch on your UserData fork. Your fork's main branch is never changed."
+        case .off:
+            return "Finished PRs: the app never deletes branches or changes your UserData fork. Tidy it yourself on GitHub."
+        }
+    }
 
     var body: some View {
         Form {
@@ -402,7 +464,12 @@ struct GitHubSettingsView: View {
                                 githubSyncUnavailable = on && !github.syncsAcrossDevices
                             }
                         ))
+                        Picker("Finished PRs", selection: $branchCleanup) {
+                            ForEach(GitHubService.BranchCleanup.allCases) { Text($0.title).tag($0) }
+                        }
+                        .onChange(of: branchCleanup) { github.runBranchCleanupSoon() }
                         Button(github.syncsAcrossDevices ? "Sign Out on All Devices" : "Sign Out of GitHub", role: .destructive) {
+                            githubSyncUnavailable = false
                             github.signOut()
                         }
                     } else {
@@ -413,21 +480,33 @@ struct GitHubSettingsView: View {
                         }
                     }
                 }
+            } footer: {
+                if github.isConfigured {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if githubSyncUnavailable {
+                            Text("iCloud Keychain isn't available, so you're signed in on this device only. Turn it on in Settings › [your name] › iCloud › Passwords and Keychain.")
+                                .foregroundStyle(TMDesign.rail)
+                        }
+                        if github.isSignedIn {
+                            Text(github.syncsAcrossDevices
+                                 ? "Lets the app open pull requests that update your .list (roads) and .rlist (rail & transit) from your recorded trips. Your GitHub token is in your iCloud Keychain (end-to-end encrypted) and syncs to your other devices."
+                                 : "Lets the app open pull requests that update your .list (roads) and .rlist (rail & transit) from your recorded trips. Your GitHub token stays in this device's Keychain.")
+                            Text(branchCleanupNote)
+                        } else {
+                            // Signing in isn't needed to update a .list
+                            Text("Optional. Without signing in, you can still update your .list (roads) and .rlist (rail & transit): the app builds each updated file from your trips for you to copy and paste into GitHub. Sign in and the app opens the pull request for you.")
+                        }
+                    }
+                }
+            }
+            // Also shapes the merged file you can copy without signing in
+            Section {
                 Picker("New lines go", selection: $listAppendOnly) {
                     Text("Where they fit in my file").tag(false)
                     Text("In a block at the end").tag(true)
                 }
             } footer: {
-                if githubSyncUnavailable {
-                    Text("iCloud Keychain isn't available, so you're signed in on this device only. Turn it on in Settings › [your name] › iCloud › Passwords and Keychain.")
-                        .foregroundStyle(TMDesign.rail)
-                } else {
-                Text(github.isConfigured
-                     ? (github.syncsAcrossDevices
-                        ? "Lets the app open .list update pull requests for your recorded trips. Your GitHub token is in your iCloud Keychain (end-to-end encrypted) and syncs to your other devices."
-                        : "Lets the app open .list update pull requests for your recorded trips. Your GitHub token stays in this device's Keychain.")
-                     : "How recorded-trip segments are added to your .list file.")
-                }
+                Text("Where new lines are placed in your file. Road segments go in your .list, rail & transit in your .rlist, whether the app sends the file or you copy it.")
             }
         }
         .navigationTitle("GitHub")
@@ -495,8 +574,8 @@ struct AboutSettingsView: View {
                 Link(destination: URL(string: "https://github.com/psiegel18/TravelMapIOS/discussions")!) {
                     Label("App Discussion Board", systemImage: "bubble.left.and.text.bubble.right")
                 }
-                Link(destination: URL(string: "https://forum.travelmapping.net/")!) {
-                    Label("TM Community Forum", systemImage: "person.3")
+                Link(destination: URL(string: "https://forum.travelmapping.net/index.php?topic=7535.0")!) {
+                    Label("App Thread on TM Forum", systemImage: "person.3")
                 }
             } header: {
                 TMDesign.sectionHeader("Links")
@@ -880,9 +959,9 @@ struct PrivacyPolicyView: View {
                     Text("The app fetches public data from:")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    serviceRow("travelmapping.net", desc: "Route data & statistics")
-                    serviceRow("tmrail.teresco.org", desc: "Rail route data")
-                    serviceRow("GitHub", desc: "User travel list files")
+                    serviceRow("travelmapping.net", desc: "Route data, statistics & your nightly update log")
+                    serviceRow("tmrail.teresco.org", desc: "Rail route data & your nightly update log")
+                    serviceRow("GitHub", desc: "User travel list files & usernames")
                     serviceRow("Apple Maps", desc: "Route Planner directions & address suggestions")
                     Text("No personal information is sent to the developer. The app has no accounts of its own. GitHub and AI providers are contacted only if you turn on the optional features below.")
                         .font(.caption)
@@ -891,9 +970,10 @@ struct PrivacyPolicyView: View {
                 }
 
                 policyCard(color: .purple, title: "Optional GitHub Sign-In", icon: { GitHubMark() }) {
-                    bullet("Off unless you sign in under Settings › GitHub")
+                    bullet("Off unless you sign in under Settings › GitHub. Without it, the app still builds your updated file for you to copy")
                     bullet("You approve access on github.com. Your password never passes through the app")
-                    bullet("Used only to fork TravelMapping/UserData, commit your updated .list file, and open a pull request")
+                    bullet("Used only on your UserData fork and the app's pull requests: fork, commit your updated .list or .rlist, open a pull request, add later updates to one still open, and check whether it was merged")
+                    bullet("Finished PRs (your choice): delete the app's branches once their pull request is done (or a day after a send that failed), and update your fork's main branch only if it has no changes of its own")
                     bullet("Token stored in your Keychain and sent only to api.github.com. Syncs through iCloud Keychain only if you turn that on")
                     bullet("Pull requests are public on GitHub, like any UserData contribution")
                 }
@@ -940,7 +1020,7 @@ struct PrivacyPolicyView: View {
 
                 policyCard(icon: "externaldrive.fill", color: .indigo, title: "Data Storage") {
                     storagePill(icon: "iphone", label: "Device", detail: "Preferences, favorites, cache, trips")
-                    storagePill(icon: "icloud", label: "iCloud", detail: "Favorites, preferences & trips (optional)")
+                    storagePill(icon: "icloud", label: "iCloud", detail: "Favorites, preferences, trips, your app pull requests (branch & lines added) & \"Didn't Travel\" choices (optional)")
                     storagePill(icon: "key.fill", label: "Keychain", detail: "GitHub token & AI key, if added (iCloud Keychain sync optional)")
                     storagePill(icon: "server.rack", label: "Sentry", detail: "Anonymous crash, performance, and session replay data (no PII)")
                 }
@@ -961,7 +1041,7 @@ struct PrivacyPolicyView: View {
 
                 // Footer
                 VStack(spacing: 4) {
-                    Text("Last updated: October 26, 2026")
+                    Text("Last updated: October 29, 2026")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                     Link("View web version", destination: URL(string: "https://travel.psiegel.org/PRIVACY")!)

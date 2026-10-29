@@ -197,11 +197,32 @@ class SegmentMatcher {
     }
 
     /// Finalize tracking — flush any in-progress segment.
-    func finalizeTrip() -> [MatchedSegment] {
+    func finalizeTrip(at exitTime: Date = Date()) -> [MatchedSegment] {
         if currentSegmentID != nil {
-            finalizeCurrentSegment(at: Date())
+            finalizeCurrentSegment(at: exitTime)
         }
         return matchedSegments
+    }
+
+    /// Runs matching again over a saved GPS track, downloading segments along the way —
+    /// for a trip whose live matching came up empty because segment downloads failed on
+    /// the road. Same thresholds as recording, so the result is what live matching would
+    /// have found. Throws if a download fails, rather than returning a partial match.
+    static func rematch(points: [GPSPoint], tripType: TripType) async throws -> [MatchedSegment] {
+        let matcher = SegmentMatcher()
+        let api = tripType == .rail ? TravelMappingAPI.rail : TravelMappingAPI.shared
+        let track = points.sorted { $0.timestamp < $1.timestamp }
+        // Same filter as processPoint, so a wild fix doesn't trigger a download
+        for point in track where point.horizontalAccuracy >= 0 && point.horizontalAccuracy < 200 {
+            if matcher.needsRefetch(for: point.coordinate) {
+                let bbox = matcher.boundingBox(for: point.coordinate)
+                let result = try await api.getVisibleSegments(
+                    traveler: "", minLat: bbox.minLat, maxLat: bbox.maxLat, minLng: bbox.minLng, maxLng: bbox.maxLng)
+                matcher.updateCache(segments: result.segments, routes: result.routes, bbox: bbox)
+            }
+            _ = matcher.processPoint(point)
+        }
+        return matcher.finalizeTrip(at: track.last?.timestamp ?? Date())
     }
 
     /// Re-seed previously matched segments after the app was killed mid-trip.
@@ -222,6 +243,15 @@ class SegmentMatcher {
         currentSegmentID = nil
         currentSegmentEntryTime = nil
         clearPendingCandidate()
+    }
+
+    /// Drops downloaded segments too — needed when switching between road and rail, whose
+    /// segments come from different databases
+    func clearCache() {
+        segmentCache = [:]
+        spatialGrid = [:]
+        rootToListName = [:]
+        currentBBox = nil
     }
 
     // MARK: - Private

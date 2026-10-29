@@ -23,7 +23,7 @@ a { color: #0066cc; }
 </head>
 <body>
 <h1>Travel Mapping iOS App Privacy Policy</h1>
-<p class="meta"><strong>Last updated:</strong> October 26, 2026</p>
+<p class="meta"><strong>Last updated:</strong> October 29, 2026</p>
 
 <h2>Overview</h2>
 <p>Travel Mapping is an iOS app for browsing and tracking road and rail travel data from travelmapping.net. This privacy policy describes what information the app collects and how it is used.</p>
@@ -48,18 +48,19 @@ a { color: #0066cc; }
 <h3>Network Requests</h3>
 <p>The app fetches publicly available data from:</p>
 <ul>
-<li><strong>travelmapping.net</strong> — route data, map segments, traveler statistics</li>
-<li><strong>tmrail.teresco.org</strong> — rail route data</li>
-<li><strong>github.com/TravelMapping/UserData</strong> — user travel list files</li>
+<li><strong>travelmapping.net</strong> — route data, map segments, traveler statistics, and the nightly update log for your username (List checkup)</li>
+<li><strong>tmrail.teresco.org</strong> — rail route data and its nightly update log for your username</li>
+<li><strong>github.com/TravelMapping/UserData</strong> — user travel list files and the list of TravelMapping usernames (Travelers tab and username suggestions)</li>
 <li><strong>Apple Maps (MapKit)</strong> — map tiles, Route Planner directions, and address suggestions</li>
 </ul>
 <p>No personal information is transmitted to us. The app does not have its own user accounts.</p>
 
 <h3>Optional GitHub Sign-In</h3>
-<p>If you choose to sign in with GitHub (Settings &gt; GitHub) so the app can open .list update pull requests for your recorded trips:</p>
+<p>Signing in is optional: without it, the app can still build your updated .list or .rlist file for you to copy into GitHub yourself. If you choose to sign in with GitHub (Settings &gt; GitHub) so the app can open those pull requests for you:</p>
 <ul>
 <li>Sign-in uses GitHub's device authorization flow — you approve access on github.com; your GitHub password never passes through the app.</li>
-<li>The app requests the <code>public_repo</code> scope only, and uses it solely to fork <strong>TravelMapping/UserData</strong> to your account, commit your updated list file to a new branch, and open a pull request.</li>
+<li>The app requests the <code>public_repo</code> scope only, and uses it solely on your fork of <strong>TravelMapping/UserData</strong> and the pull requests the app opens: to fork the repository, commit your updated list file to a new branch, open a pull request, add later updates to a pull request that is still open (bringing its branch up to date with TravelMapping first, and keeping its title and description current), and look up whether its pull requests are open, merged, or closed.</li>
+<li>Under Settings &gt; GitHub &gt; Finished PRs you choose what happens after a pull request is finished: the app can delete the branches it created on your fork once their pull request is merged or closed (or a day after a send that failed before opening one), and bring your fork's main branch up to date with TravelMapping — only when that branch has no changes of its own. You can limit this to deleting branches, or turn it off. The app never touches branches it didn't create or ones with an open pull request.</li>
 <li>The access token is stored in this device's Keychain and sent only to api.github.com. It stays on that device unless you turn on "Stay Signed In on My Other Devices", which syncs it end-to-end encrypted through your iCloud Keychain. Signing out deletes it (from all your devices, if syncing is on).</li>
 <li>Pull requests, and the route segments they add, are public on GitHub like any other contribution to TravelMapping/UserData.</li>
 </ul>
@@ -98,7 +99,7 @@ a { color: #0066cc; }
 <h2>Data Storage</h2>
 <ul>
 <li><strong>Device:</strong> User preferences, favorites, recent users, cached data, and road trip recordings.</li>
-<li><strong>iCloud (optional):</strong> Favorites, user preferences, and road trip files sync across your Apple devices if enabled.</li>
+<li><strong>iCloud (optional):</strong> Favorites, user preferences, road trip files, the list update pull requests the app opened (number, branch, and the lines they add), and segments you marked "Didn't Travel" sync across your Apple devices if enabled.</li>
 <li><strong>Keychain:</strong> Your GitHub token and AI API key, if you add them (iCloud Keychain sync is optional).</li>
 <li><strong>External servers:</strong> None run by the developer. The app reads public data from the sources listed above and, only if you turn them on, talks to GitHub and the AI provider you chose.</li>
 </ul>

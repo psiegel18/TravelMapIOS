@@ -146,7 +146,7 @@ struct ContentView: View {
             .tag(3)
 
             NavigationStack {
-                SettingsView()
+                SettingsView(dataService: dataService)
             }
             .tabItem {
                 Label("Settings", systemImage: "gear")

@@ -504,6 +504,9 @@ struct RoadTripListView: View {
         newLinesByTrip = byTrip
         // A failed check leaves the signature unset so the next load retries it
         summarySignature = failed ? "" : signature
+        // Throttled to every 6 hours inside; tidies the fork's finished app branches
+        // Not awaited: a view task cancelled mid-cleanup would skip it for 6 hours
+        Task { await GitHubService.shared.deleteFinishedBranches() }
     }
 
     private func performDelete(trip: RoadTrip) {
@@ -763,10 +766,10 @@ struct PendingListUpdatesView: View {
                     ForEach(submissions.sorted { $0.date > $1.date }) { submission in
                         Group {
                             if let pr = submission.pr {
-                                ListUpdatePRRow(pr: pr, state: prStates[pr.number])
+                                ListUpdatePRRow(pr: pr, state: prStates[pr.number], fileExtension: submission.fileExtension)
                             } else {
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text("Marked submitted · \(submission.lines.count.formatted()) line\(submission.lines.count == 1 ? "" : "s")")
+                                    Text("Marked submitted · .\(submission.fileExtension) · \(submission.lines.count.formatted()) line\(submission.lines.count == 1 ? "" : "s")")
                                         .font(.system(size: 16, weight: .semibold))
                                     Text(submission.date.formatted(date: .abbreviated, time: .omitted))
                                         .font(.system(size: 13))
@@ -824,6 +827,7 @@ struct PendingListUpdatesView: View {
             localTrips = trips
             await analyze()
             await refreshPRStates()
+            Task { await GitHubService.shared.deleteFinishedBranches() }
         }
         .onChange(of: settings.dismissedHopKeys) {
             Task { await analyze() }
@@ -849,7 +853,7 @@ struct PendingListUpdatesView: View {
             }
             .disabled(included(analysis).isEmpty)
         } header: {
-            Text(type == .rail ? "Rail & Transit" : "Roads")
+            Text(type == .rail ? "Rail & Transit · \(username).rlist" : "Roads · \(username).list")
         } footer: {
             VStack(alignment: .leading, spacing: 4) {
                 if analysis.unresolvedCount > 0 {
@@ -861,7 +865,7 @@ struct PendingListUpdatesView: View {
             }
         }
         ForEach(grouped.keys.sorted(), id: \.self) { region in
-            Section(region) {
+            Section("\(region) · .\(type == .rail ? "rlist" : "list")") {
                 ForEach(grouped[region] ?? []) { range in
                     HStack(spacing: 8) {
                         VStack(alignment: .leading, spacing: 4) {
@@ -935,15 +939,20 @@ struct PendingListUpdatesView: View {
 
     private func refreshPRStates() async {
         var closed: [Int] = []
+        var merged: [Int] = []
         for pr in submissions.compactMap(\.pr) where prStates[pr.number] == nil {
             let state = try? await GitHubService.shared.pullRequestState(pr.number)
             prStates[pr.number] = state
             if state == .closed { closed.append(pr.number) }
+            if state == .merged { merged.append(pr.number) }
         }
-        // A closed (unmerged) PR will never land — put its segments back in the queue
-        guard !closed.isEmpty else { return }
-        let closedNumbers = closed
-        await TripStorageService.shared.removeSubmissions { closedNumbers.contains($0.pr?.number ?? -1) }
+        guard !closed.isEmpty || !merged.isEmpty else { return }
+        let closedNumbers = closed, mergedNumbers = merged
+        // A closed (unmerged) PR will never land — put its segments back in the queue. A
+        // merged List Checkup entry has no trip segments to wait on, so it's done.
+        await TripStorageService.shared.removeSubmissions {
+            closedNumbers.contains($0.pr?.number ?? -1) || ($0.hopKeys.isEmpty && mergedNumbers.contains($0.pr?.number ?? -1))
+        }
         await analyze()
     }
 
@@ -1024,6 +1033,8 @@ struct PendingListUpdatesView: View {
 struct ListUpdatePRRow: View {
     let pr: ListUpdatePR
     let state: GitHubService.PRState?
+    /// "list" / "rlist" — one PR can carry both, as separate rows
+    var fileExtension: String? = nil
 
     var body: some View {
         Link(destination: pr.url) {
@@ -1031,7 +1042,7 @@ struct ListUpdatePRRow: View {
                 Image(systemName: "arrow.triangle.pull")
                     .foregroundStyle(TMDesign.accent)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("#\(pr.number) · \(pr.lineCount.formatted()) line\(pr.lineCount == 1 ? "" : "s")")
+                    Text("#\(pr.number) · \(fileExtension.map { ".\($0) · " } ?? "")\(pr.lineCount.formatted()) line\(pr.lineCount == 1 ? "" : "s")")
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(.primary)
                     Text(pr.createdAt.formatted(date: .abbreviated, time: .omitted))
@@ -1214,7 +1225,17 @@ struct ListCheckupView: View {
                 replacements: Dictionary(selectedFixes.compactMap { fix in fix.replacement.map { (fix.issue.line, $0) } },
                                          uniquingKeysWith: { a, _ in a }),
                 onFixesSent: { applied in markSent(selectedFixes.filter { applied.contains($0.issue.line) }) },
-                onSubmitted: { _ in }
+                onSubmitted: { pr in
+                    // Recorded like trip updates, so the next update adds to this PR
+                    // instead of opening another, and it shows under Waiting on TravelMapping
+                    guard let pr else { return }
+                    let lines = selectedFixes.compactMap(\.replacement)
+                    let fileExtension = category.fileExtension
+                    Task {
+                        await TripStorageService.shared.recordSubmission(
+                            fileExtension: fileExtension, hopKeys: [], lines: lines, pr: pr)
+                    }
+                }
             )
         }
     }
@@ -1387,8 +1408,14 @@ struct CheckupFixRow: View {
 
             if let openPR {
                 Link(destination: openPR.url) {
-                    TMChip(text: "Fixed in pull request #\(openPR.number) · waiting for merge",
-                           icon: "arrow.triangle.pull", bg: TMDesign.purpleChipBG, fg: TMDesign.purpleChipFG)
+                    if openPR.isDraft == true {
+                        // A draft isn't in front of the TM team yet
+                        TMChip(text: "Fixed in draft pull request #\(openPR.number) · mark it ready on GitHub",
+                               icon: "arrow.triangle.pull", bg: TMDesign.amberChipBG, fg: TMDesign.amberChipFG)
+                    } else {
+                        TMChip(text: "Fixed in pull request #\(openPR.number) · waiting for merge",
+                               icon: "arrow.triangle.pull", bg: TMDesign.purpleChipBG, fg: TMDesign.purpleChipFG)
+                    }
                 }
             } else if let sentDate {
                 TMChip(text: "Fix sent \(sentDate.formatted(date: .abbreviated, time: .omitted)) · waiting for nightly update",
