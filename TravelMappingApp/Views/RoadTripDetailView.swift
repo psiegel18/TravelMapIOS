@@ -1187,6 +1187,15 @@ struct ListUpdateSheet: View {
         Section {
             if github.isSignedIn {
                 TextField("Pull request title", text: $prTitle, axis: .vertical)
+                    .lineLimit(1...3)
+                    .submitLabel(.done)
+                    .onChange(of: prTitle) {
+                        // Return dismisses rather than inserting a newline GitHub would reject
+                        if prTitle.contains(where: \.isNewline) {
+                            prTitle = prTitle.filter { !$0.isNewline }
+                            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                        }
+                    }
                     .font(.system(size: 15))
                     .disabled(isOpeningPR)
                     .accessibilityLabel("Pull request title")
@@ -1356,13 +1365,16 @@ struct ListUpdateSheet: View {
             result = await Task.detached(priority: .userInitiated) {
                 ListFileMerger.merge(existing: text, newLines: lines, blockTitle: blockTitle, appendOnly: appendOnly)
             }.value
+            let typedSoFar = prTitle
+            let previousPrefill = prefilledTitle
             if let openPR {
                 prefilledTitle = await github.pullRequestTitle(openPR.number) ?? ""
             } else {
                 prefilledTitle = GitHubService.autoTitle(username: username, added: result?.placements.count ?? 0,
                                                          fixed: applied.count, fileExtensions: [category.fileExtension])
             }
-            prTitle = prefilledTitle
+            // The field is already showing while the open PR's title loads; keep any typing
+            if prTitle == typedSoFar && (typedSoFar.isEmpty || typedSoFar == previousPrefill) { prTitle = prefilledTitle }
         } catch {
             SentrySDK.capture(error: error)
             errorMessage = "Couldn't download your current \(fileName) from GitHub. Check your connection and try again."
@@ -1404,7 +1416,8 @@ struct ListUpdateSheet: View {
 
     /// The typed title, or nil to let the app write (and keep updating) one
     private var editedTitle: String? {
-        let typed = prTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        // One line, within GitHub's 256-character limit
+        let typed = String(prTitle.split(whereSeparator: \.isWhitespace).joined(separator: " ").prefix(256))
         return typed.isEmpty || typed == prefilledTitle ? nil : typed
     }
 

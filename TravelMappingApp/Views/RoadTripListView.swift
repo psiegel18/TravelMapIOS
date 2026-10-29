@@ -505,7 +505,8 @@ struct RoadTripListView: View {
         // A failed check leaves the signature unset so the next load retries it
         summarySignature = failed ? "" : signature
         // Throttled to every 6 hours inside; tidies the fork's finished app branches
-        await GitHubService.shared.deleteFinishedBranches()
+        // Not awaited: a view task cancelled mid-cleanup would skip it for 6 hours
+        Task { await GitHubService.shared.deleteFinishedBranches() }
     }
 
     private func performDelete(trip: RoadTrip) {
@@ -826,7 +827,7 @@ struct PendingListUpdatesView: View {
             localTrips = trips
             await analyze()
             await refreshPRStates()
-            await GitHubService.shared.deleteFinishedBranches()
+            Task { await GitHubService.shared.deleteFinishedBranches() }
         }
         .onChange(of: settings.dismissedHopKeys) {
             Task { await analyze() }

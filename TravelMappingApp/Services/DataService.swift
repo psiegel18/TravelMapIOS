@@ -529,7 +529,7 @@ final class GitHubService: ObservableObject {
                              message: Self.commitSummary(added: merge.placements.count, fixed: fixed.count, from: names, more: true))
             await refreshDescription(number: openPR.number, username: username, fileExtension: category.fileExtension,
                                      section: Self.describe(merge: merge, fixed: fixed, replacements: replacements, names: names),
-                                     customTitle: customTitle)
+                                     added: merge.placements.count, fixed: fixed.count, customTitle: customTitle)
             var updated = openPR
             updated.lineCount += merge.placements.count + fixed.count
             breadcrumb("Added \(merge.placements.count) lines to PR #\(openPR.number)")
@@ -654,12 +654,14 @@ final class GitHubService: ObservableObject {
     }
 
     /// After commits land on an open PR, keep its title and description in step: the new
-    /// commit's changes are appended to the description, and an app-written title is
-    /// recomputed from the whole PR. A title the user typed is kept (or replaced by
-    /// `customTitle` when they edited it this time). Best effort — the commit already landed.
-    private func refreshDescription(number: Int, username: String, fileExtension: String, section: String, customTitle: String?) async {
+    /// commit's changes are appended to the description, and an app-written title has
+    /// this send's `added`/`fixed` counts added to its own. A title the user typed is kept
+    /// (or replaced by `customTitle` when they edited it this time). Best effort — the
+    /// commit already landed.
+    private func refreshDescription(number: Int, username: String, fileExtension: String, section: String,
+                                    added: Int, fixed: Int, customTitle: String?) async {
         struct PR: Decodable { let title: String; let body: String? }
-        struct File: Decodable { let filename: String; let additions: Int; let deletions: Int }
+        struct File: Decodable { let filename: String }
         guard let prData = try? await api("GET", "/repos/\(Self.upstream)/pulls/\(number)", quietStatuses: [403, 404, 429, 503]),
               let pr = try? JSONDecoder().decode(PR.self, from: prData),
               let filesData = try? await api("GET", "/repos/\(Self.upstream)/pulls/\(number)/files?per_page=100", quietStatuses: [403, 404, 429, 503]),
@@ -668,15 +670,30 @@ final class GitHubService: ObservableObject {
         if let customTitle {
             title = customTitle
         } else if Self.isAutoTitle(pr.title, username: username) {
-            // A replaced line is one deletion + one addition
-            let fixed = files.reduce(0) { $0 + $1.deletions }
-            let added = max(0, files.reduce(0) { $0 + $1.additions } - fixed)
-            title = Self.autoTitle(username: username, added: added, fixed: fixed,
-                                   fileExtensions: files.map { ($0.filename as NSString).pathExtension })
+            // Counts come from the titles the app wrote, not the diff: a widened line is a
+            // deletion + an addition, which a diff count would call a fix
+            let summary = pr.title.dropFirst(username.count + 2)
+            func count(_ pattern: String) -> Int {
+                guard let match = summary.range(of: pattern, options: [.regularExpression, .caseInsensitive]) else { return 0 }
+                return Int(summary[match].filter(\.isNumber)) ?? 0
+            }
+            title = Self.autoTitle(username: username, added: count(#"add \d+"#) + added, fixed: count(#"fix \d+"#) + fixed,
+                                   fileExtensions: files.map { ($0.filename as NSString).pathExtension } + [fileExtension])
         }
-        let update = "**\(username).\(fileExtension)**, added \(Date().formatted(date: .abbreviated, time: .omitted)):\n\n\(section)"
-        let body = [pr.body ?? "", update].filter { !$0.isEmpty }.joined(separator: "\n\n---\n\n")
-        _ = try? await api("PATCH", "/repos/\(Self.upstream)/pulls/\(number)", body: ["title": title, "body": body],
+        if title != pr.title {
+            _ = try? await api("PATCH", "/repos/\(Self.upstream)/pulls/\(number)", body: ["title": title],
+                               quietStatuses: [403, 404, 422, 429, 503])
+        }
+        // GitHub caps a description at 65,536 characters; past that, a one-line note
+        let date = Date().formatted(date: .abbreviated, time: .omitted)
+        var update = "**\(username).\(fileExtension)**, added \(date):\n\n\(section)"
+        let existing = pr.body ?? ""
+        if existing.count + update.count > 60_000 {
+            update = "**\(username).\(fileExtension)**, added \(date): \(Self.commitSummary(added: added, fixed: fixed, from: nil, more: true)) — see the latest commit."
+            guard existing.count + update.count <= 65_000 else { return }
+        }
+        let body = [existing, update].filter { !$0.isEmpty }.joined(separator: "\n\n---\n\n")
+        _ = try? await api("PATCH", "/repos/\(Self.upstream)/pulls/\(number)", body: ["body": body],
                            quietStatuses: [403, 404, 422, 429, 503])
     }
 
@@ -850,12 +867,19 @@ final class GitHubService: ObservableObject {
             if status != 404 && !quietStatuses.contains(status) {
                 SentrySDK.capture(error: error) { scope in
                     scope.setTag(value: method, key: "github.method")
-                    scope.setExtra(value: path.components(separatedBy: "?").first ?? path, key: "github.path")
+                    scope.setExtra(value: Self.scrubbed(path, login: self.login), key: "github.path")
                 }
             }
             throw error
         }
         return data
+    }
+
+    /// API path for Sentry without the user's GitHub login or list file name
+    private static func scrubbed(_ path: String, login: String?) -> String {
+        var path = path.components(separatedBy: "?").first ?? path
+        if let login, !login.isEmpty { path = path.replacingOccurrences(of: "/repos/\(login)/", with: "/repos/{login}/") }
+        return path.replacingOccurrences(of: #"/[^/]+\.(r?list)$"#, with: "/{user}.$1", options: .regularExpression)
     }
 
     private func formPost(_ url: String, _ fields: [String: String]) async throws -> Data {
@@ -882,10 +906,15 @@ final class GitHubService: ObservableObject {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyyMMdd-HHmmss"
+        formatter.timeZone = TimeZone(identifier: "UTC")
         return formatter
     }()
 
-    private var nextBranchCleanup = Date.distantPast
+    /// Persisted, so each cold launch doesn't re-run the cleanup
+    private var nextBranchCleanup: Date {
+        get { UserDefaults.standard.object(forKey: "githubNextBranchCleanup") as? Date ?? .distantPast }
+        set { UserDefaults.standard.set(newValue, forKey: "githubNextBranchCleanup") }
+    }
 
     /// What happens on the user's fork once an app pull request is finished
     /// (Settings › GitHub › Finished Pull Requests). Stored per device.
@@ -917,9 +946,24 @@ final class GitHubService: ObservableObject {
         let mode = BranchCleanup.current
         guard mode != .off, isSignedIn, Date() >= nextBranchCleanup else { return }
         nextBranchCleanup = Date().addingTimeInterval(6 * 3600)
-        await ensureLogin()
+        // Fresh login, not the cached one: after a GitHub rename the old name still
+        // redirects for branches and deletes, but no longer matches its PRs, so every
+        // branch would look PR-less. And only ever touch the real fork of UserData.
+        try? await refreshLogin()
         guard let login else { return }
-        let fork = "\(login)/UserData"
+        struct Repo: Decodable {
+            struct Owner: Decodable { let login: String }
+            struct Parent: Decodable { let full_name: String }
+            let full_name: String
+            let owner: Owner
+            let fork: Bool
+            let parent: Parent?
+            let default_branch: String
+        }
+        guard let repoData = try? await api("GET", "/repos/\(login)/UserData", quietStatuses: [403, 404, 429, 503]),
+              let repo = try? JSONDecoder().decode(Repo.self, from: repoData),
+              repo.fork, repo.parent?.full_name == Self.upstream, repo.owner.login == login else { return }
+        let fork = repo.full_name
         struct Branch: Decodable { let name: String }
         struct PR: Decodable { let state: String; let merged_at: String? }
         guard let data = try? await api("GET", "/repos/\(fork)/branches?per_page=100", quietStatuses: [403, 404, 429, 503]),
@@ -952,12 +996,9 @@ final class GitHubService: ObservableObject {
         if mode == .deleteOnly {
             toDelete += merged
         } else if !merged.isEmpty {
-            struct Repo: Decodable { let default_branch: String }
             struct Compare: Decodable { let ahead_by: Int }
-            if let repoData = try? await api("GET", "/repos/\(fork)", quietStatuses: [403, 404, 429, 503]),
-               let repo = try? JSONDecoder().decode(Repo.self, from: repoData),
-               // ahead_by = commits on the fork's branch that TravelMapping's master lacks
-               let compareData = try? await api("GET", "/repos/\(Self.upstream)/compare/master...\(login):UserData:\(repo.default_branch)",
+            // ahead_by = commits on the fork's branch that TravelMapping's master lacks
+            if let compareData = try? await api("GET", "/repos/\(Self.upstream)/compare/master...\(fork.replacingOccurrences(of: "/", with: ":")):\(repo.default_branch)",
                                                 quietStatuses: [403, 404, 422, 429, 503]),
                let compare = try? JSONDecoder().decode(Compare.self, from: compareData) {
                 if compare.ahead_by == 0 {
