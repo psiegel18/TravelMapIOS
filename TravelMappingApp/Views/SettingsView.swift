@@ -4,7 +4,10 @@ import WidgetKit
 import Sentry
 
 struct SettingsView: View {
+    /// Its traveler list (the Travelers tab's) feeds the username suggestions
+    @ObservedObject var dataService: DataService
     @ObservedObject private var settings = SyncedSettingsService.shared
+    @FocusState private var usernameFocused: Bool
     @ObservedObject private var favorites = FavoritesService.shared
     @AppStorage("watchUsername") private var watchUsername = ""
     @AppStorage("sendToWatch") private var sendToWatch = true
@@ -41,6 +44,24 @@ struct SettingsView: View {
             // MARK: You
             Section {
                 identityCard
+                ForEach(usernameSuggestions) { user in
+                    Button {
+                        settings.primaryUser = user.username
+                        usernameFocused = false
+                    } label: {
+                        HStack {
+                            Image(systemName: "person.crop.circle")
+                                .foregroundStyle(TMDesign.tertiaryText)
+                            Text(user.username)
+                                .foregroundStyle(.primary)
+                                .sentryReplayMask()
+                            Spacer()
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Use \(user.username)")
+                }
             } header: {
                 TMDesign.sectionHeader("You")
             } footer: {
@@ -176,6 +197,19 @@ struct SettingsView: View {
     // Primary User pulled into a top identity card: monogram avatar + username field
     // with the live validation check. Behavior (widget/watch/Sentry sync + debounced
     // validation) is unchanged from the old mid-form text field.
+    /// Travelers whose names start with (then contain) what's typed, while the field is
+    /// being edited — picking one rules out typos and gets the exact capitalization
+    private var usernameSuggestions: [DataService.UserSummary] {
+        let typed = settings.primaryUser.trimmingCharacters(in: .whitespaces)
+        guard usernameFocused, !typed.isEmpty else { return [] }
+        let matches = dataService.users.filter { $0.username.range(of: typed, options: .caseInsensitive) != nil }
+        // Typed exactly (same case): nothing left to suggest
+        if matches.contains(where: { $0.username == typed }) { return [] }
+        let prefix = matches.filter { $0.username.lowercased().hasPrefix(typed.lowercased()) }
+        let rest = matches.filter { !$0.username.lowercased().hasPrefix(typed.lowercased()) }
+        return Array((prefix + rest).prefix(5))
+    }
+
     private var identityCard: some View {
         HStack(spacing: 12) {
             TMMonogramAvatar(
@@ -189,6 +223,8 @@ struct SettingsView: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(TMDesign.tertiaryText)
                 TextField("username", text: $settings.primaryUser)
+                    .focused($usernameFocused)
+                    .submitLabel(.done)
                     .sentryReplayMask()
                     .font(.system(size: 17, weight: .semibold))
                     .textFieldStyle(.plain)
@@ -222,7 +258,14 @@ struct SettingsView: View {
             }
         }
         .padding(.vertical, 6)
-        .task(id: settings.primaryUser) {
+        .onChange(of: usernameFocused) {
+            // Settings can open before the Travelers tab has loaded the list
+            if usernameFocused && dataService.users.isEmpty && !dataService.isLoading {
+                dataService.loadUserList()
+            }
+        }
+        // Checked once editing ends (or a suggestion is picked), not on every letter
+        .task(id: "\(settings.primaryUser)|\(usernameFocused)") {
             let username = settings.primaryUser.trimmingCharacters(in: .whitespaces)
             guard !username.isEmpty else {
                 userValidationResult = nil
@@ -231,11 +274,12 @@ struct SettingsView: View {
                 Self.cachedValidationResult = nil
                 return
             }
-            guard username != lastValidatedUsername else { return }
-            try? await Task.sleep(for: .milliseconds(600))
-            guard !Task.isCancelled else { return }
+            guard !usernameFocused, username != lastValidatedUsername else { return }
             isValidatingUser = true
-            let result = await validateUsername(username)
+            // A name from the traveler list needs no network check
+            let result = dataService.users.contains(where: { $0.username == username })
+                ? true
+                : await validateUsername(username)
             if let result {
                 // Only cache definitive results, not network failures
                 userValidationResult = result
