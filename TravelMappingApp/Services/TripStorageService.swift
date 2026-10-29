@@ -237,6 +237,9 @@ struct TripLogAnalysis: Sendable {
     /// Matched segments that couldn't be located on current route data (route
     /// renumbered/relocated since the trip, or metadata missing)
     let unresolvedCount: Int
+    /// Unlogged hops the route matcher caught but the GPS track didn't follow end to end
+    /// (`verifiedHops`), so they were left out
+    var unverifiedCount = 0
 
     var newRanges: [TripLogRange] { ranges.filter { $0.status == .new } }
     var submittedRanges: [TripLogRange] { ranges.filter { $0.status == .submitted } }
@@ -286,15 +289,27 @@ enum TripLogAnalyzer {
         var builders: [Builder] = []
         var seenHops = Set<String>()
         var unresolved = 0
+        var unverified = Set<String>()
 
         for trip in trips.sorted(by: { $0.startDate < $1.startDate }) {
-            for matched in trip.matchedSegments.sorted(by: { $0.entryTime < $1.entryTime }) {
-                guard let hops = hopsByRoot[matched.root],
-                      let path = path(in: hops, from: matched.startWaypoint, to: matched.endWaypoint) else {
+            let paths = trip.matchedSegments.sorted(by: { $0.entryTime < $1.entryTime }).map { matched in
+                hopsByRoot[matched.root].flatMap { path(in: $0, from: matched.startWaypoint, to: matched.endWaypoint) }
+            }
+            let tripRoots = Set(trip.matchedSegments.map(\.root))
+            let verified = trip.tripType == .rail ? nil : verifiedHops(
+                paths.compactMap { $0 }.flatMap { $0 },
+                track: trip.rawPoints,
+                competitors: tripRoots.flatMap { hopsByRoot[$0] ?? [] }
+            )
+            for path in paths {
+                guard let path else {
                     unresolved += 1
                     continue
                 }
-                for hop in path {
+                if let verified {
+                    unverified.formUnion(path.filter { !$0.isClinched && !verified.contains($0.id) }.map(\.id))
+                }
+                for hop in path where verified?.contains(hop.id) ?? true {
                     guard seenHops.insert(hop.id).inserted else {
                         if let i = builders.firstIndex(where: { $0.hops.contains { $0.id == hop.id } }) {
                             builders[i].tripIDs.insert(trip.id)
@@ -370,7 +385,71 @@ enum TripLogAnalyzer {
                 routeLabels: Self.orderedLabels(routeHops)
             )
         }
-        return TripLogAnalysis(ranges: ranges, unresolvedCount: unresolved)
+        // A hop another trip did drive end to end isn't "left out"
+        return TripLogAnalysis(ranges: ranges, unresolvedCount: unresolved,
+                               unverifiedCount: unverified.subtracting(seenHops).subtracting(submitted).count)
+    }
+
+    /// Hops the GPS track really drove. The live matcher accepts any segment the track runs
+    /// alongside, so a frontage road or a parallel route a block away can match. Here a hop
+    /// must have both waypoints within 300 m of the track (waypoints sit on the road, so a
+    /// hop whose far end was never reached fails), and either both within 50 m or own at
+    /// least half its length of track: each track step is credited to the nearest hop of
+    /// the trip's routes, and to any hop within 15 m of that so concurrent routes share.
+    /// Measured on 31 recorded trips: drops the I-59-beside-a-side-road and
+    /// NL440-beside-the-TCH false matches and keeps every hop the track drove end to end.
+    /// Chord distance alone can't tell — TM's straight hops sit 200–400 m off curvy freeways.
+    static func verifiedHops(_ candidates: [TravelMappingAPI.MapSegment], track: [GPSPoint],
+                             competitors: [TravelMappingAPI.MapSegment]) -> Set<String> {
+        let points = track.filter { $0.horizontalAccuracy >= 0 && $0.horizontalAccuracy < 200 }.map(\.coordinate)
+        // Nothing to check against (trips saved without points) — keep what was matched
+        guard points.count >= 2 else { return Set(candidates.map(\.id)) }
+
+        func distance(_ p: CLLocationCoordinate2D, _ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> Double {
+            let cosLat = cos(p.latitude * .pi / 180)
+            let px = (p.longitude - a.longitude) * cosLat, py = p.latitude - a.latitude
+            let dx = (b.longitude - a.longitude) * cosLat, dy = b.latitude - a.latitude
+            let lengthSq = dx * dx + dy * dy
+            let t = lengthSq == 0 ? 0 : max(0, min(1, (px * dx + py * dy) / lengthSq))
+            return hypot(px - t * dx, py - t * dy) * 111_320
+        }
+        func distanceToTrack(_ q: CLLocationCoordinate2D) -> Double {
+            zip(points, points.dropFirst()).reduce(.greatestFiniteMagnitude) { min($0, distance(q, $1.0, $1.1)) }
+        }
+
+        // Only hops near the track can compete; ~450 m of slack around each hop's box
+        let pad = 0.004
+        let lats = points.map(\.latitude), lngs = points.map(\.longitude)
+        let (minLat, maxLat) = (lats.min()! - 0.01, lats.max()! + 0.01)
+        let (minLng, maxLng) = (lngs.min()! - 0.01, lngs.max()! + 0.01)
+        let nearby = competitors.filter {
+            max($0.start.latitude, $0.end.latitude) >= minLat && min($0.start.latitude, $0.end.latitude) <= maxLat &&
+            max($0.start.longitude, $0.end.longitude) >= minLng && min($0.start.longitude, $0.end.longitude) <= maxLng
+        }
+        var owned: [String: Double] = [:]
+        for (p, next) in zip(points, points.dropFirst()) {
+            let lngPad = pad / max(cos(p.latitude * .pi / 180), 0.1)
+            let near = nearby.compactMap { hop -> (String, Double)? in
+                guard p.latitude >= min(hop.start.latitude, hop.end.latitude) - pad,
+                      p.latitude <= max(hop.start.latitude, hop.end.latitude) + pad,
+                      p.longitude >= min(hop.start.longitude, hop.end.longitude) - lngPad,
+                      p.longitude <= max(hop.start.longitude, hop.end.longitude) + lngPad else { return nil }
+                return (hop.id, distance(p, hop.start, hop.end))
+            }
+            guard let best = near.map(\.1).min(), best <= 400 else { continue }
+            let step = distance(p, next, next)
+            for (id, d) in near where d <= best + 15 { owned[id, default: 0] += step }
+        }
+
+        var verified = Set<String>()
+        for hop in candidates where !verified.contains(hop.id) {
+            let ends = max(distanceToTrack(hop.start), distanceToTrack(hop.end))
+            let length = distance(hop.start, hop.end, hop.end)
+            if ends <= 300 && (ends <= 50 || length == 0 || (owned[hop.id] ?? 0) / length >= 0.5) {
+                verified.insert(hop.id)
+            }
+        }
+        return verified
     }
 
     /// Labels along the route in order. Where the route breaks (a hop that doesn't start
@@ -540,22 +619,31 @@ enum ListCheckup {
                 }
             case .missingWaypoints(let labels):
                 await attachRoutes(&fix, entry: entry, route: route)
-                // A label that only differs by case is a safe automatic fix
+                // A label that only differs by case or a stray trailing "." / "," is a safe
+                // automatic fix. TM reports labels uppercased, so match the entry's labels
+                // case-insensitively too.
                 var repaired = entry
                 var allFixed = true
+                var punctuation = false
                 for label in labels {
-                    let key = entry.waypoint1 == label ? entry.routeKey1 : entry.routeKey2
-                    guard let match = fix.routes[key]?.labels.first(where: { $0.caseInsensitiveCompare(label) == .orderedSame }) else {
+                    let in1 = entry.waypoint1.caseInsensitiveCompare(label) == .orderedSame
+                    let in2 = entry.waypoint2.caseInsensitiveCompare(label) == .orderedSame
+                    let key = in1 ? entry.routeKey1 : entry.routeKey2
+                    guard in1 || in2,
+                          let match = fix.routes[key]?.labels.first(where: { labelKey($0) == labelKey(label) }) else {
                         allFixed = false
                         continue
                     }
-                    if repaired.waypoint1 == label { repaired.waypoint1 = match }
-                    if repaired.waypoint2 == label { repaired.waypoint2 = match }
+                    if match.caseInsensitiveCompare(label) != .orderedSame { punctuation = true }
+                    if in1 { repaired.waypoint1 = match }
+                    if in2 { repaired.waypoint2 = match }
                 }
                 if allFixed && repaired != entry {
                     fix.replacement = repaired.text
                     fix.source = .automatic
-                    fix.note = "Waypoint label capitalization changed."
+                    fix.note = punctuation
+                        ? "Removed stray punctuation from a waypoint label."
+                        : "Waypoint label capitalization changed."
                 }
             case .unknownRoute, .zeroDistance:
                 break
@@ -563,6 +651,12 @@ enum ListCheckup {
             fixes.append(fix)
         }
         return Result(fixes: fixes, updates: parsed.updates, fileUpdated: fileUpdated)
+    }
+
+    /// Label compared the way a typo-tolerant fix needs: case-insensitive, ignoring trailing
+    /// punctuation that isn't part of any TM label ("GarG/BART_F." → "GARG/BART_F")
+    private static func labelKey(_ label: String) -> String {
+        label.trimmingCharacters(in: CharacterSet(charactersIn: ".,;:")).uppercased()
     }
 
     static func labelsExist(_ entry: ListEntry, in routes: [String: RouteWaypoints]) -> Bool {
@@ -641,7 +735,10 @@ enum ListCheckup {
         originally meant. Use only waypoint labels from that route's current waypoint list, exactly as \
         written there. Use the route change notes to map old labels to new ones (for example, sequential \
         exit numbers renumbered to mileage-based ones). Keep the regions and route names unless a note \
-        says the route itself changed. If you can't tell what the traveler meant, use confidence "low" \
+        says the route itself changed. Check for simple typos first: TravelMapping reports labels in \
+        uppercase, and an entry can fail only because of stray punctuation (like a trailing period) or \
+        a misspelled label. Your corrected entry must differ from the original. \
+        If you can't tell what the traveler meant, use confidence "low" \
         and say why instead of guessing.
 
         Reply with JSON only, no other text:

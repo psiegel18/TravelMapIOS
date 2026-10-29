@@ -155,13 +155,6 @@ struct UserDetailView: View {
             }
             CatalogService.shared.loadIfNeeded()
         }
-        .refreshable {
-            // Keep the loaded profile if the refresh fails transiently —
-            // replacing it with nil would flash the "No Data" screen.
-            if let refreshed = await dataService.loadUserProfile(username: username) {
-                profile = refreshed
-            }
-        }
     }
 
     private func shareStats() {
@@ -333,6 +326,15 @@ struct UserDetailView: View {
                 categoryBreakdown(profile: profile)
             }
             .padding()
+        }
+        // Only the List tab refreshes: on the whole screen, the environment's refresh
+        // action reached the map's horizontal pill row and made it pull down vertically
+        .refreshable {
+            // Keep the loaded profile if the refresh fails transiently —
+            // replacing it with nil would flash the "No Data" screen.
+            if let refreshed = await dataService.loadUserProfile(username: username) {
+                self.profile = refreshed
+            }
         }
     }
 
