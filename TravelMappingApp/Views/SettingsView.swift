@@ -432,7 +432,7 @@ struct GitHubSettingsView: View {
             }
             if github.isConfigured && github.isSignedIn {
                 Section {
-                    Picker("Finished Pull Requests", selection: $branchCleanup) {
+                    Picker("Finished PRs", selection: $branchCleanup) {
                         ForEach(GitHubService.BranchCleanup.allCases) { Text($0.title).tag($0) }
                     }
                 } footer: {

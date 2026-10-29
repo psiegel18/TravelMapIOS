@@ -917,14 +917,14 @@ final class GitHubService: ObservableObject {
     }
 
     /// What happens on the user's fork once an app pull request is finished
-    /// (Settings › GitHub › Finished Pull Requests). Stored per device.
+    /// (Settings › GitHub › Finished PRs). Stored per device.
     enum BranchCleanup: String, CaseIterable, Identifiable {
         case syncAndDelete, deleteOnly, off
         static let storageKey = "githubBranchCleanup"
         var id: String { rawValue }
         var title: String {
             switch self {
-            case .syncAndDelete: return "Delete Branch & Update Fork"
+            case .syncAndDelete: return "Delete & Update Fork"
             case .deleteOnly: return "Delete Branch Only"
             case .off: return "Leave Everything"
             }
