@@ -112,7 +112,7 @@ struct SettingsView: View {
                     AISettingsView()
                 } label: {
                     LabeledContent {
-                        Text(ai.isReady ? ai.providerLabel : (ai.hasKey && !ai.isEnabled ? "Off" : "Not set up"))
+                        Text(ai.statusLabel)
                     } label: {
                         Label("AI Assistant", systemImage: "sparkles")
                     }
@@ -264,6 +264,8 @@ struct SettingsView: View {
                 dataService.loadUserList()
             }
         }
+        // A synced AI key can land after launch
+        .onAppear { ai.refreshFromKeychain() }
         // Checked once editing ends (or a suggestion is picked), not on every letter
         .task(id: "\(settings.primaryUser)|\(usernameFocused)") {
             let username = settings.primaryUser.trimmingCharacters(in: .whitespaces)
@@ -1450,12 +1452,17 @@ struct AISettingsView: View {
     @State private var isConnecting = false
     @State private var errorMessage: String?
     @State private var showConsent = false
+    @State private var promptedForConsent = false
     @State private var confirmRemove = false
 
     private var editingNewProvider: Bool { provider != ai.provider || !ai.hasKey }
 
     var body: some View {
         Form {
+            // A key synced from another device still needs this device's permission:
+            // ask up top, not below the disclosures
+            if ai.hasKey, ai.provider != nil, ai.consentDate == nil { permissionSection }
+
             if ai.hasKey {
                 Section {
                     Toggle("AI features", isOn: $ai.isEnabled)
@@ -1602,18 +1609,7 @@ struct AISettingsView: View {
             }
 
             if ai.hasKey {
-                Section {
-                    if let date = ai.consentDate {
-                        LabeledContent("Allowed", value: date.formatted(date: .abbreviated, time: .omitted))
-                        Button("Revoke Permission", role: .destructive) { ai.revokeConsent() }
-                    } else {
-                        Button("Review & Allow Data Sharing…") { showConsent = true }
-                    }
-                } header: {
-                    Text("Permission")
-                } footer: {
-                    Text("Sharing with \(ai.providerLabel) needs your permission. Revoking it stops AI features until you allow it again.")
-                }
+                if ai.provider != nil, ai.consentDate != nil { permissionSection }
 
                 Section {
                     NavigationLink {
@@ -1643,8 +1639,40 @@ struct AISettingsView: View {
                  : "AI features turn off and the key is deleted from this device. Your activity history stays until you clear it.")
         }
         .task {
+            let hadProvider = ai.provider != nil
+            ai.refreshFromKeychain()
+            // Settings just adopted from a synced key: show them instead of the picker default
+            if !hadProvider, let adopted = ai.provider {
+                provider = adopted
+                customBaseURL = UserDefaults.standard.string(forKey: "aiBaseURL") ?? ""
+            }
+            // A key from another device still needs this device's permission: ask right
+            // away (once per visit) instead of leaving the button below the fold
+            if !promptedForConsent, ai.hasKey, ai.provider != nil, ai.isEnabled, ai.consentDate == nil {
+                promptedForConsent = true
+                // Let the navigation push finish, or the sheet can be dropped
+                try? await Task.sleep(for: .milliseconds(350))
+                showConsent = true
+            }
             guard ai.hasKey, !editingNewProvider else { return }
             models = (try? await ai.availableModels()) ?? []
+        }
+    }
+
+    private var permissionSection: some View {
+        Section {
+            if let date = ai.consentDate {
+                LabeledContent("Allowed", value: date.formatted(date: .abbreviated, time: .omitted))
+                Button("Revoke Permission", role: .destructive) { ai.revokeConsent() }
+            } else {
+                Button("Review & Allow Data Sharing…") { showConsent = true }
+            }
+        } header: {
+            Text("Permission")
+        } footer: {
+            Text(ai.consentDate == nil
+                 ? "Sharing with \(ai.providerLabel) needs your permission on this device before AI features work, even when your key came from another device."
+                 : "Sharing with \(ai.providerLabel) needs your permission. Revoking it stops AI features until you allow it again.")
         }
     }
 
