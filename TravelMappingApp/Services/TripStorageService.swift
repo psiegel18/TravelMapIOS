@@ -100,7 +100,9 @@ actor TripStorageService {
         Set(await listSubmissions().filter { $0.fileExtension == fileExtension }.flatMap(\.hopKeys))
     }
 
-    /// Records a submission. Lines added to an already-recorded PR merge into its entry.
+    /// Records a submission. Lines added to an already-recorded PR merge into its entry for
+    /// the same file — one PR can carry both .list and .rlist commits, kept as separate
+    /// entries so `submittedHopKeys` stays per file.
     func recordSubmission(fileExtension: String, hopKeys: [String], lines: [String], pr: ListUpdatePR?) async {
         let url = await tripsDirectory().appendingPathComponent(Self.submissionsFile)
         // No suspension point from here to the write, so concurrent calls on this actor
@@ -109,7 +111,7 @@ actor TripStorageService {
             SentrySDK.logger.warn("List submission not recorded: submissions file unreadable (iCloud download pending)")
             return
         }
-        if let pr, let i = all.firstIndex(where: { $0.pr?.number == pr.number }) {
+        if let pr, let i = all.firstIndex(where: { $0.pr?.number == pr.number && $0.fileExtension == fileExtension }) {
             all[i].hopKeys = Array(Set(all[i].hopKeys).union(hopKeys))
             all[i].lines += lines.filter { !all[i].lines.contains($0) }
             all[i].pr = pr

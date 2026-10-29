@@ -1315,9 +1315,8 @@ struct ListUpdateSheet: View {
     private func load() async {
         errorMessage = nil
         if github.isSignedIn {
-            let fileExtension = category.fileExtension
+            // Any open app PR takes the update, whichever file it started with
             let candidates = await TripStorageService.shared.listSubmissions()
-                .filter { $0.fileExtension == fileExtension }
                 .compactMap(\.pr)
                 .sorted { $0.createdAt > $1.createdAt }
                 .prefix(3)
@@ -1326,6 +1325,10 @@ struct ListUpdateSheet: View {
                     openPR = pr
                     break
                 }
+            }
+            // One opened from another device, or by List Checkup before it recorded its PRs
+            if openPR == nil {
+                openPR = await github.latestOpenAppPR()
             }
         }
         do {

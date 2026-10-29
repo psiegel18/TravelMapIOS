@@ -325,6 +325,8 @@ struct ListUpdatePR: Codable, Hashable, Identifiable {
     /// this PR while it's still open instead of opening a conflicting second one
     var branch: String?
     var fork: String?
+    /// A draft isn't up for review until the user marks it ready on GitHub
+    var isDraft: Bool? = nil
     var id: Int { number }
 }
 
@@ -670,6 +672,43 @@ final class GitHubService: ObservableObject {
         return pr.draft == true ? .draft : .open
     }
 
+    /// The signed-in user's newest open PR that the app opened (a "tm-app-" branch on their
+    /// fork), from this or any other device. Later updates — roads, rail, checkup fixes —
+    /// go onto it as more commits, so the TM team gets one PR instead of several.
+    func latestOpenAppPR() async -> ListUpdatePR? {
+        guard isSignedIn else { return nil }
+        await ensureLogin()
+        guard let login else { return nil }
+        struct Search: Decodable {
+            struct Item: Decodable { let number: Int }
+            let items: [Item]
+        }
+        struct PR: Decodable {
+            struct Head: Decodable {
+                struct Repo: Decodable { let full_name: String }
+                let ref: String
+                let repo: Repo?
+            }
+            let number: Int
+            let html_url: URL
+            let draft: Bool?
+            let head: Head
+        }
+        var components = URLComponents()
+        components.queryItems = [URLQueryItem(name: "q", value: "repo:\(Self.upstream) is:pr is:open author:\(login)")]
+        guard let query = components.percentEncodedQuery,
+              let data = try? await api("GET", "/search/issues?\(query)&sort=created&order=desc&per_page=5", quietStatuses: [403, 422, 429, 503]),
+              let search = try? JSONDecoder().decode(Search.self, from: data) else { return nil }
+        for item in search.items {
+            guard let data = try? await api("GET", "/repos/\(Self.upstream)/pulls/\(item.number)", quietStatuses: [403, 404, 429, 503]),
+                  let pr = try? JSONDecoder().decode(PR.self, from: data),
+                  pr.head.ref.hasPrefix("tm-app-"), let fork = pr.head.repo?.full_name else { continue }
+            return ListUpdatePR(number: pr.number, url: pr.html_url, createdAt: Date(), lineCount: 0,
+                                branch: pr.head.ref, fork: fork, isDraft: pr.draft)
+        }
+        return nil
+    }
+
     /// Lines the signed-in user's open UserData PRs change or remove in their list file,
     /// keyed by `ListFileMerger.normalizedLine` (comment stripped). Covers PRs opened on
     /// any device or on github.com, so List Checkup can leave those lines alone.
@@ -681,7 +720,7 @@ final class GitHubService: ObservableObject {
         let path = "\(category.directoryName)/\(username).\(category.fileExtension)"
 
         struct Search: Decodable {
-            struct Item: Decodable { let number: Int; let html_url: URL }
+            struct Item: Decodable { let number: Int; let html_url: URL; let draft: Bool? }
             let items: [Item]
         }
         var components = URLComponents()
@@ -696,7 +735,8 @@ final class GitHubService: ObservableObject {
             guard let data = try? await api("GET", "/repos/\(Self.upstream)/pulls/\(item.number)/files?per_page=100", quietStatuses: [403, 429, 503]),
                   let files = try? JSONDecoder().decode([File].self, from: data) else { return nil }
             guard let patch = files.first(where: { $0.filename == path })?.patch else { continue }
-            let pr = ListUpdatePR(number: item.number, url: item.html_url, createdAt: Date(), lineCount: 0, branch: nil, fork: nil)
+            let pr = ListUpdatePR(number: item.number, url: item.html_url, createdAt: Date(), lineCount: 0,
+                                  branch: nil, fork: nil, isDraft: item.draft)
             for line in patch.components(separatedBy: "\n") where line.hasPrefix("-") && !line.hasPrefix("---") {
                 // CRLF list files leave a trailing \r on each patch line
                 let entry = line.dropFirst().trimmingCharacters(in: .newlines).split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
