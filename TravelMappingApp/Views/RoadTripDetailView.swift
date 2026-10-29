@@ -6,6 +6,7 @@ struct RoadTripDetailView: View {
     @State var trip: RoadTrip
     @State private var shareContent: ShareContent?
     @State private var exportURL: URL?
+    @State private var expandedRuns: Set<UUID> = []
     @State private var replayProgress: Double = 1.0  // 0.0 to 1.0
     @State private var isPlaying = false
     @State private var playTimer: Timer?
@@ -617,14 +618,66 @@ struct RoadTripDetailView: View {
         }
     }
 
-    // MARK: - Matched segments (audit §8 — confidence as a badge)
+    // MARK: - Matched segments
+
+    /// Consecutive, touching segments on one route, in the order driven — one row per road
+    /// instead of one per waypoint hop, which ran to hundreds of rows on long trips
+    struct RouteRun: Identifiable {
+        var segments: [MatchedSegment]
+        /// Waypoint labels in driving order. Segments carry TM's route order, so a road
+        /// driven against it arrives as (12,13), (11,12) — the chain is built from which
+        /// ends touch, not from start/end.
+        var labels: [String]
+        var id: UUID { segments[0].id }
+        var listName: String { segments[0].listName }
+        /// First and last labels, skipping hidden "+" shaping points where the run has others
+        var from: String { labels.first { !$0.hasPrefix("+") } ?? labels[0] }
+        var to: String { labels.last { !$0.hasPrefix("+") } ?? labels[labels.count - 1] }
+        /// One segment says nothing about which way it was driven
+        var arrow: String { segments.count == 1 ? "–" : "→" }
+
+        init(_ seg: MatchedSegment) {
+            segments = [seg]
+            labels = [seg.startWaypoint, seg.endWaypoint]
+        }
+
+        /// Adds the next segment when it continues this run; false when it doesn't touch
+        /// (a gap with nothing matched between stays a separate row, like the .list merger)
+        mutating func extend(with seg: MatchedSegment) -> Bool {
+            guard seg.root == segments[0].root, let last = labels.last else { return false }
+            if seg.startWaypoint == last {
+                labels.append(seg.endWaypoint)
+            } else if seg.endWaypoint == last {
+                labels.append(seg.startWaypoint)
+            } else if segments.count == 1, seg.startWaypoint == labels[0] || seg.endWaypoint == labels[0] {
+                // The first segment was driven the other way
+                labels.reverse()
+                labels.append(seg.startWaypoint == labels[labels.count - 1] ? seg.endWaypoint : seg.startWaypoint)
+            } else {
+                return false
+            }
+            segments.append(seg)
+            return true
+        }
+    }
+
+    private var routeRuns: [RouteRun] {
+        var runs: [RouteRun] = []
+        for seg in trip.matchedSegments.sorted(by: { $0.entryTime < $1.entryTime }) {
+            if runs.isEmpty || !runs[runs.count - 1].extend(with: seg) {
+                runs.append(RouteRun(seg))
+            }
+        }
+        return runs
+    }
 
     private var segmentsList: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let runs = routeRuns
+        return VStack(alignment: .leading, spacing: 10) {
             TMDesign.sectionHeader(
                 trip.matchedSegments.isEmpty
                     ? "Matched Segments"
-                    : "\(trip.matchedSegments.count.formatted()) segments clinched"
+                    : "\(trip.matchedSegments.count.formatted()) segments on \(runs.count.formatted()) \(runs.count == 1 ? "road" : "roads")"
             )
 
             if trip.matchedSegments.isEmpty {
@@ -633,43 +686,76 @@ struct RoadTripDetailView: View {
                     .foregroundStyle(TMDesign.secondaryText)
                     .padding(.vertical, 8)
             } else {
-                ForEach(trip.matchedSegments) { seg in
-                    HStack(spacing: 12) {
-                        Image(systemName: isRail ? "tram.fill" : "road.lanes")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(isRail ? TMDesign.redChipFG : TMDesign.blueChipFG)
-                            .frame(width: 32, height: 32)
-                            .background(
-                                isRail ? TMDesign.redChipBG : TMDesign.blueChipBG,
-                                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            )
-                            .accessibilityHidden(true)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("\(seg.region) \(seg.routeName)")
-                                .font(.system(size: 16, weight: .bold))
-                            Text("\(seg.startWaypoint) → \(seg.endWaypoint)")
-                                .font(.system(size: 13))
-                                .foregroundStyle(TMDesign.tertiaryText)
+                ForEach(runs) { run in
+                    routeRunRow(run)
+                    if expandedRuns.contains(run.id) {
+                        ForEach(run.segments) { seg in
+                            HStack {
+                                Text("\(seg.startWaypoint) → \(seg.endWaypoint)")
+                                    .font(.system(size: 13, design: .monospaced))
+                                    .foregroundStyle(TMDesign.secondaryText)
+                                Spacer()
+                                Text(String(format: "%.0f%%", seg.confidence * 100))
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(TMDesign.greenChipFG)
+                            }
+                            .padding(.leading, 44)
+                            .accessibilityElement(children: .combine)
+                            .accessibilityLabel("\(seg.startWaypoint) to \(seg.endWaypoint), \(Int((seg.confidence * 100).rounded())) percent match confidence")
                         }
-                        Spacer(minLength: 8)
-                        TMChip(
-                            text: String(format: "%.0f%%", seg.confidence * 100),
-                            icon: "checkmark",
-                            bg: TMDesign.greenChipBG,
-                            fg: TMDesign.greenChipFG
-                        )
                     }
-                    .padding(.vertical, 5)
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel(
-                        "\(seg.region) \(seg.routeName), \(seg.startWaypoint) to \(seg.endWaypoint), \(Int((seg.confidence * 100).rounded())) percent match confidence"
-                    )
                 }
             }
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(TMDesign.cardBG, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private func routeRunRow(_ run: RouteRun) -> some View {
+        let expanded = expandedRuns.contains(run.id)
+        return Button {
+            withAnimation(.snappy) {
+                if expanded { expandedRuns.remove(run.id) } else { expandedRuns.insert(run.id) }
+            }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: isRail ? "tram.fill" : "road.lanes")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(isRail ? TMDesign.redChipFG : TMDesign.blueChipFG)
+                    .frame(width: 32, height: 32)
+                    .background(
+                        isRail ? TMDesign.redChipBG : TMDesign.blueChipBG,
+                        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    )
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(run.listName)
+                        .font(.system(size: 16, weight: .bold))
+                    Text("\(run.from) \(run.arrow) \(run.to)")
+                        .font(.system(size: 13))
+                        .foregroundStyle(TMDesign.tertiaryText)
+                }
+                Spacer(minLength: 8)
+                if run.segments.count > 1 {
+                    Text(run.segments.count.formatted())
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(TMDesign.secondaryText)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(TMDesign.tertiaryText)
+                    .rotationEffect(.degrees(expanded ? 90 : 0))
+            }
+            .padding(.vertical, 5)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(run.listName), \(run.from) to \(run.to), \(run.segments.count) \(run.segments.count == 1 ? "segment" : "segments")")
+        .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+        .accessibilityHint(expanded ? "Hides the segments" : "Shows each segment")
+        .accessibilityAddTraits(.isButton)
     }
 
     /// GPS-points count demoted to a secondary detail row (audit §8).

@@ -633,7 +633,7 @@ enum ListCheckup {
                 // case-insensitively too.
                 var repaired = entry
                 var allFixed = true
-                var punctuation = false
+                var punctuation: [String] = []
                 for label in labels {
                     let in1 = entry.waypoint1.caseInsensitiveCompare(label) == .orderedSame
                     let in2 = entry.waypoint2.caseInsensitiveCompare(label) == .orderedSame
@@ -643,16 +643,27 @@ enum ListCheckup {
                         allFixed = false
                         continue
                     }
-                    if match.caseInsensitiveCompare(label) != .orderedSame { punctuation = true }
+                    if match.caseInsensitiveCompare(label) != .orderedSame {
+                        // Name the exact characters — a lone "." is easy to miss in the before/after
+                        let original = in1 ? entry.waypoint1 : entry.waypoint2
+                        let edge = CharacterSet(charactersIn: ".,;:")
+                        let isEdge = { (c: Character) in c.unicodeScalars.allSatisfy(edge.contains) }
+                        let lead = original.prefix(while: isEdge)
+                        let trail = original.dropFirst(lead.count).reversed().prefix(while: isEdge)
+                        let removed = (String(lead) + String(trail.reversed())).map { "“\($0)”" }
+                        punctuation.append(removed.isEmpty
+                            ? "Label corrected to “\(match)”."
+                            : "Removed the \(removed.joined(separator: " and ")): “\(original)” → “\(match)”.")
+                    }
                     if in1 { repaired.waypoint1 = match }
                     if in2 { repaired.waypoint2 = match }
                 }
                 if allFixed && repaired != entry {
                     fix.replacement = repaired.text
                     fix.source = .automatic
-                    fix.note = punctuation
-                        ? "Removed stray punctuation from a waypoint label."
-                        : "Waypoint label capitalization changed."
+                    fix.note = punctuation.isEmpty
+                        ? "Waypoint label capitalization changed."
+                        : punctuation.joined(separator: " ")
                 }
             case .unknownRoute, .zeroDistance:
                 break
