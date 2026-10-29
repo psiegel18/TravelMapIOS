@@ -859,10 +859,48 @@ final class GitHubService: ObservableObject {
     }
 
     private static func branchStamp() -> String {
+        branchStampFormatter.string(from: Date())
+    }
+
+    private static let branchStampFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyyMMdd-HHmmss"
-        return formatter.string(from: Date())
+        return formatter
+    }()
+
+    private var nextBranchCleanup = Date.distantPast
+
+    /// Deletes the app's "tm-app-" branches on the user's fork once they're done with:
+    /// their PR was merged or closed, or (no PR at all, after a failed send) the branch is
+    /// over a day old. A branch with an open PR is never touched, and nothing else on the
+    /// fork is. Runs at most every 6 hours; best effort.
+    func deleteFinishedBranches() async {
+        guard isSignedIn, Date() >= nextBranchCleanup else { return }
+        nextBranchCleanup = Date().addingTimeInterval(6 * 3600)
+        await ensureLogin()
+        guard let login else { return }
+        let fork = "\(login)/UserData"
+        struct Branch: Decodable { let name: String }
+        struct PR: Decodable { let state: String }
+        guard let data = try? await api("GET", "/repos/\(fork)/branches?per_page=100", quietStatuses: [403, 404, 429, 503]),
+              let branches = try? JSONDecoder().decode([Branch].self, from: data) else { return }
+        var deleted = 0
+        for branch in branches.map(\.name) where branch.hasPrefix("tm-app-") {
+            guard let prData = try? await api("GET", "/repos/\(Self.upstream)/pulls?state=all&head=\(login):\(branch)",
+                                              quietStatuses: [403, 422, 429, 503]),
+                  let prs = try? JSONDecoder().decode([PR].self, from: prData) else { return }
+            if prs.contains(where: { $0.state == "open" }) { continue }
+            if prs.isEmpty {
+                // Maybe a send in progress on another device — leave fresh branches alone
+                guard let created = Self.branchStampFormatter.date(from: String(branch.dropFirst("tm-app-".count))),
+                      Date().timeIntervalSince(created) > 24 * 3600 else { continue }
+            }
+            if (try? await api("DELETE", "/repos/\(fork)/git/refs/heads/\(branch)", quietStatuses: [403, 404, 422, 429, 503])) != nil {
+                deleted += 1
+            }
+        }
+        if deleted > 0 { breadcrumb("Deleted \(deleted) finished app branches") }
     }
 
     /// Moves the token into (or out of) iCloud Keychain. Turning sync off signs the
