@@ -887,14 +887,35 @@ final class GitHubService: ObservableObject {
 
     private var nextBranchCleanup = Date.distantPast
 
+    /// What happens on the user's fork once an app pull request is finished
+    /// (Settings › GitHub › Finished Pull Requests). Stored per device.
+    enum BranchCleanup: String, CaseIterable, Identifiable {
+        case syncAndDelete, deleteOnly, off
+        static let storageKey = "githubBranchCleanup"
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .syncAndDelete: return "Delete Branch & Update Fork"
+            case .deleteOnly: return "Delete Branch Only"
+            case .off: return "Leave Everything"
+            }
+        }
+        static var current: BranchCleanup {
+            UserDefaults.standard.string(forKey: storageKey).flatMap(BranchCleanup.init) ?? .syncAndDelete
+        }
+    }
+
     /// Tidies the app's "tm-app-" branches on the user's fork. When a branch's PR has been
-    /// merged into TravelMapping/UserData, the fork's default branch is synced with it
-    /// first (so the fork has those changes) and then the branch is deleted. A branch whose
+    /// merged into TravelMapping/UserData, the fork's default branch is fast-forwarded to
+    /// it first (only when that branch has no commits of its own) and then the branch is
+    /// deleted. A branch whose
     /// PR was closed unmerged — or that never got a PR (a failed send) and is over a day
     /// old — is deleted without a sync. Branches with an open PR, and anything the app
     /// didn't create, are never touched. Runs at most every 6 hours; best effort.
+    /// `BranchCleanup` can skip the fork update, or turn all of this off.
     func deleteFinishedBranches() async {
-        guard isSignedIn, Date() >= nextBranchCleanup else { return }
+        let mode = BranchCleanup.current
+        guard mode != .off, isSignedIn, Date() >= nextBranchCleanup else { return }
         nextBranchCleanup = Date().addingTimeInterval(6 * 3600)
         await ensureLogin()
         guard let login else { return }
@@ -922,16 +943,29 @@ final class GitHubService: ObservableObject {
             }
         }
 
-        // Merged changes are in TravelMapping's master now: sync the fork's default branch
-        // with it before those branches go. If the sync fails (e.g. the fork's branch has
-        // diverged), keep them for a later try.
+        // Merged changes are in TravelMapping's master now: bring the fork's default branch
+        // up to them before those branches go — but only as a fast-forward. If that branch
+        // has commits of its own (work the user hasn't sent yet), it's left exactly as it
+        // is: no merge commit on top of their work. The merged branches can still go, since
+        // their changes are upstream. If GitHub can't be checked, keep them for a later try.
         var toDelete = abandoned
-        if !merged.isEmpty {
+        if mode == .deleteOnly {
+            toDelete += merged
+        } else if !merged.isEmpty {
             struct Repo: Decodable { let default_branch: String }
+            struct Compare: Decodable { let ahead_by: Int }
             if let repoData = try? await api("GET", "/repos/\(fork)", quietStatuses: [403, 404, 429, 503]),
                let repo = try? JSONDecoder().decode(Repo.self, from: repoData),
-               (try? await api("POST", "/repos/\(fork)/merge-upstream", body: ["branch": repo.default_branch],
-                               quietStatuses: [403, 404, 409, 422, 429, 503])) != nil {
+               // ahead_by = commits on the fork's branch that TravelMapping's master lacks
+               let compareData = try? await api("GET", "/repos/\(Self.upstream)/compare/master...\(login):UserData:\(repo.default_branch)",
+                                                quietStatuses: [403, 404, 422, 429, 503]),
+               let compare = try? JSONDecoder().decode(Compare.self, from: compareData) {
+                if compare.ahead_by == 0 {
+                    _ = try? await api("POST", "/repos/\(fork)/merge-upstream", body: ["branch": repo.default_branch],
+                                       quietStatuses: [403, 404, 409, 422, 429, 503])
+                } else {
+                    breadcrumb("Fork's default branch has its own commits; not syncing it")
+                }
                 toDelete += merged
             }
         }

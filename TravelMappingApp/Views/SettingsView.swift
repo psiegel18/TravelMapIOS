@@ -385,6 +385,7 @@ struct MapAppearanceSettingsView: View {
 struct GitHubSettingsView: View {
     @ObservedObject private var github = GitHubService.shared
     @AppStorage("listAppendOnly") private var listAppendOnly = false
+    @AppStorage(GitHubService.BranchCleanup.storageKey) private var branchCleanup = GitHubService.BranchCleanup.syncAndDelete
     @State private var showGitHubSignIn = false
     @State private var githubSyncUnavailable = false
 
@@ -427,6 +428,22 @@ struct GitHubSettingsView: View {
                         ? "Lets the app open .list update pull requests for your recorded trips. Your GitHub token is in your iCloud Keychain (end-to-end encrypted) and syncs to your other devices."
                         : "Lets the app open .list update pull requests for your recorded trips. Your GitHub token stays in this device's Keychain.")
                      : "How recorded-trip segments are added to your .list file.")
+                }
+            }
+            if github.isConfigured && github.isSignedIn {
+                Section {
+                    Picker("Finished Pull Requests", selection: $branchCleanup) {
+                        ForEach(GitHubService.BranchCleanup.allCases) { Text($0.title).tag($0) }
+                    }
+                } footer: {
+                    switch branchCleanup {
+                    case .syncAndDelete:
+                        Text("Once a pull request is merged, the app deletes its branch on your UserData fork and brings your fork's main branch up to date with TravelMapping. If your main branch has commits of its own, it's left as is. Branches of closed pull requests are deleted.")
+                    case .deleteOnly:
+                        Text("Once a pull request is merged or closed, the app deletes its branch on your UserData fork. Your fork's main branch is never changed.")
+                    case .off:
+                        Text("The app never deletes branches or changes your UserData fork. Tidy it yourself on GitHub.")
+                    }
                 }
             }
         }
