@@ -887,11 +887,12 @@ final class GitHubService: ObservableObject {
 
     private var nextBranchCleanup = Date.distantPast
 
-    /// Syncs the fork's default branch with TravelMapping/UserData, then deletes the app's
-    /// "tm-app-" branches on the user's fork once they're done with:
-    /// their PR was merged or closed, or (no PR at all, after a failed send) the branch is
-    /// over a day old. A branch with an open PR is never touched, and nothing else on the
-    /// fork is. Runs at most every 6 hours; best effort.
+    /// Tidies the app's "tm-app-" branches on the user's fork. When a branch's PR has been
+    /// merged into TravelMapping/UserData, the fork's default branch is synced with it
+    /// first (so the fork has those changes) and then the branch is deleted. A branch whose
+    /// PR was closed unmerged — or that never got a PR (a failed send) and is over a day
+    /// old — is deleted without a sync. Branches with an open PR, and anything the app
+    /// didn't create, are never touched. Runs at most every 6 hours; best effort.
     func deleteFinishedBranches() async {
         guard isSignedIn, Date() >= nextBranchCleanup else { return }
         nextBranchCleanup = Date().addingTimeInterval(6 * 3600)
@@ -899,30 +900,43 @@ final class GitHubService: ObservableObject {
         guard let login else { return }
         let fork = "\(login)/UserData"
         struct Branch: Decodable { let name: String }
-        struct PR: Decodable { let state: String }
+        struct PR: Decodable { let state: String; let merged_at: String? }
         guard let data = try? await api("GET", "/repos/\(fork)/branches?per_page=100", quietStatuses: [403, 404, 429, 503]),
               let branches = try? JSONDecoder().decode([Branch].self, from: data) else { return }
-        // Bring the fork's own default branch up to date with TravelMapping's first, so
-        // what the merged PRs changed is on it before their branches go. (Not a merge of
-        // the PR branches themselves: an unmerged one would leave the fork disagreeing
-        // with the file TravelMapping actually reads, and break the next Sync fork.)
-        struct Repo: Decodable { let default_branch: String }
-        if let repoData = try? await api("GET", "/repos/\(fork)", quietStatuses: [403, 404, 429, 503]),
-           let repo = try? JSONDecoder().decode(Repo.self, from: repoData) {
-            _ = try? await api("POST", "/repos/\(fork)/merge-upstream", body: ["branch": repo.default_branch],
-                               quietStatuses: [403, 404, 409, 422, 429, 503])
-        }
-        var deleted = 0
+
+        var merged: [String] = []
+        var abandoned: [String] = []
         for branch in branches.map(\.name) where branch.hasPrefix("tm-app-") {
             guard let prData = try? await api("GET", "/repos/\(Self.upstream)/pulls?state=all&head=\(login):\(branch)",
                                               quietStatuses: [403, 422, 429, 503]),
                   let prs = try? JSONDecoder().decode([PR].self, from: prData) else { return }
             if prs.contains(where: { $0.state == "open" }) { continue }
-            if prs.isEmpty {
-                // Maybe a send in progress on another device — leave fresh branches alone
-                guard let created = Self.branchStampFormatter.date(from: String(branch.dropFirst("tm-app-".count))),
-                      Date().timeIntervalSince(created) > 24 * 3600 else { continue }
+            if prs.contains(where: { $0.merged_at != nil }) {
+                merged.append(branch)
+            } else if !prs.isEmpty {
+                abandoned.append(branch)
+            } else if let created = Self.branchStampFormatter.date(from: String(branch.dropFirst("tm-app-".count))),
+                      Date().timeIntervalSince(created) > 24 * 3600 {
+                // No PR — a send that failed partway. Fresh ones may be another device mid-send.
+                abandoned.append(branch)
             }
+        }
+
+        // Merged changes are in TravelMapping's master now: sync the fork's default branch
+        // with it before those branches go. If the sync fails (e.g. the fork's branch has
+        // diverged), keep them for a later try.
+        var toDelete = abandoned
+        if !merged.isEmpty {
+            struct Repo: Decodable { let default_branch: String }
+            if let repoData = try? await api("GET", "/repos/\(fork)", quietStatuses: [403, 404, 429, 503]),
+               let repo = try? JSONDecoder().decode(Repo.self, from: repoData),
+               (try? await api("POST", "/repos/\(fork)/merge-upstream", body: ["branch": repo.default_branch],
+                               quietStatuses: [403, 404, 409, 422, 429, 503])) != nil {
+                toDelete += merged
+            }
+        }
+        var deleted = 0
+        for branch in toDelete {
             if (try? await api("DELETE", "/repos/\(fork)/git/refs/heads/\(branch)", quietStatuses: [403, 404, 422, 429, 503])) != nil {
                 deleted += 1
             }
