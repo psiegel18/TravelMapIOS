@@ -954,9 +954,9 @@ struct PrivacyPolicyView: View {
                     Text("The app fetches public data from:")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    serviceRow("travelmapping.net", desc: "Route data & statistics")
-                    serviceRow("tmrail.teresco.org", desc: "Rail route data")
-                    serviceRow("GitHub", desc: "User travel list files")
+                    serviceRow("travelmapping.net", desc: "Route data, statistics & your nightly update log")
+                    serviceRow("tmrail.teresco.org", desc: "Rail route data & your nightly update log")
+                    serviceRow("GitHub", desc: "User travel list files & usernames")
                     serviceRow("Apple Maps", desc: "Route Planner directions & address suggestions")
                     Text("No personal information is sent to the developer. The app has no accounts of its own. GitHub and AI providers are contacted only if you turn on the optional features below.")
                         .font(.caption)
@@ -965,9 +965,10 @@ struct PrivacyPolicyView: View {
                 }
 
                 policyCard(color: .purple, title: "Optional GitHub Sign-In", icon: { GitHubMark() }) {
-                    bullet("Off unless you sign in under Settings › GitHub")
+                    bullet("Off unless you sign in under Settings › GitHub. Without it, the app still builds your updated file for you to copy")
                     bullet("You approve access on github.com. Your password never passes through the app")
-                    bullet("Used only to fork TravelMapping/UserData, commit your updated .list file, and open a pull request")
+                    bullet("Used only on your UserData fork and the app's pull requests: fork, commit your updated .list or .rlist, open a pull request, add later updates to one still open, and check whether it was merged")
+                    bullet("Finished PRs (your choice): delete the app's branches once their pull request is done, and update your fork's main branch only if it has no changes of its own")
                     bullet("Token stored in your Keychain and sent only to api.github.com. Syncs through iCloud Keychain only if you turn that on")
                     bullet("Pull requests are public on GitHub, like any UserData contribution")
                 }
@@ -1014,7 +1015,7 @@ struct PrivacyPolicyView: View {
 
                 policyCard(icon: "externaldrive.fill", color: .indigo, title: "Data Storage") {
                     storagePill(icon: "iphone", label: "Device", detail: "Preferences, favorites, cache, trips")
-                    storagePill(icon: "icloud", label: "iCloud", detail: "Favorites, preferences & trips (optional)")
+                    storagePill(icon: "icloud", label: "iCloud", detail: "Favorites, preferences, trips, your app pull requests & \"Didn't Travel\" choices (optional)")
                     storagePill(icon: "key.fill", label: "Keychain", detail: "GitHub token & AI key, if added (iCloud Keychain sync optional)")
                     storagePill(icon: "server.rack", label: "Sentry", detail: "Anonymous crash, performance, and session replay data (no PII)")
                 }
@@ -1035,7 +1036,7 @@ struct PrivacyPolicyView: View {
 
                 // Footer
                 VStack(spacing: 4) {
-                    Text("Last updated: October 26, 2026")
+                    Text("Last updated: October 29, 2026")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                     Link("View web version", destination: URL(string: "https://travel.psiegel.org/PRIVACY")!)
