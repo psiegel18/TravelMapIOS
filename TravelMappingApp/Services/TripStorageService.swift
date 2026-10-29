@@ -387,7 +387,7 @@ enum TripLogAnalyzer {
         }
         // A hop another trip did drive end to end isn't "left out"
         return TripLogAnalysis(ranges: ranges, unresolvedCount: unresolved,
-                               unverifiedCount: unverified.subtracting(seenHops).count)
+                               unverifiedCount: unverified.subtracting(seenHops).subtracting(submitted).count)
     }
 
     /// Hops the GPS track really drove. The live matcher accepts any segment the track runs

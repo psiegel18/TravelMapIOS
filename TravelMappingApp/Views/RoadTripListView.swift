@@ -45,7 +45,7 @@ struct RoadTripListView: View {
                 } else {
                     if searchText.isEmpty && !isLoading {
                         heroCard
-                        if !settings.primaryUser.isEmpty && !isLoading {
+                        if !settings.primaryUser.isEmpty {
                             actionTiles
                         }
                     }
