@@ -469,9 +469,9 @@ final class GitHubService: ObservableObject {
         if isSignedIn && login == nil { try? await refreshLogin() }
     }
 
-    private func refreshLogin() async throws {
+    private func refreshLogin(quietStatuses: Set<Int> = []) async throws {
         struct User: Decodable { let login: String }
-        let user = try JSONDecoder().decode(User.self, from: try await api("GET", "/user"))
+        let user = try JSONDecoder().decode(User.self, from: try await api("GET", "/user", quietStatuses: quietStatuses))
         login = user.login
         UserDefaults.standard.set(user.login, forKey: "githubLogin")
     }
@@ -643,7 +643,9 @@ final class GitHubService: ObservableObject {
     /// A title the app wrote (so it's safe to rewrite), not one the user typed
     static func isAutoTitle(_ title: String, username: String) -> Bool {
         title.hasPrefix("\(username): ")
-            && title.dropFirst(username.count + 2).range(of: #"^((Add|Fix) \d+ |Update list)"#, options: .regularExpression) != nil
+            && title.dropFirst(username.count + 2).range(
+                of: #"^((Add \d+ lines?(, fix \d+ lines?)?|Fix \d+ lines?|Update list)( \([^)]*\))?|Add \d+ (more )?recorded segments?( from .*)?)$"#,
+                options: .regularExpression) != nil
     }
 
     /// Current title of a PR, to prefill the title field when adding to it
@@ -879,7 +881,9 @@ final class GitHubService: ObservableObject {
     private static func scrubbed(_ path: String, login: String?) -> String {
         var path = path.components(separatedBy: "?").first ?? path
         if let login, !login.isEmpty { path = path.replacingOccurrences(of: "/repos/\(login)/", with: "/repos/{login}/") }
-        return path.replacingOccurrences(of: #"/[^/]+\.(r?list)$"#, with: "/{user}.$1", options: .regularExpression)
+        // Cross-repo compare: ".../compare/master...login:UserData:master"
+        path = path.replacingOccurrences(of: #"\.\.\.[^:/]+:"#, with: "...{login}:", options: .regularExpression)
+        return path.replacingOccurrences(of: #"/[^/]+\.([rf]?list)$"#, with: "/{user}.$1", options: .regularExpression)
     }
 
     private func formPost(_ url: String, _ fields: [String: String]) async throws -> Data {
@@ -934,6 +938,9 @@ final class GitHubService: ObservableObject {
         }
     }
 
+    /// A changed Finished PRs setting applies on the next Road Trips load, not in 6 hours
+    func runBranchCleanupSoon() { nextBranchCleanup = .distantPast }
+
     /// Tidies the app's "tm-app-" branches on the user's fork. When a branch's PR has been
     /// merged into TravelMapping/UserData, the fork's default branch is fast-forwarded to
     /// it first (only when that branch has no commits of its own) and then the branch is
@@ -946,10 +953,13 @@ final class GitHubService: ObservableObject {
         let mode = BranchCleanup.current
         guard mode != .off, isSignedIn, Date() >= nextBranchCleanup else { return }
         nextBranchCleanup = Date().addingTimeInterval(6 * 3600)
+        // Offline or GitHub hiccup before the branches could be listed: try again soon
+        var listed = false
+        defer { if !listed { nextBranchCleanup = Date().addingTimeInterval(15 * 60) } }
         // Fresh login, not the cached one: after a GitHub rename the old name still
         // redirects for branches and deletes, but no longer matches its PRs, so every
         // branch would look PR-less. And only ever touch the real fork of UserData.
-        try? await refreshLogin()
+        try? await refreshLogin(quietStatuses: [403, 429, 503])
         guard let login else { return }
         struct Repo: Decodable {
             struct Owner: Decodable { let login: String }
@@ -968,6 +978,7 @@ final class GitHubService: ObservableObject {
         struct PR: Decodable { let state: String; let merged_at: String? }
         guard let data = try? await api("GET", "/repos/\(fork)/branches?per_page=100", quietStatuses: [403, 404, 429, 503]),
               let branches = try? JSONDecoder().decode([Branch].self, from: data) else { return }
+        listed = true
 
         var merged: [String] = []
         var abandoned: [String] = []

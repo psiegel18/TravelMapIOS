@@ -1192,8 +1192,12 @@ struct ListUpdateSheet: View {
                     .onChange(of: prTitle) {
                         // Return dismisses rather than inserting a newline GitHub would reject
                         if prTitle.contains(where: \.isNewline) {
-                            prTitle = prTitle.filter { !$0.isNewline }
-                            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                            let pressedReturn = prTitle.last?.isNewline == true && prTitle.filter(\.isNewline).count == 1
+                            prTitle = String(prTitle.map { $0.isNewline ? " " : $0 })  // pasted lines stay apart
+                            if pressedReturn {
+                                prTitle = prTitle.trimmingCharacters(in: .whitespaces)
+                                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                            }
                         }
                     }
                     .font(.system(size: 15))

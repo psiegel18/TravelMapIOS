@@ -414,20 +414,25 @@ struct GitHubSettingsView: View {
                         }
                     }
                 }
-                Picker("New lines go", selection: $listAppendOnly) {
-                    Text("Where they fit in my file").tag(false)
-                    Text("In a block at the end").tag(true)
-                }
             } footer: {
                 if githubSyncUnavailable {
                     Text("iCloud Keychain isn't available, so you're signed in on this device only. Turn it on in Settings › [your name] › iCloud › Passwords and Keychain.")
                         .foregroundStyle(TMDesign.rail)
-                } else {
-                Text(github.isConfigured
-                     ? (github.syncsAcrossDevices
-                        ? "Lets the app open .list update pull requests for your recorded trips. Your GitHub token is in your iCloud Keychain (end-to-end encrypted) and syncs to your other devices."
-                        : "Lets the app open .list update pull requests for your recorded trips. Your GitHub token stays in this device's Keychain.")
-                     : "How recorded-trip segments are added to your .list file.")
+                } else if github.isConfigured {
+                    Text(github.syncsAcrossDevices
+                         ? "Lets the app open .list update pull requests for your recorded trips. Your GitHub token is in your iCloud Keychain (end-to-end encrypted) and syncs to your other devices."
+                         : "Lets the app open .list update pull requests for your recorded trips. Your GitHub token stays in this device's Keychain.")
+                }
+            }
+            // Signed out, only the sign-in shows; the rest appears once signed in
+            if github.isSignedIn || !github.isConfigured {
+                Section {
+                    Picker("New lines go", selection: $listAppendOnly) {
+                        Text("Where they fit in my file").tag(false)
+                        Text("In a block at the end").tag(true)
+                    }
+                } footer: {
+                    Text("How recorded-trip segments are added to your .list file.")
                 }
             }
             if github.isConfigured && github.isSignedIn {
@@ -435,6 +440,7 @@ struct GitHubSettingsView: View {
                     Picker("Finished PRs", selection: $branchCleanup) {
                         ForEach(GitHubService.BranchCleanup.allCases) { Text($0.title).tag($0) }
                     }
+                    .onChange(of: branchCleanup) { github.runBranchCleanupSoon() }
                 } footer: {
                     switch branchCleanup {
                     case .syncAndDelete:
