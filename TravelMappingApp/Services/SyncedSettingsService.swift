@@ -53,6 +53,11 @@ class SyncedSettingsService: ObservableObject {
     @Published var favoriteRegions: [String] {
         didSet { save("favoriteRegions", favoriteRegions) }
     }
+    /// Recorded-trip hops ("root|start|end") the user said they didn't travel, so they
+    /// stay out of pending .list updates — for parallel roads the GPS check can't tell apart
+    @Published var dismissedHopKeys: [String] {
+        didSet { save("dismissedHopKeys", dismissedHopKeys) }
+    }
 
     private init() {
         // Load from iCloud, fall back to local, then defaults
@@ -66,6 +71,7 @@ class SyncedSettingsService: ObservableObject {
         untraveledVisibility = Self.load("untraveledVisibility") ?? 0.8
         recentUsers = Self.load("recentUsers") ?? []
         favoriteRegions = Self.load("favoriteRegions") ?? []
+        dismissedHopKeys = Self.load("dismissedHopKeys") ?? []
 
         // Sync cloud → local on external changes
         NotificationCenter.default.addObserver(
@@ -103,6 +109,17 @@ class SyncedSettingsService: ObservableObject {
 
     func isFavoriteRegion(_ region: String) -> Bool {
         favoriteRegions.contains(region)
+    }
+
+    // MARK: - Dismissed trip segments
+
+    func dismissHops(_ keys: [String]) {
+        dismissedHopKeys = Array(Set(dismissedHopKeys).union(keys)).sorted()
+    }
+
+    func restoreHops(_ keys: [String]) {
+        let restored = Set(keys)
+        dismissedHopKeys.removeAll { restored.contains($0) }
     }
 
     // MARK: - Private
@@ -171,6 +188,7 @@ class SyncedSettingsService: ObservableObject {
         if let v: Double = Self.load("untraveledVisibility"), v != untraveledVisibility { untraveledVisibility = v }
         if let v: [String] = Self.load("recentUsers"), v != recentUsers { recentUsers = v }
         if let v: [String] = Self.load("favoriteRegions"), v != favoriteRegions { favoriteRegions = v }
+        if let v: [String] = Self.load("dismissedHopKeys"), v != dismissedHopKeys { dismissedHopKeys = v }
         syncPreferencesContext()
     }
 

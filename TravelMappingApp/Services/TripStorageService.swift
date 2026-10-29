@@ -178,14 +178,18 @@ actor TripStorageService {
         }
     }
 
-    /// Export the trip's matched segments as a .list file, return the file URL.
-    func exportListFile(for trip: RoadTrip) async throws -> URL {
+    /// Export the trip's matched segments as a .list file, return the file URL. `excluding`
+    /// takes hop keys ("root|start|end") the user marked not traveled.
+    func exportListFile(for trip: RoadTrip, excluding dismissed: Set<String> = []) async throws -> URL {
         let dir = await tripsDirectory()
-        let content = ListFileGenerator.generate(from: trip.matchedSegments, tripName: trip.name)
+        let segments = trip.matchedSegments.filter {
+            !dismissed.contains("\($0.root)|\($0.startWaypoint)|\($0.endWaypoint)")
+        }
+        let content = ListFileGenerator.generate(from: segments, tripName: trip.name)
         let fileURL = dir.appendingPathComponent("\(trip.id.uuidString).list")
         try content.write(to: fileURL, atomically: true, encoding: .utf8)
         SentrySDK.logger.info("Trip exported to .list", attributes: [
-            "segmentCount": trip.matchedSegments.count,
+            "segmentCount": segments.count,
             "bytes": content.utf8.count,
             "tripType": trip.tripType == .rail ? "rail" : "road",
         ])
@@ -213,6 +217,7 @@ struct TripLogRange: Identifiable, Sendable {
         case new        // traveled, not in the .list
         case submitted  // user marked it as sent in a .list update, DB not caught up yet
         case logged     // DB already reports it clinched
+        case dismissed  // user said they didn't travel it (a parallel road the GPS check let through)
     }
 
     let root: String
@@ -244,6 +249,7 @@ struct TripLogAnalysis: Sendable {
     var newRanges: [TripLogRange] { ranges.filter { $0.status == .new } }
     var submittedRanges: [TripLogRange] { ranges.filter { $0.status == .submitted } }
     var loggedRanges: [TripLogRange] { ranges.filter { $0.status == .logged } }
+    var dismissedRanges: [TripLogRange] { ranges.filter { $0.status == .dismissed } }
 }
 
 /// Compares recorded trips against the traveler's clinched segments so only the
@@ -252,8 +258,10 @@ enum TripLogAnalyzer {
 
     /// All trips must share a trip type (roads and rail live in different list files).
     /// `submittedKeys` should come from `TripStorageService.submittedHopKeys` — the
-    /// submissions of every trip, not just the ones analyzed.
-    static func analyze(trips: [RoadTrip], username: String, submittedKeys: Set<String>) async throws -> TripLogAnalysis {
+    /// submissions of every trip, not just the ones analyzed. `dismissedKeys` are hops the
+    /// user marked not traveled (`SyncedSettingsService.dismissedHopKeys`).
+    static func analyze(trips: [RoadTrip], username: String, submittedKeys: Set<String>,
+                        dismissedKeys: Set<String> = []) async throws -> TripLogAnalysis {
         let api: TravelMappingAPI = trips.first?.tripType == .rail ? .rail : .shared
         let roots = Array(Set(trips.flatMap { $0.matchedSegments.map(\.root) })).sorted()
         guard !roots.isEmpty else { return TripLogAnalysis(ranges: [], unresolvedCount: 0) }
@@ -317,7 +325,8 @@ enum TripLogAnalyzer {
                         continue
                     }
                     let status: TripLogRange.Status = hop.isClinched ? .logged
-                        : submitted.contains(hop.id) ? .submitted : .new
+                        : submitted.contains(hop.id) ? .submitted
+                        : dismissedKeys.contains(hop.id) ? .dismissed : .new
 
                     // Extend the latest range when this hop continues it in either direction
                     if var last = builders.last, last.root == hop.root, last.status == status {
@@ -387,7 +396,7 @@ enum TripLogAnalyzer {
         }
         // A hop another trip did drive end to end isn't "left out"
         return TripLogAnalysis(ranges: ranges, unresolvedCount: unresolved,
-                               unverifiedCount: unverified.subtracting(seenHops).subtracting(submitted).count)
+                               unverifiedCount: unverified.subtracting(seenHops).subtracting(submitted).subtracting(dismissedKeys).count)
     }
 
     /// Hops the GPS track really drove. The live matcher accepts any segment the track runs
