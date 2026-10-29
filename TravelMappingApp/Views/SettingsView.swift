@@ -389,6 +389,18 @@ struct GitHubSettingsView: View {
     @State private var showGitHubSignIn = false
     @State private var githubSyncUnavailable = false
 
+    /// Finished PRs explanation, under the account section
+    private var branchCleanupNote: String {
+        switch branchCleanup {
+        case .syncAndDelete:
+            return "Finished PRs: once a pull request is merged, the app deletes its branch on your UserData fork and brings your fork's main branch up to date with TravelMapping. If your main branch has commits of its own, it's left as is. Branches of closed pull requests are deleted."
+        case .deleteOnly:
+            return "Finished PRs: once a pull request is merged or closed, the app deletes its branch on your UserData fork. Your fork's main branch is never changed."
+        case .off:
+            return "Finished PRs: the app never deletes branches or changes your UserData fork. Tidy it yourself on GitHub."
+        }
+    }
+
     var body: some View {
         Form {
             Section {
@@ -403,6 +415,10 @@ struct GitHubSettingsView: View {
                                 githubSyncUnavailable = on && !github.syncsAcrossDevices
                             }
                         ))
+                        Picker("Finished PRs", selection: $branchCleanup) {
+                            ForEach(GitHubService.BranchCleanup.allCases) { Text($0.title).tag($0) }
+                        }
+                        .onChange(of: branchCleanup) { github.runBranchCleanupSoon() }
                         Button(github.syncsAcrossDevices ? "Sign Out on All Devices" : "Sign Out of GitHub", role: .destructive) {
                             github.signOut()
                         }
@@ -419,38 +435,22 @@ struct GitHubSettingsView: View {
                     Text("iCloud Keychain isn't available, so you're signed in on this device only. Turn it on in Settings › [your name] › iCloud › Passwords and Keychain.")
                         .foregroundStyle(TMDesign.rail)
                 } else if github.isConfigured {
-                    Text(github.syncsAcrossDevices
-                         ? "Lets the app open .list update pull requests for your recorded trips. Your GitHub token is in your iCloud Keychain (end-to-end encrypted) and syncs to your other devices."
-                         : "Lets the app open .list update pull requests for your recorded trips. Your GitHub token stays in this device's Keychain.")
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(github.syncsAcrossDevices
+                             ? "Lets the app open .list update pull requests for your recorded trips. Your GitHub token is in your iCloud Keychain (end-to-end encrypted) and syncs to your other devices."
+                             : "Lets the app open .list update pull requests for your recorded trips. Your GitHub token stays in this device's Keychain.")
+                        if github.isSignedIn { Text(branchCleanupNote) }
+                    }
                 }
             }
-            // Signed out, only the sign-in shows; the rest appears once signed in
-            if github.isSignedIn || !github.isConfigured {
-                Section {
-                    Picker("New lines go", selection: $listAppendOnly) {
-                        Text("Where they fit in my file").tag(false)
-                        Text("In a block at the end").tag(true)
-                    }
-                } footer: {
-                    Text("How recorded-trip segments are added to your .list file.")
+            // Also shapes the merged file you can copy without signing in
+            Section {
+                Picker("New lines go", selection: $listAppendOnly) {
+                    Text("Where they fit in my file").tag(false)
+                    Text("In a block at the end").tag(true)
                 }
-            }
-            if github.isConfigured && github.isSignedIn {
-                Section {
-                    Picker("Finished PRs", selection: $branchCleanup) {
-                        ForEach(GitHubService.BranchCleanup.allCases) { Text($0.title).tag($0) }
-                    }
-                    .onChange(of: branchCleanup) { github.runBranchCleanupSoon() }
-                } footer: {
-                    switch branchCleanup {
-                    case .syncAndDelete:
-                        Text("Once a pull request is merged, the app deletes its branch on your UserData fork and brings your fork's main branch up to date with TravelMapping. If your main branch has commits of its own, it's left as is. Branches of closed pull requests are deleted.")
-                    case .deleteOnly:
-                        Text("Once a pull request is merged or closed, the app deletes its branch on your UserData fork. Your fork's main branch is never changed.")
-                    case .off:
-                        Text("The app never deletes branches or changes your UserData fork. Tidy it yourself on GitHub.")
-                    }
-                }
+            } footer: {
+                Text("How recorded-trip segments are added to your .list file.")
             }
         }
         .navigationTitle("GitHub")
