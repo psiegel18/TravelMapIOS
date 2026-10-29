@@ -1299,8 +1299,6 @@ final class AIService: ObservableObject {
             syncsAcrossDevices = false
             return
         }
-        hasKey = true
-        syncsAcrossDevices = stored.synced
         // Key arrived from another device through iCloud Keychain: adopt its settings.
         // Permission to share data is still asked on this device.
         if provider == nil, let json = Self.configItem.read()?.value,
@@ -1312,6 +1310,9 @@ final class AIService: ObservableObject {
             defaults.set(config.provider, forKey: "aiProvider")
             defaults.set(config.baseURL, forKey: "aiBaseURL")
         }
+        // After adopting: model's didSet would otherwise re-save the config item it was just read from
+        hasKey = true
+        syncsAcrossDevices = stored.synced
         // Consent is tied to the provider + host it was given for
         if consentDate == nil, let stored = defaults.string(forKey: "aiConsentScope"), stored == consentScope,
            let date = defaults.object(forKey: "aiConsentDate") as? Date {

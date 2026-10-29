@@ -264,9 +264,9 @@ struct SettingsView: View {
                 dataService.loadUserList()
             }
         }
-        // Checked once editing ends (or a suggestion is picked), not on every letter
         // A synced AI key can land after launch
         .onAppear { ai.refreshFromKeychain() }
+        // Checked once editing ends (or a suggestion is picked), not on every letter
         .task(id: "\(settings.primaryUser)|\(usernameFocused)") {
             let username = settings.primaryUser.trimmingCharacters(in: .whitespaces)
             guard !username.isEmpty else {
@@ -1642,11 +1642,16 @@ struct AISettingsView: View {
             let hadProvider = ai.provider != nil
             ai.refreshFromKeychain()
             // Settings just adopted from a synced key: show them instead of the picker default
-            if !hadProvider, let adopted = ai.provider { provider = adopted }
+            if !hadProvider, let adopted = ai.provider {
+                provider = adopted
+                customBaseURL = UserDefaults.standard.string(forKey: "aiBaseURL") ?? ""
+            }
             // A key from another device still needs this device's permission: ask right
             // away (once per visit) instead of leaving the button below the fold
             if !promptedForConsent, ai.hasKey, ai.provider != nil, ai.isEnabled, ai.consentDate == nil {
                 promptedForConsent = true
+                // Let the navigation push finish, or the sheet can be dropped
+                try? await Task.sleep(for: .milliseconds(350))
                 showConsent = true
             }
             guard ai.hasKey, !editingNewProvider else { return }
