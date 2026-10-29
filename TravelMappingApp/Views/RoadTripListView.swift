@@ -463,8 +463,9 @@ struct RoadTripListView: View {
         }
         let roadKeys = await storage.submittedHopKeys(fileExtension: "list")
         let railKeys = await storage.submittedHopKeys(fileExtension: "rlist")
+        let dismissed = Set(settings.dismissedHopKeys)
         let waiting = await storage.listSubmissions().reduce(0) { $0 + $1.lines.count }
-        let signature = "\(waiting)|\(username)|\(candidates.map { "\($0.id)\($0.matchedSegments.count)" }.sorted().joined())|\(roadKeys.count)|\(railKeys.count)"
+        let signature = "\(waiting)|\(username)|\(candidates.map { "\($0.id)\($0.matchedSegments.count)" }.sorted().joined())|\(roadKeys.count)|\(railKeys.count)|\(dismissed.count)"
         guard signature != summarySignature || pendingSummary == nil || pendingCheckFailed else { return }
 
         var lines = 0
@@ -477,7 +478,7 @@ struct RoadTripListView: View {
             guard !typed.isEmpty else { continue }
             guard let analysis = try? await TripLogAnalyzer.analyze(
                     trips: typed, username: username,
-                    submittedKeys: type == .rail ? railKeys : roadKeys) else {
+                    submittedKeys: type == .rail ? railKeys : roadKeys, dismissedKeys: dismissed) else {
                 failed = true
                 continue
             }
@@ -682,6 +683,7 @@ struct PendingListUpdatesView: View {
     @State private var prStates: [Int: GitHubService.PRState] = [:]
     @State private var submissions: [ListSubmission] = []
     @State private var preview: RangePreview?
+    @ObservedObject private var settings = SyncedSettingsService.shared
 
     /// A pending line shown on the map of a trip that drove it, to check it's real
     struct RangePreview: Identifiable {
@@ -717,6 +719,36 @@ struct PendingListUpdatesView: View {
                         Text("All caught up — every recorded segment is in your list files or already submitted.")
                             .foregroundStyle(TMDesign.secondaryText)
                     }
+                }
+            }
+            let dismissed = (road?.dismissedRanges ?? []) + (rail?.dismissedRanges ?? [])
+            if !isLoading, !dismissed.isEmpty {
+                Section {
+                    ForEach(dismissed) { range in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(range.line.text)
+                                .font(.system(size: 14, design: .monospaced))
+                                .foregroundStyle(TMDesign.secondaryText)
+                            Text(tripNames(for: range))
+                                .font(.system(size: 12))
+                                .foregroundStyle(TMDesign.tertiaryText)
+                        }
+                        .swipeActions {
+                            Button("Restore") { setDismissed([range], false) }
+                                .tint(TMDesign.accent)
+                        }
+                        .contextMenu {
+                            Button {
+                                setDismissed([range], false)
+                            } label: {
+                                Label("Restore", systemImage: "arrow.uturn.backward")
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Didn't Travel")
+                } footer: {
+                    Text("Segments you said you didn't travel stay out of your updates. Swipe or touch and hold one to restore it.")
                 }
             }
             if !submissions.isEmpty {
@@ -841,6 +873,17 @@ struct PendingListUpdatesView: View {
                         }
                         previewButton(for: range)
                     }
+                    .swipeActions {
+                        Button("Didn't Travel") { setDismissed([range], true) }
+                            .tint(TMDesign.frontier)
+                    }
+                    .contextMenu {
+                        Button {
+                            setDismissed([range], true)
+                        } label: {
+                            Label("Didn't Travel This", systemImage: "eye.slash")
+                        }
+                    }
                 }
             }
         }
@@ -894,6 +937,21 @@ struct PendingListUpdatesView: View {
         await analyze()
     }
 
+    private func setDismissed(_ ranges: [TripLogRange], _ dismissed: Bool) {
+        let keys = ranges.flatMap(\.hopKeys)
+        if dismissed {
+            settings.dismissHops(keys)
+            excludedRangeIDs.subtract(ranges.map(\.id))
+        } else {
+            settings.restoreHops(keys)
+        }
+        Haptics.light()
+        Task {
+            await analyze()
+            await onTripsChanged()
+        }
+    }
+
     private func unmark(_ id: UUID) async {
         await TripStorageService.shared.removeSubmissions { $0.id == id }
         await analyze()
@@ -909,10 +967,12 @@ struct PendingListUpdatesView: View {
             let railTrips = candidates.filter { $0.tripType == .rail }
             road = roadTrips.isEmpty ? nil : try await TripLogAnalyzer.analyze(
                 trips: roadTrips, username: username,
-                submittedKeys: await storage.submittedHopKeys(fileExtension: "list"))
+                submittedKeys: await storage.submittedHopKeys(fileExtension: "list"),
+                dismissedKeys: Set(settings.dismissedHopKeys))
             rail = railTrips.isEmpty ? nil : try await TripLogAnalyzer.analyze(
                 trips: railTrips, username: username,
-                submittedKeys: await storage.submittedHopKeys(fileExtension: "rlist"))
+                submittedKeys: await storage.submittedHopKeys(fileExtension: "rlist"),
+                dismissedKeys: Set(settings.dismissedHopKeys))
 
             // Submissions whose every segment the database now reports as logged are done
             let logged = Set(((road?.loggedRanges ?? []) + (rail?.loggedRanges ?? [])).flatMap(\.hopKeys))

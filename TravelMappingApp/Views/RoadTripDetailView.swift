@@ -379,7 +379,8 @@ struct RoadTripDetailView: View {
             let fileExtension = isRail ? "rlist" : "list"
             let analysis = try await TripLogAnalyzer.analyze(
                 trips: [trip], username: username,
-                submittedKeys: await storage.submittedHopKeys(fileExtension: fileExtension)
+                submittedKeys: await storage.submittedHopKeys(fileExtension: fileExtension),
+                dismissedKeys: Set(settings.dismissedHopKeys)
             )
             let tripKeys = Set(analysis.ranges.flatMap(\.hopKeys))
             tripPRs = await storage.listSubmissions()
@@ -391,6 +392,18 @@ struct RoadTripDetailView: View {
             SentrySDK.capture(error: error)
             logAnalysisError = "Couldn't check your .list right now."
         }
+    }
+
+    private func setDismissed(_ ranges: [TripLogRange], _ dismissed: Bool) {
+        let keys = ranges.flatMap(\.hopKeys)
+        if dismissed {
+            settings.dismissHops(keys)
+            excludedRangeIDs.subtract(ranges.map(\.id))
+        } else {
+            settings.restoreHops(keys)
+        }
+        Haptics.light()
+        Task { await analyzeLog() }
     }
 
     private func markSubmitted(_ ranges: [TripLogRange], pr: ListUpdatePR?) {
@@ -428,6 +441,17 @@ struct RoadTripDetailView: View {
                            bg: TMDesign.greenChipBG, fg: TMDesign.greenChipFG)
                 }
 
+                if !analysis.dismissedRanges.isEmpty {
+                    HStack {
+                        Text("\(analysis.dismissedRanges.count.formatted()) marked not traveled")
+                            .font(.system(size: 13))
+                            .foregroundStyle(TMDesign.tertiaryText)
+                        Spacer()
+                        Button("Restore") { setDismissed(analysis.dismissedRanges, false) }
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                }
+
                 if analysis.newRanges.isEmpty {
                     Text(analysis.submittedRanges.isEmpty
                          ? "Everything on this trip is already in your list file."
@@ -447,6 +471,13 @@ struct RoadTripDetailView: View {
                                 }
                             }
                         )
+                        .contextMenu {
+                            Button {
+                                setDismissed([range], true)
+                            } label: {
+                                Label("Didn't Travel This", systemImage: "eye.slash")
+                            }
+                        }
                     }
 
                     HStack(spacing: 10) {
@@ -665,6 +696,7 @@ extension TripLogRange.Status {
         case .new: return TMDesign.frontier
         case .submitted: return TMDesign.purpleChipFG
         case .logged: return TMDesign.clinched
+        case .dismissed: return TMDesign.tertiaryText
         }
     }
 
@@ -673,6 +705,7 @@ extension TripLogRange.Status {
         case .new: return "New"
         case .submitted: return "Submitted"
         case .logged: return "In your list"
+        case .dismissed: return "Not traveled"
         }
     }
 }
@@ -692,7 +725,7 @@ struct TripMapLayer: MapContent {
             MapPolyline(coordinates: replayCoordinates)
                 .stroke(TMDesign.accent, lineWidth: 3)
         }
-        ForEach(ranges) { range in
+        ForEach(ranges.filter { $0.status != .dismissed }) { range in
             MapPolyline(coordinates: range.coordinates)
                 .stroke(range.status.color, lineWidth: 6)
         }
