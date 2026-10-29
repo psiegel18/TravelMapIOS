@@ -570,7 +570,7 @@ struct AboutSettingsView: View {
                     Label("App Discussion Board", systemImage: "bubble.left.and.text.bubble.right")
                 }
                 Link(destination: URL(string: "https://forum.travelmapping.net/index.php?topic=7535.0")!) {
-                    Label("TM Community Forum", systemImage: "person.3")
+                    Label("App Thread on TM Forum", systemImage: "person.3")
                 }
             } header: {
                 TMDesign.sectionHeader("Links")
