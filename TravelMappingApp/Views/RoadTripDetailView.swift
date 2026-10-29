@@ -121,10 +121,14 @@ struct RoadTripDetailView: View {
             )
         }
         .task {
-            exportURL = try? await TripStorageService.shared.exportListFile(for: trip)
             await computeDistance()
         }
-        .task(id: settings.primaryUser) {
+        .task(id: settings.dismissedHopKeys) {
+            exportURL = try? await TripStorageService.shared.exportListFile(
+                for: trip, excluding: Set(settings.dismissedHopKeys))
+        }
+        // Re-checks when segments are dismissed here or on another device (iCloud)
+        .task(id: "\(settings.primaryUser)|\(settings.dismissedHopKeys.joined(separator: ","))") {
             await analyzeLog()
         }
         .onChange(of: notesFocused) {
@@ -403,7 +407,10 @@ struct RoadTripDetailView: View {
             settings.restoreHops(keys)
         }
         Haptics.light()
-        Task { await analyzeLog() }
+        let crumb = Breadcrumb(level: .info, category: "list_update")
+        crumb.message = "\(dismissed ? "Dismissed" : "Restored") \(ranges.count) ranges from trip detail"
+        SentrySDK.addBreadcrumb(crumb)
+        // Re-analysis runs from the .task keyed on dismissedHopKeys
     }
 
     private func markSubmitted(_ ranges: [TripLogRange], pr: ListUpdatePR?) {
@@ -453,9 +460,11 @@ struct RoadTripDetailView: View {
                 }
 
                 if analysis.newRanges.isEmpty {
-                    Text(analysis.submittedRanges.isEmpty
+                    Text(!analysis.submittedRanges.isEmpty
+                         ? "Waiting for TravelMapping to pick up your submitted update — the database refreshes daily."
+                         : analysis.dismissedRanges.isEmpty
                          ? "Everything on this trip is already in your list file."
-                         : "Waiting for TravelMapping to pick up your submitted update — the database refreshes daily.")
+                         : "Nothing new on this trip — the rest is in your list file or marked not traveled.")
                         .font(.system(size: 15))
                         .foregroundStyle(TMDesign.secondaryText)
                 } else {

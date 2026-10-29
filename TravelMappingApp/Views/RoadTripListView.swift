@@ -124,6 +124,10 @@ struct RoadTripListView: View {
         .onChange(of: settings.primaryUser) {
             refreshToken += 1
         }
+        // Segments dismissed here or on another device (iCloud)
+        .onChange(of: settings.dismissedHopKeys) {
+            refreshToken += 1
+        }
     }
 
     // MARK: Sections
@@ -216,7 +220,7 @@ struct RoadTripListView: View {
                                title: "Your .list", subtitle: "Checking your trips…")
                 } else {
                     actionTile(icon: "checkmark.seal.fill", fg: TMDesign.greenChipFG, bg: TMDesign.greenChipBG,
-                               title: "List up to date", subtitle: "Every recorded segment is logged")
+                               title: "List up to date", subtitle: "Nothing new from your trips")
                 }
             }
             .buttonStyle(.plain)
@@ -465,7 +469,7 @@ struct RoadTripListView: View {
         let railKeys = await storage.submittedHopKeys(fileExtension: "rlist")
         let dismissed = Set(settings.dismissedHopKeys)
         let waiting = await storage.listSubmissions().reduce(0) { $0 + $1.lines.count }
-        let signature = "\(waiting)|\(username)|\(candidates.map { "\($0.id)\($0.matchedSegments.count)" }.sorted().joined())|\(roadKeys.count)|\(railKeys.count)|\(dismissed.count)"
+        let signature = "\(waiting)|\(username)|\(candidates.map { "\($0.id)\($0.matchedSegments.count)" }.sorted().joined())|\(roadKeys.count)|\(railKeys.count)|\(dismissed.sorted().joined(separator: ","))"
         guard signature != summarySignature || pendingSummary == nil || pendingCheckFailed else { return }
 
         var lines = 0
@@ -492,6 +496,9 @@ struct RoadTripListView: View {
         // Clear submissions the nightly update has picked up, so "waiting" goes away on its own
         let logged = loggedKeys
         await storage.removeSubmissions { !$0.hopKeys.isEmpty && $0.hopKeys.allSatisfy(logged.contains) }
+        // A dismissed segment now in the list file needs no dismissal — keeps the iCloud list small
+        let nowLogged = dismissed.intersection(logged)
+        if !nowLogged.isEmpty { settings.restoreHops(Array(nowLogged)) }
         let stillWaiting = await storage.listSubmissions().reduce(0) { $0 + $1.lines.count }
         pendingSummary = (lines, tripIDs.count, stillWaiting)
         newLinesByTrip = byTrip
@@ -716,7 +723,7 @@ struct PendingListUpdatesView: View {
                 }
                 if (road?.newRanges.isEmpty ?? true) && (rail?.newRanges.isEmpty ?? true) {
                     Section {
-                        Text("All caught up — every recorded segment is in your list files or already submitted.")
+                        Text("All caught up — every recorded segment is in your list files, already submitted, or marked not traveled.")
                             .foregroundStyle(TMDesign.secondaryText)
                     }
                 }
@@ -817,6 +824,9 @@ struct PendingListUpdatesView: View {
             localTrips = trips
             await analyze()
             await refreshPRStates()
+        }
+        .onChange(of: settings.dismissedHopKeys) {
+            Task { await analyze() }
         }
         .refreshable {
             prStates = [:]
@@ -946,10 +956,11 @@ struct PendingListUpdatesView: View {
             settings.restoreHops(keys)
         }
         Haptics.light()
-        Task {
-            await analyze()
-            await onTripsChanged()
-        }
+        let crumb = Breadcrumb(level: .info, category: "list_update")
+        crumb.message = "\(dismissed ? "Dismissed" : "Restored") \(ranges.count) ranges in pending queue"
+        SentrySDK.addBreadcrumb(crumb)
+        // Re-analysis runs from onChange(of: dismissedHopKeys); this refreshes the trip list
+        Task { await onTripsChanged() }
     }
 
     private func unmark(_ id: UUID) async {
@@ -977,6 +988,8 @@ struct PendingListUpdatesView: View {
             // Submissions whose every segment the database now reports as logged are done
             let logged = Set(((road?.loggedRanges ?? []) + (rail?.loggedRanges ?? [])).flatMap(\.hopKeys))
             await storage.removeSubmissions { !$0.hopKeys.isEmpty && $0.hopKeys.allSatisfy(logged.contains) }
+            let nowLogged = Set(settings.dismissedHopKeys).intersection(logged)
+            if !nowLogged.isEmpty { settings.restoreHops(Array(nowLogged)) }
             submissions = await storage.listSubmissions()
         } catch {
             SentrySDK.capture(error: error)

@@ -178,14 +178,18 @@ actor TripStorageService {
         }
     }
 
-    /// Export the trip's matched segments as a .list file, return the file URL.
-    func exportListFile(for trip: RoadTrip) async throws -> URL {
+    /// Export the trip's matched segments as a .list file, return the file URL. `excluding`
+    /// takes hop keys ("root|start|end") the user marked not traveled.
+    func exportListFile(for trip: RoadTrip, excluding dismissed: Set<String> = []) async throws -> URL {
         let dir = await tripsDirectory()
-        let content = ListFileGenerator.generate(from: trip.matchedSegments, tripName: trip.name)
+        let segments = trip.matchedSegments.filter {
+            !dismissed.contains("\($0.root)|\($0.startWaypoint)|\($0.endWaypoint)")
+        }
+        let content = ListFileGenerator.generate(from: segments, tripName: trip.name)
         let fileURL = dir.appendingPathComponent("\(trip.id.uuidString).list")
         try content.write(to: fileURL, atomically: true, encoding: .utf8)
         SentrySDK.logger.info("Trip exported to .list", attributes: [
-            "segmentCount": trip.matchedSegments.count,
+            "segmentCount": segments.count,
             "bytes": content.utf8.count,
             "tripType": trip.tripType == .rail ? "rail" : "road",
         ])
