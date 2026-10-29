@@ -1282,29 +1282,40 @@ final class AIService: ObservableObject {
         customBaseURL = defaults.string(forKey: "aiBaseURL") ?? ""
         model = defaults.string(forKey: "aiModel") ?? ""
         isEnabled = defaults.object(forKey: "aiEnabled") as? Bool ?? true
-        if let stored = Self.keyItem.read() {
-            hasKey = true
-            syncsAcrossDevices = stored.synced
-            // Key arrived from another device through iCloud Keychain: adopt its settings.
-            // Permission to share data is still asked on this device.
-            if provider == nil, let json = Self.configItem.read()?.value,
-               let config = try? JSONDecoder().decode(SyncedConfig.self, from: Data(json.utf8)),
-               let syncedProvider = AIProvider(rawValue: config.provider) {
-                provider = syncedProvider
-                customBaseURL = config.baseURL
-                model = config.model
-                defaults.set(config.provider, forKey: "aiProvider")
-                defaults.set(config.baseURL, forKey: "aiBaseURL")
-            }
-        }
-        // Consent is tied to the provider + host it was given for
-        if let stored = defaults.string(forKey: "aiConsentScope"), stored == consentScope,
-           let date = defaults.object(forKey: "aiConsentDate") as? Date {
-            consentDate = date
-        }
+        loadStoredKey()
         if let data = defaults.data(forKey: "aiActivity"),
            let entries = try? JSONDecoder().decode([AIActivityEntry].self, from: data) {
             activity = entries
+        }
+    }
+
+    /// Re-reads the keychain, for a key that iCloud Keychain delivered after launch (or
+    /// removed from another device). The keychain is the source of truth.
+    func refreshFromKeychain() { loadStoredKey() }
+
+    private func loadStoredKey() {
+        guard let stored = Self.keyItem.read() else {
+            hasKey = false
+            syncsAcrossDevices = false
+            return
+        }
+        hasKey = true
+        syncsAcrossDevices = stored.synced
+        // Key arrived from another device through iCloud Keychain: adopt its settings.
+        // Permission to share data is still asked on this device.
+        if provider == nil, let json = Self.configItem.read()?.value,
+           let config = try? JSONDecoder().decode(SyncedConfig.self, from: Data(json.utf8)),
+           let syncedProvider = AIProvider(rawValue: config.provider) {
+            provider = syncedProvider
+            customBaseURL = config.baseURL
+            model = config.model
+            defaults.set(config.provider, forKey: "aiProvider")
+            defaults.set(config.baseURL, forKey: "aiBaseURL")
+        }
+        // Consent is tied to the provider + host it was given for
+        if consentDate == nil, let stored = defaults.string(forKey: "aiConsentScope"), stored == consentScope,
+           let date = defaults.object(forKey: "aiConsentDate") as? Date {
+            consentDate = date
         }
     }
 

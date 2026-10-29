@@ -265,6 +265,8 @@ struct SettingsView: View {
             }
         }
         // Checked once editing ends (or a suggestion is picked), not on every letter
+        // A synced AI key can land after launch
+        .onAppear { ai.refreshFromKeychain() }
         .task(id: "\(settings.primaryUser)|\(usernameFocused)") {
             let username = settings.primaryUser.trimmingCharacters(in: .whitespaces)
             guard !username.isEmpty else {
@@ -1458,7 +1460,7 @@ struct AISettingsView: View {
         Form {
             // A key synced from another device still needs this device's permission:
             // ask up top, not below the disclosures
-            if ai.hasKey, ai.consentDate == nil { permissionSection }
+            if ai.hasKey, ai.provider != nil, ai.consentDate == nil { permissionSection }
 
             if ai.hasKey {
                 Section {
@@ -1606,7 +1608,7 @@ struct AISettingsView: View {
             }
 
             if ai.hasKey {
-                if ai.consentDate != nil { permissionSection }
+                if ai.provider != nil, ai.consentDate != nil { permissionSection }
 
                 Section {
                     NavigationLink {
@@ -1636,6 +1638,10 @@ struct AISettingsView: View {
                  : "AI features turn off and the key is deleted from this device. Your activity history stays until you clear it.")
         }
         .task {
+            let hadProvider = ai.provider != nil
+            ai.refreshFromKeychain()
+            // Settings just adopted from a synced key: show them instead of the picker default
+            if !hadProvider, let adopted = ai.provider { provider = adopted }
             guard ai.hasKey, !editingNewProvider else { return }
             models = (try? await ai.availableModels()) ?? []
         }
