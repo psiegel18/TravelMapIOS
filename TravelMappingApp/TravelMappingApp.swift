@@ -347,7 +347,13 @@ enum SentryPrivacy {
         event.tags = event.tags?.mapValues(scrub)
         event.extra = event.extra?.mapValues(scrubValue)
         event.context = event.context?.mapValues { (scrubValue($0) as? [String: Any]) ?? $0 }
-        event.exceptions?.forEach { $0.value = $0.value.map(scrub) }
+        event.exceptions?.forEach {
+            $0.value = $0.value.map(scrub)
+            // NSError captures put error.description and userInfo here — a URLError's
+            // failing URL names the user's .list file or GitHub fork
+            $0.mechanism?.desc = $0.mechanism?.desc.map(scrub)
+            $0.mechanism?.data = $0.mechanism?.data?.mapValues(scrubValue)
+        }
         if let request = event.request {
             request.url = request.url.map(scrub)
             request.queryString = request.queryString.map(scrub)

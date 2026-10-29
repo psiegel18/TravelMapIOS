@@ -457,7 +457,7 @@ struct GitHubSettingsView: View {
                     Text("In a block at the end").tag(true)
                 }
             } footer: {
-                Text("Where recorded segments are placed: road segments in your .list, rail & transit in your .rlist, whether the app sends the file or you copy it.")
+                Text("Where new lines are placed in your file. Road segments go in your .list, rail & transit in your .rlist, whether the app sends the file or you copy it.")
             }
         }
         .navigationTitle("GitHub")

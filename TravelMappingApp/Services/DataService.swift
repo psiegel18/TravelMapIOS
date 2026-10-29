@@ -958,7 +958,10 @@ final class GitHubService: ObservableObject {
         // Offline or a GitHub hiccup before the branches could be listed: try again soon.
         // Settled cases (no fork yet, not a fork of UserData) wait the full 6 hours.
         var settled = false
-        defer { if !settled { nextBranchCleanup = Date().addingTimeInterval(15 * 60) } }
+        defer {
+            // Not when the setting changed meanwhile (runBranchCleanupSoon): that run is due now
+            if !settled, nextBranchCleanup != .distantPast { nextBranchCleanup = Date().addingTimeInterval(15 * 60) }
+        }
         // Fresh login, not the cached one: after a GitHub rename the old name still
         // redirects for branches and deletes, but no longer matches its PRs, so every
         // branch would look PR-less. And only ever touch the real fork of UserData.
@@ -982,7 +985,10 @@ final class GitHubService: ObservableObject {
         } catch {
             return
         }
-        guard let repo = try? JSONDecoder().decode(Repo.self, from: repoData) else { return }
+        guard let repo = try? JSONDecoder().decode(Repo.self, from: repoData) else {
+            settled = true  // an unexpected response won't fix itself in 15 minutes
+            return
+        }
         guard repo.fork, repo.parent?.full_name == Self.upstream, repo.owner.login == login else {
             settled = true
             return

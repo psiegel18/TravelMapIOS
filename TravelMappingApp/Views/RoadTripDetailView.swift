@@ -25,6 +25,8 @@ struct RoadTripDetailView: View {
     /// PRs that include segments from this trip
     @State private var tripPRs: [ListUpdatePR] = []
     @State private var confirmDelete = false
+    @State private var isRematching = false
+    @State private var rematchMessage: String?
     /// Set once deleted so the onDisappear notes save can't write the trip back
     @State private var isDeleted = false
     @Environment(\.dismiss) private var dismiss
@@ -608,6 +610,32 @@ struct RoadTripDetailView: View {
         }
     }
 
+    private func rematchSegments() async {
+        isRematching = true
+        rematchMessage = nil
+        defer { isRematching = false }
+        do {
+            let segments = try await SegmentMatcher.rematch(points: trip.rawPoints, tripType: trip.tripType)
+            SentrySDK.logger.info("Trip re-matched from GPS track", attributes: ["matchedSegments": segments.count])
+            guard !segments.isEmpty else {
+                rematchMessage = "No TM route segments run along this trip's GPS track."
+                return
+            }
+            trip.matchedSegments = segments
+            trip.notes = notesText  // keep unsaved notes in the saved copy
+            let updatedTrip = trip
+            try await TripStorageService.shared.save(updatedTrip)
+            lastSavedNotes = notesText
+            exportURL = try? await TripStorageService.shared.exportListFile(
+                for: updatedTrip, excluding: Set(settings.dismissedHopKeys))
+            await analyzeLog()
+            Haptics.success()
+        } catch {
+            SentrySDK.capture(error: error)
+            rematchMessage = "Couldn't download TravelMapping's route data. Check your connection and try again."
+        }
+    }
+
     private func saveNotes() {
         guard !isDeleted, notesText != lastSavedNotes else { return }
         lastSavedNotes = notesText
@@ -681,10 +709,33 @@ struct RoadTripDetailView: View {
             )
 
             if trip.matchedSegments.isEmpty {
-                Text("No TM route segments were matched for this trip.")
+                Text(rematchMessage ?? "No TM route segments were matched for this trip.")
                     .font(.system(size: 15))
                     .foregroundStyle(TMDesign.secondaryText)
                     .padding(.vertical, 8)
+                // Live matching can miss a whole trip when segment downloads fail on the
+                // road; the saved GPS track can be matched again
+                if trip.status == .completed && trip.rawPoints.count > 1 {
+                    Button {
+                        Task { await rematchSegments() }
+                    } label: {
+                        HStack(spacing: 8) {
+                            if isRematching {
+                                ProgressView()
+                            } else {
+                                Image(systemName: "arrow.triangle.2.circlepath")
+                            }
+                            Text(isRematching ? "Matching…" : "Match Segments from GPS Track")
+                        }
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(TMDesign.accent.opacity(0.15), in: RoundedRectangle(cornerRadius: 12))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(TMDesign.accent)
+                    .disabled(isRematching)
+                }
             } else {
                 ForEach(runs) { run in
                     routeRunRow(run)
@@ -1102,6 +1153,8 @@ struct ListUpdateSheet: View {
             .task { await load() }
             .interactiveDismissDisabled(isOpeningPR)
         }
+        // The title, file name and "As @login" rows show the user's names
+        .sentryReplayMask()
         .sentryScreen("ListUpdate")
     }
 
