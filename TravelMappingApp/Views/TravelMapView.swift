@@ -20,6 +20,9 @@ struct TravelMapView: View {
     /// These stop that from reloading every region and resetting the user's region choice.
     @State private var didChooseInitialRegions = false
     @State private var mapDataLoaded = false
+    /// A .task-owned load stopped because the view went away; the next .task picks it back up.
+    /// Loads started from a region change aren't cancelled by that and must not be restarted.
+    @State private var loadInterrupted = false
     @State private var errorMessage: String?
     /// Status filter (Traveled / Remaining), applied within the enabled modes. At least one
     /// stays on — turning one off with the other already off switches the other on.
@@ -372,11 +375,17 @@ struct TravelMapView: View {
         }
         .task {
             guard !mapDataLoaded else { return }
-            if didChooseInitialRegions {
-                // The first load was cancelled when the view went away; pick it back up
-                await loadSegments()
-            } else {
+            if !didChooseInitialRegions {
                 await loadRegions()
+            } else if loadInterrupted {
+                loadInterrupted = false
+                await loadSegments()
+            }
+        }
+        .task {
+            // Separate from the load above so a failed fetch is retried on the next appearance
+            if allRegionsByCountry.isEmpty {
+                await loadRegionCatalog()
             }
         }
         .onChange(of: selectedRegions) {
@@ -1437,26 +1446,6 @@ struct TravelMapView: View {
         let regions = Array(profile.allRegions).sorted()
         availableRegions = regions
 
-        // Load full region catalog for "Other Regions" picker + country grouping
-        if allRegionsByCountry.isEmpty {
-            if let catalog = try? await TravelMappingAPI.shared.getAllRoutes() {
-                var countryMap: [String: String] = [:]
-                var byCountry: [String: Set<String>] = [:]
-                let catalogRegions = catalog.regions ?? []
-                let countries = catalog.countries ?? []
-                for (i, region) in catalogRegions.enumerated() where i < countries.count {
-                    if countryMap[region] == nil {
-                        countryMap[region] = countries[i]
-                        byCountry[countries[i], default: []].insert(region)
-                    }
-                }
-                regionCountryMap = countryMap
-                allRegionsByCountry = byCountry
-                    .sorted { $0.key < $1.key }
-                    .map { (country: $0.key, regions: $0.value.sorted()) }
-            }
-        }
-
         didChooseInitialRegions = true
 
         // Favorite regions take priority if any exist.
@@ -1484,6 +1473,36 @@ struct TravelMapView: View {
         }
     }
 
+    /// Full region catalog for the "Other Regions" picker + country grouping
+    private func loadRegionCatalog() async {
+        if let catalog = try? await TravelMappingAPI.shared.getAllRoutes() {
+            var countryMap: [String: String] = [:]
+            var byCountry: [String: Set<String>] = [:]
+            let catalogRegions = catalog.regions ?? []
+            let countries = catalog.countries ?? []
+            for (i, region) in catalogRegions.enumerated() where i < countries.count {
+                if countryMap[region] == nil {
+                    countryMap[region] = countries[i]
+                    byCountry[countries[i], default: []].insert(region)
+                }
+            }
+            regionCountryMap = countryMap
+            allRegionsByCountry = byCountry
+                .sorted { $0.key < $1.key }
+                .map { (country: $0.key, regions: $0.value.sorted()) }
+        }
+    }
+
+    /// False when a newer load took over, or when this one was cancelled with the view
+    private func loadIsCurrent(_ generation: Int) -> Bool {
+        guard generation == loadGeneration else { return false }
+        if Task.isCancelled {
+            loadInterrupted = true
+            return false
+        }
+        return true
+    }
+
     private func loadSegments() async {
         // Bump the generation: any older load still in flight sees a mismatch at
         // its next checkpoint and bails without touching state.
@@ -1502,7 +1521,7 @@ struct TravelMapView: View {
         if selectedRegions.isEmpty {
             // "All Regions" — load everything but only keep clinched
             let profile = await dataService.loadUserProfile(username: username)
-            guard generation == loadGeneration else { return }
+            guard loadIsCurrent(generation) else { return }
             guard let profile else {
                 errorMessage = "Could not load profile"
                 isLoading = false
@@ -1524,7 +1543,7 @@ struct TravelMapView: View {
 
         for batchStart in stride(from: 0, to: regionsToLoad.count, by: batchSize) {
             // Stop between batches if this task was cancelled or a newer load started
-            guard !Task.isCancelled, generation == loadGeneration else { return }
+            guard loadIsCurrent(generation) else { return }
 
             let batchEnd = min(batchStart + batchSize, regionsToLoad.count)
             let batch = Array(regionsToLoad[batchStart..<batchEnd])
@@ -1559,7 +1578,7 @@ struct TravelMapView: View {
             }
 
             // Update map after each batch — only if still the current load
-            guard !Task.isCancelled, generation == loadGeneration else { return }
+            guard loadIsCurrent(generation) else { return }
             // A batch of regions the traveler has no clinched segments in changes nothing
             if allSegments.count != segments.count {
                 segments = allSegments
@@ -1569,7 +1588,7 @@ struct TravelMapView: View {
             loadingProgress = "Loading \(completed)/\(total) regions..."
         }
 
-        guard generation == loadGeneration else { return }
+        guard loadIsCurrent(generation) else { return }
         segments = allSegments
         routeMetadata = allRoutes
 
@@ -1581,7 +1600,7 @@ struct TravelMapView: View {
         var allRailRoutes: [TravelMappingAPI.RouteMetadata] = []
 
         for region in regionsToLoad {
-            guard !Task.isCancelled, generation == loadGeneration else { return }
+            guard loadIsCurrent(generation) else { return }
             do {
                 let r = try await TravelMappingAPI.rail.getRegionSegments(
                     region: region,
@@ -1598,7 +1617,7 @@ struct TravelMapView: View {
             }
         }
 
-        guard generation == loadGeneration else { return }
+        guard loadIsCurrent(generation) else { return }
         railSegments = allRailSegs
         railMetadata = allRailRoutes
 
@@ -1706,6 +1725,15 @@ fileprivate struct TravelMapCanvas: UIViewRepresentable {
         let color: UIColor
         let width: CGFloat
         var dash: [CGFloat] = []
+
+        /// A plain RGB color for one appearance: dynamic or bridged colors don't reliably
+        /// compare equal (which decides overlay reuse), and a renderer never re-resolves them.
+        static func fixedColor(_ color: Color, scheme: ColorScheme, alpha: CGFloat = 1) -> UIColor {
+            let traits = UITraitCollection(userInterfaceStyle: scheme == .dark ? .dark : .light)
+            var (red, green, blue, ignored): (CGFloat, CGFloat, CGFloat, CGFloat) = (0, 0, 0, 0)
+            UIColor(color).resolvedColor(with: traits).getRed(&red, green: &green, blue: &blue, alpha: &ignored)
+            return UIColor(red: red, green: green, blue: blue, alpha: alpha)
+        }
     }
 
     /// One overlay's worth of lines. An overlay is reused while its key and stroke match.
@@ -1727,6 +1755,13 @@ fileprivate struct TravelMapCanvas: UIViewRepresentable {
         let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap))
         tap.delegate = context.coordinator
         mapView.addGestureRecognizer(tap)
+        // Observers only, alongside the map's own gestures: they stop automatic framing
+        for observer in [UIPanGestureRecognizer(), UIPinchGestureRecognizer()] as [UIGestureRecognizer] {
+            observer.addTarget(context.coordinator, action: #selector(Coordinator.userMovedCamera))
+            observer.cancelsTouchesInView = false
+            observer.delegate = context.coordinator
+            mapView.addGestureRecognizer(observer)
+        }
         return mapView
     }
 
@@ -1740,17 +1775,23 @@ fileprivate struct TravelMapCanvas: UIViewRepresentable {
             mapView.preferredConfiguration = style.mapStyle.configuration
         }
 
+        // Also on new lines: a selected segment may no longer be loaded
         let selectionChanged = coordinator.appliedSelection != selectedSegmentIDs
+            || (!selectedSegmentIDs.isEmpty && coordinator.appliedContentKey?.polylineGeneration != contentKey.polylineGeneration)
         if selectionChanged {
             coordinator.appliedSelection = selectedSegmentIDs
             coordinator.selectionGeneration += 1
             coordinator.selection = selectedSegmentIDs.isEmpty ? [] : selectedLines()
         }
-        let contentChanged = coordinator.appliedContentKey != contentKey || coordinator.appliedStyle != style
+        let scheme = context.environment.colorScheme
+        let contentChanged = coordinator.appliedContentKey != contentKey
+            || coordinator.appliedStyle != style
+            || coordinator.appliedColorScheme != scheme
         if contentChanged || selectionChanged {
             coordinator.appliedContentKey = contentKey
             coordinator.appliedStyle = style
-            coordinator.reconcile(mapView, with: baseLayers() + coordinator.selectionLayers())
+            coordinator.appliedColorScheme = scheme
+            coordinator.reconcile(mapView, with: baseLayers(scheme: scheme) + coordinator.selectionLayers())
         }
 
         if let cameraRequest, coordinator.appliedCameraRequest != cameraRequest {
@@ -1762,8 +1803,9 @@ fileprivate struct TravelMapCanvas: UIViewRepresentable {
     }
 
     /// Stacking order is array order: remaining below traveled, roads below rail.
-    private func baseLayers() -> [Layer] {
+    private func baseLayers(scheme: ColorScheme) -> [Layer] {
         let generation = contentKey.polylineGeneration
+        let remainingColor = Stroke.fixedColor(TMDesign.frontier, scheme: scheme, alpha: style.untraveledVisibility)
         var layers: [Layer] = []
 
         if contentKey.showRoads {
@@ -1772,7 +1814,7 @@ fileprivate struct TravelMapCanvas: UIViewRepresentable {
                     key: "road-remaining|\(generation)",
                     polylines: groups.remainingRoads,
                     stroke: roadStroke(
-                        color: UIColor(TMDesign.frontier).withAlphaComponent(style.untraveledVisibility),
+                        color: remainingColor,
                         baseWidth: max(1.5, style.roadLineWidth * 0.75)
                     )
                 ))
@@ -1782,7 +1824,7 @@ fileprivate struct TravelMapCanvas: UIViewRepresentable {
                     layers.append(Layer(
                         key: "road-traveled|\(hex)|\(generation)",
                         polylines: polylines,
-                        stroke: roadStroke(color: UIColor(Color(hex: hex)), baseWidth: style.roadLineWidth)
+                        stroke: roadStroke(color: Stroke.fixedColor(Color(hex: hex), scheme: scheme), baseWidth: style.roadLineWidth)
                     ))
                 }
             }
@@ -1795,7 +1837,7 @@ fileprivate struct TravelMapCanvas: UIViewRepresentable {
                     key: "rail-remaining|\(generation)",
                     polylines: groups.remainingRail,
                     stroke: Stroke(
-                        color: UIColor(TMDesign.frontier).withAlphaComponent(style.untraveledVisibility),
+                        color: remainingColor,
                         width: max(2.0, style.railLineWidth * 0.6)
                     )
                 ))
@@ -1846,6 +1888,7 @@ fileprivate struct TravelMapCanvas: UIViewRepresentable {
         var appliedMapStyle: TravelMapView.MapStyleOption?
         var appliedContentKey: ContentKey?
         var appliedStyle: Style?
+        var appliedColorScheme: ColorScheme?
         var appliedCameraRequest: CameraRequest?
         var appliedSelection: Set<String> = []
         var selection: [MKPolyline] = []
@@ -1906,16 +1949,12 @@ fileprivate struct TravelMapCanvas: UIViewRepresentable {
             return renderer
         }
 
-        func mapView(_ mapView: MKMapView, regionWillChangeAnimated animated: Bool) {
-            // The map's own gesture recognizers live on its first subview
-            let gestureActive = mapView.subviews.first?.gestureRecognizers?.contains {
-                $0.state == .began || $0.state == .changed || $0.state == .ended
-            } ?? false
-            if gestureActive { cameraTouched = true }
-        }
-
         func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
             onCameraChange?(mapView.region)
+        }
+
+        @objc func userMovedCamera() {
+            cameraTouched = true
         }
 
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
