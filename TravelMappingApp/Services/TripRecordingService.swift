@@ -3,6 +3,7 @@ import Foundation
 import CoreLocation
 import Combine
 import ActivityKit
+import UIKit
 
 /// Orchestrates road trip GPS recording, segment matching, and persistence.
 @MainActor
@@ -36,6 +37,8 @@ class TripRecordingService: NSObject, ObservableObject {
     /// Failed downloads in a row: backs off the retry and reports only the first to Sentry
     private var segmentFetchFailures = 0
     private var liveActivity: Activity<RoadTripAttributes>?
+    /// A Live Activity that couldn't start yet: ActivityKit only allows it while the app is active
+    private var pendingLiveActivity: (tripName: String, startDate: Date)?
 
     // Active-time accounting: paused time (and dead time before an orphan resume)
     // must not count as recording time, so elapsed can't be derived from startDate.
@@ -53,6 +56,14 @@ class TripRecordingService: NSObject, ObservableObject {
     override init() {
         super.init()
         locationManager.delegate = self
+
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.startPendingLiveActivity() }
+        }
 
         // Crash recovery: look for unfinished trips from a previous session
         Task { @MainActor in
@@ -410,6 +421,13 @@ class TripRecordingService: NSObject, ObservableObject {
     private func startLiveActivity(tripName: String, startDate: Date) {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
 
+        // An orphan resume at launch or a trip started from Siri can get here before the
+        // app is active, where Activity.request throws .visibility (TRAVELMAPPING-22)
+        guard UIApplication.shared.applicationState == .active else {
+            deferLiveActivity(tripName: tripName, startDate: startDate)
+            return
+        }
+
         let attributes = RoadTripAttributes(tripName: tripName, startDate: startDate)
         // Use current published values rather than literal zeros so the orphan-resume
         // path (which restores totalDistance before re-starting the activity) doesn't
@@ -419,9 +437,9 @@ class TripRecordingService: NSObject, ObservableObject {
             currentRoad: "",
             matchedSegments: matchedCount,
             gpsPoints: pointCount,
-            isPaused: false,
+            isPaused: isPaused,
             distanceMeters: totalDistance,
-            speedMps: max(0, currentSpeed)
+            speedMps: isPaused ? 0 : max(0, currentSpeed)
         )
 
         do {
@@ -430,9 +448,25 @@ class TripRecordingService: NSObject, ObservableObject {
                 content: .init(state: state, staleDate: nil),
                 pushType: nil
             )
+        } catch let error as ActivityAuthorizationError where error == .visibility {
+            // The app can stop being active between the check above and the request.
+            // Expected, and retried on the next activation, so not worth a Sentry issue.
+            deferLiveActivity(tripName: tripName, startDate: startDate)
         } catch {
             SentrySDK.capture(error: error)
         }
+    }
+
+    private func deferLiveActivity(tripName: String, startDate: Date) {
+        pendingLiveActivity = (tripName, startDate)
+        Self.tripBreadcrumb("Live Activity start deferred until the app is active")
+    }
+
+    private func startPendingLiveActivity() {
+        guard let pending = pendingLiveActivity else { return }
+        pendingLiveActivity = nil
+        guard isRecording else { return }
+        startLiveActivity(tripName: pending.tripName, startDate: pending.startDate)
     }
 
     /// On resume, locate the Live Activity that the previous app session started so we can
@@ -470,6 +504,7 @@ class TripRecordingService: NSObject, ObservableObject {
     }
 
     private func stopLiveActivity() {
+        pendingLiveActivity = nil
         guard let activity = liveActivity else { return }
 
         let finalState = RoadTripAttributes.ContentState(
