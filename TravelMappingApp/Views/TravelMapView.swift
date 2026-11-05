@@ -16,6 +16,10 @@ struct TravelMapView: View {
     /// Monotonically increasing load generation — each loadSegments call bumps it
     /// and checks it before every state write so stale loads can't overwrite newer state.
     @State private var loadGeneration = 0
+    /// .task restarts whenever this view reappears (app tab switch, returning from a push).
+    /// These stop that from reloading every region and resetting the user's region choice.
+    @State private var didChooseInitialRegions = false
+    @State private var mapDataLoaded = false
     @State private var errorMessage: String?
     /// Status filter (Traveled / Remaining), applied within the enabled modes. At least one
     /// stays on — turning one off with the other already off switches the other on.
@@ -27,7 +31,8 @@ struct TravelMapView: View {
     @State private var showRoads = true
     @State private var railSegments: [TravelMappingAPI.MapSegment] = []
     @State private var railMetadata: [TravelMappingAPI.RouteMetadata] = []
-    @State private var mapPosition: MapCameraPosition = .automatic
+    /// Latest programmatic camera move; TravelMapCanvas applies each request once
+    @State private var cameraRequest: TravelMapCanvas.CameraRequest?
     @State private var selectedRegions: Set<String> = []
     @State private var pendingRegions: Set<String> = [] // Editable copy for picker
     @State private var availableRegions: [String] = []
@@ -71,12 +76,12 @@ struct TravelMapView: View {
         case hybrid = "Hybrid"
         case hybrid3D = "3D Hybrid"
 
-        var style: MapStyle {
+        var configuration: MKMapConfiguration {
             switch self {
-            case .standard: return .standard
-            case .satellite: return .imagery
-            case .hybrid: return .hybrid
-            case .hybrid3D: return .hybrid(elevation: .realistic)
+            case .standard: return MKStandardMapConfiguration()
+            case .satellite: return MKImageryMapConfiguration()
+            case .hybrid: return MKHybridMapConfiguration()
+            case .hybrid3D: return MKHybridMapConfiguration(elevationStyle: .realistic)
             }
         }
 
@@ -90,44 +95,12 @@ struct TravelMapView: View {
         }
     }
 
-    /// A merged polyline from consecutive segments on the same route.
-    fileprivate struct MergedPolyline: Identifiable {
-        /// Content-based: layer prefix + the id of the polyline's first segment. Positional
-        /// Ints shifted on every progressive batch (routes are sorted by root, so a new
-        /// region renumbers everything after it), which made MapKit replace every overlay
-        /// on each batch instead of adding only the new ones (TRAVELMAPPING-H).
-        let id: String
-        let coordinates: [CLLocationCoordinate2D]
-        let isClinched: Bool
-        let root: String
-        /// Route color, resolved once at build time. Looking it up per polyline inside the
-        /// Map builder was a linear routeMetadata scan on every body pass.
-        let color: Color
-    }
-
-    @State private var mergedPolylines: [MergedPolyline] = []
-    @State private var mergedRailPolylines: [MergedPolyline] = []
-    /// Bumped each time the merged polylines are replaced. TravelMapCanvas compares this
-    /// instead of thousands of coordinate arrays to decide whether the Map must update.
+    /// Every drawable line, already grouped for TravelMapCanvas. Built off the main thread.
+    @State private var lineGroups = MapLineGroups()
+    /// Bumped per rebuild request, so a slower older rebuild can't overwrite a newer one
+    @State private var rebuildRequest = 0
+    /// Bumped each time lineGroups is replaced; part of the canvas's "what to draw" key
     @State private var polylineGeneration = 0
-
-    private var displayedPolylines: [MergedPolyline] {
-        guard showRoads else { return [] }
-        return mergedPolylines.filter { poly in
-            if showClinched && poly.isClinched { return true }
-            if showUnclinched && !poly.isClinched { return true }
-            return false
-        }
-    }
-
-    private var displayedRailPolylines: [MergedPolyline] {
-        guard showRail else { return [] }
-        return mergedRailPolylines.filter { poly in
-            if showClinched && poly.isClinched { return true }
-            if showUnclinched && !poly.isClinched { return true }
-            return false
-        }
-    }
 
     /// Counts cover the modes currently shown, so Traveled/Remaining match the map
     private var clinchedCount: Int {
@@ -157,50 +130,51 @@ struct TravelMapView: View {
             routeMetadata.map { ($0.root, $0.displayColorHex) },
             uniquingKeysWith: { first, _ in first }
         )
+        rebuildRequest += 1
+        let request = rebuildRequest
 
         Task.detached(priority: .userInitiated) {
-            let roads = Self.buildMergedPolylines(
-                from: roadSegs, idPrefix: "road|", maxCoords: maxCoords, colorHexByRoot: colorHexByRoot
-            )
-            // Rail draws as a solid double stroke, never dashed, so it doesn't need the
-            // dash cap — which also doubled its overlay count. Its color is fixed (red).
-            let rails = Self.buildMergedPolylines(
-                from: railSegs, idPrefix: "rail|", maxCoords: 200, colorHexByRoot: [:]
-            )
+            var groups = MapLineGroups()
+            for line in Self.mergedLines(from: roadSegs, maxCoords: maxCoords) {
+                if line.isClinched {
+                    groups.traveledRoadsByColorHex[colorHexByRoot[line.root] ?? MapLineGroups.fallbackColorHex, default: []]
+                        .append(line.polyline)
+                } else {
+                    groups.remainingRoads.append(line.polyline)
+                }
+            }
+            // Rail draws as a solid double stroke, never dashed, so it doesn't need the dash cap
+            for line in Self.mergedLines(from: railSegs, maxCoords: 200) {
+                if line.isClinched {
+                    groups.traveledRail.append(line.polyline)
+                } else {
+                    groups.remainingRail.append(line.polyline)
+                }
+            }
+            let built = groups
             await MainActor.run {
-                mergedPolylines = roads
-                mergedRailPolylines = rails
+                guard request == rebuildRequest else { return }
+                lineGroups = built
                 polylineGeneration += 1
             }
         }
     }
 
-    nonisolated private static func buildMergedPolylines(
+    nonisolated private static func mergedLines(
         from segs: [TravelMappingAPI.MapSegment],
-        idPrefix: String,
-        maxCoords: Int,
-        colorHexByRoot: [String: String]
-    ) -> [MergedPolyline] {
+        maxCoords: Int
+    ) -> [(polyline: MKPolyline, isClinched: Bool, root: String)] {
         let filtered = segs.sorted { $0.root < $1.root || ($0.root == $1.root && $0.orderIndex < $1.orderIndex) }
-        var result: [MergedPolyline] = []
+        var result: [(polyline: MKPolyline, isClinched: Bool, root: String)] = []
         var currentCoords: [CLLocationCoordinate2D] = []
         var currentRoot = ""
         var currentClinched = false
-        var currentID = ""
-        var usedIDs = Set<String>()
 
         func emit() {
-            // Segment ids are unique per route, but a ForEach with a repeated id is
-            // undefined behavior — suffix any collision rather than trust the data
-            var id = currentID
-            var n = 1
-            while !usedIDs.insert(id).inserted {
-                n += 1
-                id = "\(currentID)#\(n)"
-            }
-            let color = colorHexByRoot[currentRoot].map { Color(hex: $0) } ?? .blue
-            result.append(MergedPolyline(
-                id: id, coordinates: currentCoords, isClinched: currentClinched, root: currentRoot, color: color
+            result.append((
+                MKPolyline(coordinates: currentCoords, count: currentCoords.count),
+                currentClinched,
+                currentRoot
             ))
         }
 
@@ -209,12 +183,9 @@ struct TravelMapView: View {
 
             if sameLine, let last = currentCoords.last,
                coordDistance(last, seg.start) < 500 {
-                // A chunk restarted at the coordinate cap takes its id from its first new segment
-                if currentID.isEmpty { currentID = idPrefix + seg.id }
                 currentCoords.append(seg.end)
                 if currentCoords.count >= maxCoords {
                     emit()
-                    currentID = ""
                     currentCoords = [seg.end]
                 }
             } else {
@@ -222,7 +193,6 @@ struct TravelMapView: View {
                     emit()
                 }
                 currentCoords = [seg.start, seg.end]
-                currentID = idPrefix + seg.id
                 currentRoot = seg.root
                 currentClinched = seg.isClinched
             }
@@ -401,7 +371,13 @@ struct TravelMapView: View {
             }
         }
         .task {
-            await loadRegions()
+            guard !mapDataLoaded else { return }
+            if didChooseInitialRegions {
+                // The first load was cancelled when the view went away; pick it back up
+                await loadSegments()
+            } else {
+                await loadRegions()
+            }
         }
         .onChange(of: selectedRegions) {
             Task { await loadSegments() }
@@ -420,54 +396,42 @@ struct TravelMapView: View {
 
     // MARK: - Map
 
-    /// Selected segments as merged polylines for rendering
-    private var selectedPolylines: [MergedPolyline] {
-        // Computed on every body pass, so skip the full segment scan when nothing is selected
-        guard !selectedSegmentIDs.isEmpty else { return [] }
+    /// Selected segments as merged polylines. Only called when the selection changes.
+    private func selectedLines() -> [MKPolyline] {
         let selectedSegs = segments.filter { selectedSegmentIDs.contains($0.id) }
-        guard !selectedSegs.isEmpty else { return [] }
-
-        // Simple merge for selected segments
-        var result: [MergedPolyline] = []
+        var result: [MKPolyline] = []
         var coords: [CLLocationCoordinate2D] = []
         var currentRoot = ""
-        var currentID = ""
 
         for seg in selectedSegs.sorted(by: { $0.root < $1.root || ($0.root == $1.root && $0.orderIndex < $1.orderIndex) }) {
             if seg.root == currentRoot, let last = coords.last, distance(last, seg.start) < 500 {
                 coords.append(seg.end)
             } else {
                 if coords.count >= 2 {
-                    result.append(MergedPolyline(id: currentID, coordinates: coords, isClinched: true, root: currentRoot, color: .yellow))
+                    result.append(MKPolyline(coordinates: coords, count: coords.count))
                 }
                 coords = [seg.start, seg.end]
                 currentRoot = seg.root
-                currentID = "sel|" + seg.id
             }
         }
         if coords.count >= 2 {
-            result.append(MergedPolyline(id: currentID, coordinates: coords, isClinched: true, root: currentRoot, color: .yellow))
+            result.append(MKPolyline(coordinates: coords, count: coords.count))
         }
         return result
     }
 
     private var mapLayer: some View {
-        // .equatable(): this body re-runs on every loading tick, sheet, search keystroke,
-        // tab switch and synced-settings change; the canvas only re-renders when what it
-        // draws changes. See TravelMapCanvas.
         TravelMapCanvas(
-            position: $mapPosition,
-            roads: displayedPolylines,
-            rails: displayedRailPolylines,
-            selected: selectedPolylines,
+            groups: lineGroups,
             contentKey: TravelMapCanvas.ContentKey(
                 polylineGeneration: polylineGeneration,
                 showRoads: showRoads,
                 showRail: showRail,
                 showClinched: showClinched,
-                showUnclinched: showUnclinched,
-                selectedSegmentIDs: selectedSegmentIDs
+                showUnclinched: showUnclinched
             ),
+            selectedSegmentIDs: selectedSegmentIDs,
+            selectedLines: selectedLines,
             style: TravelMapCanvas.Style(
                 mapStyle: mapStyle,
                 roadLineStyle: MapStyleService.parse(settings.roadLineStyle),
@@ -475,6 +439,7 @@ struct TravelMapView: View {
                 railLineWidth: settings.railLineWidth,
                 untraveledVisibility: settings.untraveledVisibility
             ),
+            cameraRequest: cameraRequest,
             onCameraChange: { region in
                 camera.region = region
             },
@@ -482,7 +447,8 @@ struct TravelMapView: View {
                 handleSegmentTap(at: coordinate)
             }
         )
-        .equatable()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
     }
 
     private func handleSegmentTap(at coordinate: CLLocationCoordinate2D) {
@@ -639,12 +605,10 @@ struct TravelMapView: View {
     }
 
     private func zoomToLocation(_ loc: CLLocation) {
-        withAnimation {
-            mapPosition = .region(MKCoordinateRegion(
+        cameraRequest = TravelMapCanvas.CameraRequest(region: MKCoordinateRegion(
                 center: loc.coordinate,
                 span: MKCoordinateSpan(latitudeDelta: 0.5, longitudeDelta: 0.5)
-            ))
-        }
+        ))
     }
 
     /// The one accented control: opens the Layers sheet (audit §6).
@@ -1152,12 +1116,10 @@ struct TravelMapView: View {
         let spanLng = min(max(lngSpan * 1.3, 0.05), 360)
 
         Haptics.success()
-        withAnimation {
-            mapPosition = .region(MKCoordinateRegion(
+        cameraRequest = TravelMapCanvas.CameraRequest(region: MKCoordinateRegion(
                 center: CLLocationCoordinate2D(latitude: centerLat, longitude: centerLng),
                 span: MKCoordinateSpan(latitudeDelta: spanLat, longitudeDelta: spanLng)
-            ))
-        }
+        ))
     }
 
     private func zoomIn() { adjustZoom(factor: 0.5) }
@@ -1171,12 +1133,10 @@ struct TravelMapView: View {
         currentSpanLat = min(max(currentRegion.span.latitudeDelta * factor, 0.001), 180)
         currentSpanLng = min(max(currentRegion.span.longitudeDelta * factor, 0.001), 360)
 
-        withAnimation {
-            mapPosition = .region(MKCoordinateRegion(
+        cameraRequest = TravelMapCanvas.CameraRequest(region: MKCoordinateRegion(
                 center: center,
                 span: MKCoordinateSpan(latitudeDelta: currentSpanLat, longitudeDelta: currentSpanLng)
-            ))
-        }
+        ))
     }
 
     // MARK: - Subviews
@@ -1497,6 +1457,8 @@ struct TravelMapView: View {
             }
         }
 
+        didChooseInitialRegions = true
+
         // Favorite regions take priority if any exist.
         // Setting selectedRegions fires onChange → loadSegments; do NOT also call
         // loadSegments here or the data loads twice.
@@ -1598,9 +1560,12 @@ struct TravelMapView: View {
 
             // Update map after each batch — only if still the current load
             guard !Task.isCancelled, generation == loadGeneration else { return }
-            segments = allSegments
-            routeMetadata = allRoutes
-            rebuildPolylines()
+            // A batch of regions the traveler has no clinched segments in changes nothing
+            if allSegments.count != segments.count {
+                segments = allSegments
+                routeMetadata = allRoutes
+                rebuildPolylines()
+            }
             loadingProgress = "Loading \(completed)/\(total) regions..."
         }
 
@@ -1646,6 +1611,7 @@ struct TravelMapView: View {
 
         loadingProgress = nil
         isLoading = false
+        mapDataLoaded = true
         SentrySDK.reportFullyDisplayed()
     }
 
@@ -1669,12 +1635,10 @@ struct TravelMapView: View {
         currentSpanLat = spanLat
         currentSpanLng = spanLng
 
-        withAnimation {
-            mapPosition = .region(MKCoordinateRegion(
+        cameraRequest = TravelMapCanvas.CameraRequest(region: MKCoordinateRegion(
                 center: CLLocationCoordinate2D(latitude: centerLat, longitude: centerLng),
                 span: MKCoordinateSpan(latitudeDelta: spanLat, longitudeDelta: spanLng)
-            ))
-        }
+        ))
     }
 
     // MARK: - Helpers
@@ -1682,24 +1646,36 @@ struct TravelMapView: View {
 
 // MARK: - Map Canvas
 
-/// The Map and its polyline content, split out of TravelMapView so SwiftUI can skip it.
+/// Every drawable map line, grouped by how it's stroked. Each group becomes one
+/// MKMultiPolyline overlay in TravelMapCanvas.
+fileprivate struct MapLineGroups {
+    static let fallbackColorHex = "#0000FF"
+
+    var traveledRoadsByColorHex: [String: [MKPolyline]] = [:]
+    var remainingRoads: [MKPolyline] = []
+    var traveledRail: [MKPolyline] = []
+    var remainingRail: [MKPolyline] = []
+}
+
+/// The map, as a thin MKMapView wrapper that draws all lines through a handful of
+/// MKMultiPolyline overlays.
 ///
-/// With the Map inline, every TravelMapView body pass (loading-progress ticks, sheets,
-/// search keystrokes, isActiveTab flips, synced-settings publishes) rebuilt thousands of
-/// MapPolylines and MapKit re-diffed them on the main thread, copying and freeing
-/// MultiPoint content for seconds (Sentry app-hang TRAVELMAPPING-H; 21 of the recent
-/// events on UserDetail, stacks in PlatformViewRepresentableAdaptor.updateViewProvider →
-/// MapKit MultiPoint). Used with `.equatable()`, so the body only re-runs when the
-/// polylines, filters, selection or line style change. The position binding still
-/// drives the Map directly.
-fileprivate struct TravelMapCanvas: View, Equatable {
-    @Binding var position: MapCameraPosition
-    let roads: [TravelMapView.MergedPolyline]
-    let rails: [TravelMapView.MergedPolyline]
-    let selected: [TravelMapView.MergedPolyline]
-    /// What `roads`, `rails` and `selected` were built from; compared instead of the arrays
+/// SwiftUI's Map can only draw one overlay per MapPolyline, and MapKit's cost grows with
+/// the square of the overlay count (a linear find in md::OverlayContainer per insert, plus
+/// SwiftUI copying every MultiPoint on each update). Measured on the largest profile
+/// (All Regions, 17k polylines) each Map update froze the main thread for 58 s, even when
+/// nothing had changed, and 935 polylines still cost 0.5 s (Sentry TRAVELMAPPING-H).
+/// Here the overlay count is about 15 whatever the profile size, and overlays are only
+/// touched when what they draw changes, so unrelated TravelMapView body passes do nothing.
+fileprivate struct TravelMapCanvas: UIViewRepresentable {
+    let groups: MapLineGroups
+    /// What `groups` was built from plus the filters; compared instead of the arrays
     let contentKey: ContentKey
+    let selectedSegmentIDs: Set<String>
+    /// Only called when the selection changes: it scans every loaded segment
+    let selectedLines: () -> [MKPolyline]
     let style: Style
+    let cameraRequest: CameraRequest?
     let onCameraChange: (MKCoordinateRegion) -> Void
     let onTap: (CLLocationCoordinate2D) -> Void
 
@@ -1709,7 +1685,6 @@ fileprivate struct TravelMapCanvas: View, Equatable {
         let showRail: Bool
         let showClinched: Bool
         let showUnclinched: Bool
-        let selectedSegmentIDs: Set<String>
     }
 
     struct Style: Equatable {
@@ -1720,87 +1695,239 @@ fileprivate struct TravelMapCanvas: View, Equatable {
         let untraveledVisibility: Double
     }
 
-    /// Closures are left out on purpose: they only call back into TravelMapView, whose
-    /// @State reads stay current through a captured copy
-    nonisolated static func == (lhs: TravelMapCanvas, rhs: TravelMapCanvas) -> Bool {
-        lhs.contentKey == rhs.contentKey && lhs.style == rhs.style
+    struct CameraRequest: Equatable {
+        let id = UUID()
+        let region: MKCoordinateRegion
+
+        static func == (lhs: CameraRequest, rhs: CameraRequest) -> Bool { lhs.id == rhs.id }
     }
 
-    var body: some View {
-        MapReader { proxy in
-            Map(position: $position) {
-                UserAnnotation()
+    struct Stroke: Equatable {
+        let color: UIColor
+        let width: CGFloat
+        var dash: [CGFloat] = []
+    }
 
-                // Road segments. Untraveled routes render in Frontier Amber (the
-                // "remaining" semantic) at user-adjustable opacity and a width that
-                // scales with the road-width setting — the old fixed 1.5pt gray was
-                // nearly invisible on most base maps.
-                ForEach(roads) { poly in
-                    MapPolyline(coordinates: poly.coordinates)
-                        .stroke(
-                            poly.isClinched
-                                ? poly.color
-                                : TMDesign.frontier.opacity(style.untraveledVisibility),
-                            style: MapStyleService.strokeStyle(
-                                for: style.roadLineStyle,
-                                baseWidth: poly.isClinched
-                                    ? style.roadLineWidth
-                                    : max(1.5, style.roadLineWidth * 0.75)
-                            )
-                        )
-                }
+    /// One overlay's worth of lines. An overlay is reused while its key and stroke match.
+    struct Layer {
+        let key: String
+        let polylines: [MKPolyline]
+        let stroke: Stroke
+    }
 
-                // Rail segments — use double-line "railroad" style since
-                // MapKit doesn't reliably render StrokeStyle dash patterns on MapPolyline.
-                // Outer stroke (wider, colored)
-                ForEach(rails) { poly in
-                    let width = poly.isClinched ? style.railLineWidth : max(2.0, style.railLineWidth * 0.6)
-                    MapPolyline(coordinates: poly.coordinates)
-                        .stroke(
-                            poly.isClinched
-                                ? .red
-                                : TMDesign.frontier.opacity(style.untraveledVisibility),
-                            lineWidth: width
-                        )
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIView(context: Context) -> MKMapView {
+        let mapView = MKMapView()
+        mapView.delegate = context.coordinator
+        mapView.showsUserLocation = true
+        // Only compass and scale; the screen has its own zoom and location buttons
+        mapView.showsCompass = true
+        mapView.showsScale = true
+        let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap))
+        tap.delegate = context.coordinator
+        mapView.addGestureRecognizer(tap)
+        return mapView
+    }
+
+    func updateUIView(_ mapView: MKMapView, context: Context) {
+        let coordinator = context.coordinator
+        coordinator.onCameraChange = onCameraChange
+        coordinator.onTap = onTap
+
+        if coordinator.appliedMapStyle != style.mapStyle {
+            coordinator.appliedMapStyle = style.mapStyle
+            mapView.preferredConfiguration = style.mapStyle.configuration
+        }
+
+        let selectionChanged = coordinator.appliedSelection != selectedSegmentIDs
+        if selectionChanged {
+            coordinator.appliedSelection = selectedSegmentIDs
+            coordinator.selectionGeneration += 1
+            coordinator.selection = selectedSegmentIDs.isEmpty ? [] : selectedLines()
+        }
+        let contentChanged = coordinator.appliedContentKey != contentKey || coordinator.appliedStyle != style
+        if contentChanged || selectionChanged {
+            coordinator.appliedContentKey = contentKey
+            coordinator.appliedStyle = style
+            coordinator.reconcile(mapView, with: baseLayers() + coordinator.selectionLayers())
+        }
+
+        if let cameraRequest, coordinator.appliedCameraRequest != cameraRequest {
+            coordinator.appliedCameraRequest = cameraRequest
+            mapView.setRegion(Self.validated(cameraRequest.region), animated: true)
+        } else if contentChanged {
+            coordinator.fitContentIfCameraUntouched(mapView)
+        }
+    }
+
+    /// Stacking order is array order: remaining below traveled, roads below rail.
+    private func baseLayers() -> [Layer] {
+        let generation = contentKey.polylineGeneration
+        var layers: [Layer] = []
+
+        if contentKey.showRoads {
+            if contentKey.showUnclinched {
+                layers.append(Layer(
+                    key: "road-remaining|\(generation)",
+                    polylines: groups.remainingRoads,
+                    stroke: roadStroke(
+                        color: UIColor(TMDesign.frontier).withAlphaComponent(style.untraveledVisibility),
+                        baseWidth: max(1.5, style.roadLineWidth * 0.75)
+                    )
+                ))
+            }
+            if contentKey.showClinched {
+                for (hex, polylines) in groups.traveledRoadsByColorHex.sorted(by: { $0.key < $1.key }) {
+                    layers.append(Layer(
+                        key: "road-traveled|\(hex)|\(generation)",
+                        polylines: polylines,
+                        stroke: roadStroke(color: UIColor(Color(hex: hex)), baseWidth: style.roadLineWidth)
+                    ))
                 }
+            }
+        }
+
+        // Rail draws as a double stroke because MapKit doesn't reliably render dash patterns
+        if contentKey.showRail {
+            if contentKey.showUnclinched {
+                layers.append(Layer(
+                    key: "rail-remaining|\(generation)",
+                    polylines: groups.remainingRail,
+                    stroke: Stroke(
+                        color: UIColor(TMDesign.frontier).withAlphaComponent(style.untraveledVisibility),
+                        width: max(2.0, style.railLineWidth * 0.6)
+                    )
+                ))
+            }
+            if contentKey.showClinched {
+                layers.append(Layer(
+                    key: "rail-traveled|\(generation)",
+                    polylines: groups.traveledRail,
+                    stroke: Stroke(color: .red, width: style.railLineWidth)
+                ))
                 // Inner stroke (thinner, white) creates the "track" look
-                ForEach(rails) { poly in
-                    let width = poly.isClinched ? style.railLineWidth : 2.0
-                    if width > 2 {
-                        MapPolyline(coordinates: poly.coordinates)
-                            .stroke(.white.opacity(0.5), lineWidth: width * 0.4)
-                    }
+                if style.railLineWidth > 2 {
+                    layers.append(Layer(
+                        key: "rail-track|\(generation)",
+                        polylines: groups.traveledRail,
+                        stroke: Stroke(color: UIColor.white.withAlphaComponent(0.5), width: style.railLineWidth * 0.4)
+                    ))
                 }
+            }
+        }
+        return layers
+    }
 
-                // Selected segments: white outline for contrast on any background
-                ForEach(selected) { poly in
-                    MapPolyline(coordinates: poly.coordinates)
-                        .stroke(.white, lineWidth: 9)
-                }
-                // Selected segments: yellow highlight on top
-                ForEach(selected) { poly in
-                    MapPolyline(coordinates: poly.coordinates)
-                        .stroke(.yellow, lineWidth: 7)
-                }
+    private func roadStroke(color: UIColor, baseWidth: Double) -> Stroke {
+        Stroke(
+            color: color,
+            width: baseWidth * style.roadLineStyle.widthMultiplier,
+            dash: style.roadLineStyle.dashPattern
+        )
+    }
+
+    /// MKMapView throws on an out-of-range region, where SwiftUI's Map clamped it.
+    private static func validated(_ region: MKCoordinateRegion) -> MKCoordinateRegion {
+        let latitude = min(max(region.center.latitude, -85), 85)
+        return MKCoordinateRegion(
+            center: CLLocationCoordinate2D(latitude: latitude, longitude: region.center.longitude),
+            span: MKCoordinateSpan(
+                latitudeDelta: min(region.span.latitudeDelta, 2 * (90 - abs(latitude))),
+                longitudeDelta: min(region.span.longitudeDelta, 360)
+            )
+        )
+    }
+
+    final class Coordinator: NSObject, MKMapViewDelegate, UIGestureRecognizerDelegate {
+        var onCameraChange: ((MKCoordinateRegion) -> Void)?
+        var onTap: ((CLLocationCoordinate2D) -> Void)?
+
+        var appliedMapStyle: TravelMapView.MapStyleOption?
+        var appliedContentKey: ContentKey?
+        var appliedStyle: Style?
+        var appliedCameraRequest: CameraRequest?
+        var appliedSelection: Set<String> = []
+        var selection: [MKPolyline] = []
+        var selectionGeneration = 0
+
+        private struct Entry {
+            let layer: Layer
+            let overlay: MKMultiPolyline
+        }
+        private var entries: [Entry] = []
+        private var cameraTouched = false
+
+        /// White outline for contrast on any background, yellow highlight on top
+        func selectionLayers() -> [Layer] {
+            guard !selection.isEmpty else { return [] }
+            return [
+                Layer(key: "selected-outline|\(selectionGeneration)", polylines: selection, stroke: Stroke(color: .white, width: 9)),
+                Layer(key: "selected|\(selectionGeneration)", polylines: selection, stroke: Stroke(color: .yellow, width: 7)),
+            ]
+        }
+
+        /// Replaces only the overlays whose content or stroke changed, keeping the array's order.
+        func reconcile(_ mapView: MKMapView, with layers: [Layer]) {
+            let wanted = layers.filter { !$0.polylines.isEmpty }
+            let next = wanted.map { layer in
+                entries.first { $0.layer.key == layer.key && $0.layer.stroke == layer.stroke }
+                    ?? Entry(layer: layer, overlay: MKMultiPolyline(layer.polylines))
             }
-            .mapStyle(style.mapStyle.style)
-            .onMapCameraChange { context in
-                onCameraChange(context.region)
+            let kept = Set(next.map { ObjectIdentifier($0.overlay) })
+            let existing = Set(entries.map { ObjectIdentifier($0.overlay) })
+            mapView.removeOverlays(entries.map(\.overlay).filter { !kept.contains(ObjectIdentifier($0)) })
+            entries = next
+            for (index, entry) in next.enumerated() where !existing.contains(ObjectIdentifier(entry.overlay)) {
+                mapView.insertOverlay(entry.overlay, at: index)
             }
-            .mapControls {
-                // Only show compass and scale — suppress all other default controls
-                // (pitch toggle, user location button, etc.) since we have custom versions
-                MapCompass()
-                MapScaleView()
+        }
+
+        /// Matches SwiftUI's automatic camera: frame the lines until something else moves the map.
+        func fitContentIfCameraUntouched(_ mapView: MKMapView) {
+            guard !cameraTouched, appliedCameraRequest == nil, let first = entries.first else { return }
+            let bounds = entries.dropFirst().reduce(first.overlay.boundingMapRect) { $0.union($1.overlay.boundingMapRect) }
+            mapView.setVisibleMapRect(bounds, edgePadding: UIEdgeInsets(top: 40, left: 40, bottom: 40, right: 40), animated: false)
+        }
+
+        func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
+            guard let multi = overlay as? MKMultiPolyline,
+                  let stroke = entries.first(where: { $0.overlay === multi })?.layer.stroke else {
+                return MKOverlayRenderer(overlay: overlay)
             }
-            .mapControlVisibility(.automatic)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .clipped()
-            .onTapGesture { screenPoint in
-                if let coordinate = proxy.convert(screenPoint, from: .local) {
-                    onTap(coordinate)
-                }
+            let renderer = MKMultiPolylineRenderer(multiPolyline: multi)
+            renderer.strokeColor = stroke.color
+            renderer.lineWidth = stroke.width
+            renderer.lineCap = .round
+            renderer.lineJoin = .round
+            if !stroke.dash.isEmpty {
+                renderer.lineDashPattern = stroke.dash.map { NSNumber(value: Double($0)) }
             }
+            return renderer
+        }
+
+        func mapView(_ mapView: MKMapView, regionWillChangeAnimated animated: Bool) {
+            // The map's own gesture recognizers live on its first subview
+            let gestureActive = mapView.subviews.first?.gestureRecognizers?.contains {
+                $0.state == .began || $0.state == .changed || $0.state == .ended
+            } ?? false
+            if gestureActive { cameraTouched = true }
+        }
+
+        func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
+            onCameraChange?(mapView.region)
+        }
+
+        @objc func handleTap(_ gesture: UITapGestureRecognizer) {
+            guard let mapView = gesture.view as? MKMapView else { return }
+            onTap?(mapView.convert(gesture.location(in: mapView), toCoordinateFrom: mapView))
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            true
         }
     }
 }

@@ -58,23 +58,25 @@ class DataService: ObservableObject {
                 async let ferryUsers = fetchUsernames(directory: "flist_files", ext: "flist")
                 async let scenicUsers = fetchUsernames(directory: "slist_files", ext: "slist")
 
-                let roads = try await roadUsers
-                let rail = try await railUsers
-                let ferry = try await ferryUsers
-                let scenic = try await scenicUsers
+                let roads = Set(try await roadUsers)
+                let rail = Set(try await railUsers)
+                let ferry = Set(try await ferryUsers)
+                let scenic = Set(try await scenicUsers)
 
-                let allUsernames = Set(roads + rail + ferry + scenic)
-
-                let summaries = allUsernames.map { username in
-                    UserSummary(
-                        id: username,
-                        username: username,
-                        hasRoads: roads.contains(username),
-                        hasRail: rail.contains(username),
-                        hasFerry: ferry.contains(username),
-                        hasScenic: scenic.contains(username)
-                    )
-                }.sorted { $0.username.localizedCaseInsensitiveCompare($1.username) == .orderedAscending }
+                // Sets and off the main actor: array contains() per name plus a localized
+                // sort of the whole traveler list ran on the main thread
+                let summaries = await Task.detached(priority: .userInitiated) {
+                    roads.union(rail).union(ferry).union(scenic).map { username in
+                        UserSummary(
+                            id: username,
+                            username: username,
+                            hasRoads: roads.contains(username),
+                            hasRail: rail.contains(username),
+                            hasFerry: ferry.contains(username),
+                            hasScenic: scenic.contains(username)
+                        )
+                    }.sorted { $0.username.localizedCaseInsensitiveCompare($1.username) == .orderedAscending }
+                }.value
 
                 self.users = summaries
                 self.isLoading = false

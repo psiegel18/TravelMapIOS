@@ -19,6 +19,7 @@ struct UserListView: View {
     private var primaryUser: String { settings.primaryUser }
 
     var filteredUsers: [DataService.UserSummary] {
+        // dataService.users is already sorted by name, and filtering keeps that order
         let searched: [DataService.UserSummary]
         if searchText.isEmpty {
             searched = dataService.users
@@ -31,14 +32,10 @@ struct UserListView: View {
         switch filter {
         case .all:
             // Explicit filter chips replace the old implicit favorites-first sort.
-            return searched.sorted {
-                $0.username.localizedCaseInsensitiveCompare($1.username) == .orderedAscending
-            }
+            return searched
         case .favorites:
             let favs = favoritesService.favorites
-            return searched
-                .filter { favs.contains($0.username) }
-                .sorted { $0.username.localizedCaseInsensitiveCompare($1.username) == .orderedAscending }
+            return searched.filter { favs.contains($0.username) }
         case .recent:
             // Preserve most-recent-first ordering from settings.recentUsers.
             return settings.recentUsers.compactMap { recentName in
@@ -60,6 +57,8 @@ struct UserListView: View {
                     }
                 }
             } else {
+                // Once per body pass: the list and the empty-state overlay both need it
+                let visibleUsers = filteredUsers
                 List {
                     if !primaryUser.isEmpty, let user = dataService.users.first(where: { $0.username.lowercased() == primaryUser.lowercased() }) {
                         Section {
@@ -88,7 +87,7 @@ struct UserListView: View {
                     }
 
                     Section {
-                        ForEach(filteredUsers) { user in
+                        ForEach(visibleUsers) { user in
                             NavigationLink(value: user) {
                                 UserRowView(
                                     user: user,
@@ -114,7 +113,7 @@ struct UserListView: View {
                 }
                 .searchable(text: $searchText, prompt: "Search \(dataService.users.count.formatted()) travelers")
                 .overlay {
-                    if filteredUsers.isEmpty {
+                    if visibleUsers.isEmpty {
                         if !searchText.isEmpty {
                             ContentUnavailableView.search(text: searchText)
                         } else if filter == .favorites {
