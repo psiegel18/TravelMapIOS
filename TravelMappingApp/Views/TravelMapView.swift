@@ -20,9 +20,9 @@ struct TravelMapView: View {
     /// These stop that from reloading every region and resetting the user's region choice.
     @State private var didChooseInitialRegions = false
     @State private var mapDataLoaded = false
-    /// A .task-owned load stopped because the view went away; the next .task picks it back up.
-    /// Loads started from a region change aren't cancelled by that and must not be restarted.
-    @State private var loadInterrupted = false
+    /// Loads started from a region change. They outlive the view, unlike the .task-owned load,
+    /// so while one is running a reappearing view must not restart loading.
+    @State private var regionChangeLoads = 0
     @State private var errorMessage: String?
     /// Status filter (Traveled / Remaining), applied within the enabled modes. At least one
     /// stays on — turning one off with the other already off switches the other on.
@@ -377,8 +377,9 @@ struct TravelMapView: View {
             guard !mapDataLoaded else { return }
             if !didChooseInitialRegions {
                 await loadRegions()
-            } else if loadInterrupted {
-                loadInterrupted = false
+            } else if isLoading && regionChangeLoads == 0 {
+                // Going away cancelled the .task-owned load. This one supersedes it, so it stops
+                // at its next check whether or not it has got there yet.
                 await loadSegments()
             }
         }
@@ -389,7 +390,11 @@ struct TravelMapView: View {
             }
         }
         .onChange(of: selectedRegions) {
-            Task { await loadSegments() }
+            regionChangeLoads += 1
+            Task {
+                await loadSegments()
+                regionChangeLoads -= 1
+            }
         }
         .onChange(of: settings.roadLineStyle) {
             // The merge cap depends on the line style (dashes need short polylines)
@@ -1438,6 +1443,8 @@ struct TravelMapView: View {
 
     private func loadRegions() async {
         guard let profile = await dataService.loadUserProfile(username: username) else {
+            // Not a failure: the view went away, and the next appearance starts over
+            guard !Task.isCancelled else { return }
             errorMessage = "Could not load user profile"
             isLoading = false
             return
@@ -1493,16 +1500,6 @@ struct TravelMapView: View {
         }
     }
 
-    /// False when a newer load took over, or when this one was cancelled with the view
-    private func loadIsCurrent(_ generation: Int) -> Bool {
-        guard generation == loadGeneration else { return false }
-        if Task.isCancelled {
-            loadInterrupted = true
-            return false
-        }
-        return true
-    }
-
     private func loadSegments() async {
         // Bump the generation: any older load still in flight sees a mismatch at
         // its next checkpoint and bails without touching state.
@@ -1521,7 +1518,7 @@ struct TravelMapView: View {
         if selectedRegions.isEmpty {
             // "All Regions" — load everything but only keep clinched
             let profile = await dataService.loadUserProfile(username: username)
-            guard loadIsCurrent(generation) else { return }
+            guard !Task.isCancelled, generation == loadGeneration else { return }
             guard let profile else {
                 errorMessage = "Could not load profile"
                 isLoading = false
@@ -1543,7 +1540,7 @@ struct TravelMapView: View {
 
         for batchStart in stride(from: 0, to: regionsToLoad.count, by: batchSize) {
             // Stop between batches if this task was cancelled or a newer load started
-            guard loadIsCurrent(generation) else { return }
+            guard !Task.isCancelled, generation == loadGeneration else { return }
 
             let batchEnd = min(batchStart + batchSize, regionsToLoad.count)
             let batch = Array(regionsToLoad[batchStart..<batchEnd])
@@ -1578,7 +1575,7 @@ struct TravelMapView: View {
             }
 
             // Update map after each batch — only if still the current load
-            guard loadIsCurrent(generation) else { return }
+            guard !Task.isCancelled, generation == loadGeneration else { return }
             // A batch of regions the traveler has no clinched segments in changes nothing
             if allSegments.count != segments.count {
                 segments = allSegments
@@ -1588,7 +1585,7 @@ struct TravelMapView: View {
             loadingProgress = "Loading \(completed)/\(total) regions..."
         }
 
-        guard loadIsCurrent(generation) else { return }
+        guard !Task.isCancelled, generation == loadGeneration else { return }
         segments = allSegments
         routeMetadata = allRoutes
 
@@ -1600,7 +1597,7 @@ struct TravelMapView: View {
         var allRailRoutes: [TravelMappingAPI.RouteMetadata] = []
 
         for region in regionsToLoad {
-            guard loadIsCurrent(generation) else { return }
+            guard !Task.isCancelled, generation == loadGeneration else { return }
             do {
                 let r = try await TravelMappingAPI.rail.getRegionSegments(
                     region: region,
@@ -1617,7 +1614,7 @@ struct TravelMapView: View {
             }
         }
 
-        guard loadIsCurrent(generation) else { return }
+        guard !Task.isCancelled, generation == loadGeneration else { return }
         railSegments = allRailSegs
         railMetadata = allRailRoutes
 
@@ -1756,9 +1753,15 @@ fileprivate struct TravelMapCanvas: UIViewRepresentable {
         tap.delegate = context.coordinator
         mapView.addGestureRecognizer(tap)
         // Observers only, alongside the map's own gestures: they stop automatic framing
-        for observer in [UIPanGestureRecognizer(), UIPinchGestureRecognizer()] as [UIGestureRecognizer] {
+        let panObserver = UIPanGestureRecognizer()
+        panObserver.allowedScrollTypesMask = .all
+        let doubleTapObserver = UITapGestureRecognizer()
+        doubleTapObserver.numberOfTapsRequired = 2
+        let observers: [UIGestureRecognizer] = [panObserver, UIPinchGestureRecognizer(), UIRotationGestureRecognizer(), doubleTapObserver]
+        for observer in observers {
             observer.addTarget(context.coordinator, action: #selector(Coordinator.userMovedCamera))
             observer.cancelsTouchesInView = false
+            observer.delaysTouchesEnded = false
             observer.delegate = context.coordinator
             mapView.addGestureRecognizer(observer)
         }

@@ -107,7 +107,8 @@ class DataService: ObservableObject {
                         // and not worth reporting. Anything else (network failure, server
                         // error, decode failure) is a real problem that callers can't see
                         // because it collapses into "no data", so capture it here.
-                        if (error as? URLError)?.code != .fileDoesNotExist {
+                        // A cancelled request just means the screen went away.
+                        if (error as? URLError)?.code != .fileDoesNotExist, !Task.isCancelled {
                             SentrySDK.capture(error: error) { scope in
                                 scope.setTag(value: category.rawValue, key: "list_category")
                                 scope.setExtra(value: username, key: "username")
